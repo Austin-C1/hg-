@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<serverresponse>
+  <dataCount>1</dataCount>
+  <ec id="ec-8001" hasEC="Y" myGame="ft">
+    <game id="1001">
+      <SHOWTYPE>ft</SHOWTYPE><GID>1001</GID><GIDM>9001</GIDM><HGID>1002</HGID><ECID>8001</ECID><LID>7001</LID>
+      <DATETIME>07-08 09:00p</DATETIME><GAME_DATE_TIME>2026-07-08 21:00:00</GAME_DATE_TIME>
+      <LEAGUE>Fixture Premier League</LEAGUE><TEAM_H>Alpha FC</TEAM_H><TEAM_C>Beta FC</TEAM_C><STRONG>H</STRONG>
+      <GOPEN>Y</GOPEN><HGOPEN>Y</HGOPEN><RATIO_R>0 / 0.5</RATIO_R><IOR_RH>0.810</IOR_RH><IOR_RC>1.050</IOR_RC>
+      <RATIO_OUO>2.5</RATIO_OUO><RATIO_OUU>2.5</RATIO_OUU><IOR_OUH>1.020</IOR_OUH><IOR_OUC>0.800</IOR_OUC>
+      <IOR_MH>1.99</IOR_MH><IOR_MC>2.85</IOR_MC><IOR_MN>4.05</IOR_MN><IS_RB>N</IS_RB>
+    </game>
+  </ec>
+</serverresponse>

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 2,
+  "evidenceStatus": "verified",
+  "evidenceId": "crown-capture-20260709-111046-live-full-time-asian-handicap-main",
+  "captureId": "20260709-111046",
+  "capability": {
+    "mode": "live",
+    "period": "full_time",
+    "marketType": "asian_handicap",
+    "lineVariant": "main"
+  },
+  "operationMarker": "FT_order_view",
+  "requestFieldSet": ["chose_team", "gid", "gtype", "langx", "odd_f_type", "p", "ver", "wtype"],
+  "requestFieldSetFingerprint": "sha256:50a9c1ffe0efeeed144c2c8fb0d027e49856b73caebb89675250caf0994b661e",
+  "responseFieldSet": ["code", "con", "dates", "game_sc", "game_so", "gold_gmax", "gold_gmin", "ioratio", "league_id", "maxcredit", "mem_sc", "mem_so", "num_c", "num_h", "ratio", "restsinglecredit", "spread", "strong", "times"],
+  "responseFieldSetFingerprint": "sha256:4682fa69edf56ee85cf7328948994e79163afce45277c413e805f01fb2c529ad",
+  "mapperEvidence": {
+    "ratioFields": ["RATIO_RE"],
+    "oddsFields": ["IOR_REC", "IOR_REH"],
+    "oddsFieldsBySide": { "away": "IOR_REC", "home": "IOR_REH" },
+    "wtype": "RE",
+    "wireDefaults": { "langx": "zh-cn", "odd_f_type": "H", "p": "FT_order_view" },
+    "unprovenWireValueSources": ["ver"]
+  },
+  "redactedResponseBody": "<serverresponse><code>501</code><con>[redacted]</con><dates>[redacted]</dates><game_sc>[redacted]</game_sc><game_so>[redacted]</game_so><gold_gmax>27522</gold_gmax><gold_gmin>50</gold_gmin><ioratio>1.09</ioratio><league_id>[redacted]</league_id><maxcredit>[redacted]</maxcredit><mem_sc>[redacted]</mem_sc><mem_so>[redacted]</mem_so><num_c>[redacted]</num_c><num_h>[redacted]</num_h><ratio>[redacted]</ratio><restsinglecredit>[redacted]</restsinglecredit><spread>0 / 0.5</spread><strong>H</strong><times>[redacted]</times></serverresponse>",
+  "artifactPath": "artifacts/20260709-111046-preview.safe.json",
+  "artifactSafeDigest": "sha256:adb8605b51f52532b75aed83e7e6e9c74b73df875241db9cd684f19d6ed6ee8f",
+  "requestRecordEvidenceId": "sha256:7cc4d5e89750ac9ed3a111008560354f37f3a1b0ed3fb7eb0ec51b67c2588726",
+  "responseRecordEvidenceId": "sha256:e315f1335d3e6d5cb15ea1e2c70e9cefbfbe4b68ea592acbddcc79e3945d2ca3",
+  "previewAllowed": false,
+  "submitAllowed": false,
+  "reconciliationAllowed": false,
+  "blockedReason": "crown-preview-field-source-unproven",
+  "submitBlockedReason": "crown-submit-evidence-missing"
+}

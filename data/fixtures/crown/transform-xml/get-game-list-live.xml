@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<serverresponse>
+  <dataCount>1</dataCount>
+  <ec id="ec-8201" hasEC="Y" myGame="rb">
+    <game id="4001">
+      <SHOWTYPE>rb</SHOWTYPE>
+      <GID>4001</GID>
+      <GIDM>9201</GIDM>
+      <HGID>4002</HGID>
+      <ECID>8201</ECID>
+      <LID>7201</LID>
+      <LEAGUE>Fixture Live Only League</LEAGUE>
+      <TEAM_H>Live Home</TEAM_H>
+      <TEAM_C>Live Away</TEAM_C>
+      <SCORE_H>0</SCORE_H>
+      <SCORE_C>0</SCORE_C>
+      <RETIMESET>1H^02:31</RETIMESET>
+      <GOPEN>Y</GOPEN>
+      <HGOPEN>Y</HGOPEN>
+      <RATIO_RE>1</RATIO_RE>
+      <IOR_REH>0.770</IOR_REH>
+      <IOR_REC>0.930</IOR_REC>
+      <RATIO_ROUO>3.5</RATIO_ROUO>
+      <RATIO_ROUU>3.5</RATIO_ROUU>
+      <IOR_ROUH>0.820</IOR_ROUH>
+      <IOR_ROUC>0.880</IOR_ROUC>
+      <IS_RB>Y</IS_RB>
+    </game>
+  </ec>
+</serverresponse>

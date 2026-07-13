@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<serverresponse>
+  <dataCount>2</dataCount>
+  <ec id="ec-8001" hasEC="Y" myGame="ft">
+    <game id="1001">
+      <SHOWTYPE>ft</SHOWTYPE>
+      <GID>1001</GID>
+      <GIDM>9001</GIDM>
+      <HGID>1002</HGID>
+      <ECID>8001</ECID>
+      <LID>7001</LID>
+      <DATETIME>07-08 09:00p</DATETIME>
+      <GAME_DATE_TIME>2026-07-08 21:00:00</GAME_DATE_TIME>
+      <LEAGUE>Fixture Premier League</LEAGUE>
+      <TEAM_H>Alpha FC</TEAM_H>
+      <TEAM_C>Beta FC</TEAM_C>
+      <STRONG>H</STRONG>
+      <GOPEN>Y</GOPEN>
+      <HGOPEN>Y</HGOPEN>
+      <RATIO_R>0 / 0.5</RATIO_R>
+      <IOR_RH>0.790</IOR_RH>
+      <IOR_RC>1.050</IOR_RC>
+      <RATIO_OUO>2.5</RATIO_OUO>
+      <RATIO_OUU>2.5</RATIO_OUU>
+      <IOR_OUH>1.020</IOR_OUH>
+      <IOR_OUC>0.800</IOR_OUC>
+      <IOR_MH>1.99</IOR_MH>
+      <IOR_MC>2.85</IOR_MC>
+      <IOR_MN>4.05</IOR_MN>
+      <RATIO_HR>0</RATIO_HR>
+      <IOR_HRH>1.060</IOR_HRH>
+      <IOR_HRC>0.780</IOR_HRC>
+      <RATIO_HOUO>1.5</RATIO_HOUO>
+      <RATIO_HOUU>1.5</RATIO_HOUU>
+      <IOR_HOUH>0.850</IOR_HOUH>
+      <IOR_HOUC>0.970</IOR_HOUC>
+      <IOR_HMH>2.38</IOR_HMH>
+      <IOR_HMC>3.20</IOR_HMC>
+      <IOR_HMN>2.58</IOR_HMN>
+      <IS_RB>N</IS_RB>
+    </game>
+  </ec>
+  <ec id="ec-8002" hasEC="Y" myGame="rb">
+    <game id="2001">
+      <SHOWTYPE>rb</SHOWTYPE>
+      <GID>2001</GID>
+      <GIDM>9002</GIDM>
+      <HGID>2002</HGID>
+      <ECID>8002</ECID>
+      <LID>7002</LID>
+      <DATETIME>07-08 07:00p</DATETIME>
+      <GAME_DATE_TIME>2026-07-08 19:00:00</GAME_DATE_TIME>
+      <LEAGUE>Fixture Live League</LEAGUE>
+      <TEAM_H>Gamma FC</TEAM_H>
+      <TEAM_C>Delta FC</TEAM_C>
+      <STRONG>C</STRONG>
+      <RETIMESET>1H^08:00</RETIMESET>
+      <SCORE_H>1</SCORE_H>
+      <SCORE_C>0</SCORE_C>
+      <GOPEN>Y</GOPEN>
+      <HGOPEN>Y</HGOPEN>
+      <RATIO_RE>1</RATIO_RE>
+      <IOR_REH>0.770</IOR_REH>
+      <IOR_REC>0.930</IOR_REC>
+      <RATIO_ROUO>3.5</RATIO_ROUO>
+      <RATIO_ROUU>3.5</RATIO_ROUU>
+      <IOR_ROUH>0.820</IOR_ROUH>
+      <IOR_ROUC>0.880</IOR_ROUC>
+      <RATIO_HRE>0 / 0.5</RATIO_HRE>
+      <IOR_HREH>1.000</IOR_HREH>
+      <IOR_HREC>0.700</IOR_HREC>
+      <RATIO_HROUO>1.5</RATIO_HROUO>
+      <RATIO_HROUU>1.5</RATIO_HROUU>
+      <IOR_HROUH>0.730</IOR_HROUH>
+      <IOR_HROUC>0.970</IOR_HROUC>
+      <IOR_RMH>3.85</IOR_RMH>
+      <IOR_RMC>1.54</IOR_RMC>
+      <IOR_RMN>4.15</IOR_RMN>
+      <IOR_HRMH>3.95</IOR_HRMH>
+      <IOR_HRMC>2.02</IOR_HRMC>
+      <IOR_HRMN>2.50</IOR_HRMN>
+      <IS_RB>Y</IS_RB>
+    </game>
+  </ec>
+</serverresponse>

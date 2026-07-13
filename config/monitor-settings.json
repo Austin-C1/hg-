@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "prematch": {
+    "enabled": false,
+    "minOdds": 0,
+    "maxOdds": 2,
+    "waterMoveThreshold": 0.01,
+    "waterMoveDirection": "both",
+    "cooldownSeconds": 60,
+    "remark": "",
+    "lastAlertAt": "2026-07-09T11:21:35.168Z",
+    "stoppedReason": "",
+    "bettingRuleId": null,
+    "startMinutesBeforeKickoff": 999,
+    "stopMinutesBeforeKickoff": 0
+  },
+  "live": {
+    "enabled": false,
+    "minOdds": null,
+    "maxOdds": null,
+    "waterMoveThreshold": 0.03,
+    "waterMoveDirection": "both",
+    "cooldownSeconds": 60,
+    "remark": "",
+    "lastAlertAt": null,
+    "stoppedReason": "",
+    "bettingRuleId": null,
+    "liveMinuteFrom": 10,
+    "liveMinuteTo": 75,
+    "includeFirstHalf": true,
+    "includeSecondHalf": true,
+    "includeHalfTime": false
+  }
+}

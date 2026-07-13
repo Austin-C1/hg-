@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<serverresponse>
+  <dataCount>1</dataCount>
+  <ec id="ec-8301" hasEC="Y" myGame="ft">
+    <game id="5001">
+      <SHOWTYPE>ft</SHOWTYPE>
+      <GID>5001</GID>
+      <GIDM>9301</GIDM>
+      <HGID>5002</HGID>
+      <ECID>8301</ECID>
+      <LID>7301</LID>
+      <LEAGUE>Fixture Empty Odds League</LEAGUE>
+      <TEAM_H>Empty Home</TEAM_H>
+      <TEAM_C>Empty Away</TEAM_C>
+      <GOPEN>Y</GOPEN>
+      <HGOPEN>Y</HGOPEN>
+      <RATIO_R>0.5</RATIO_R>
+      <IOR_RH></IOR_RH>
+      <IOR_RC></IOR_RC>
+      <IS_RB>N</IS_RB>
+    </game>
+  </ec>
+</serverresponse>

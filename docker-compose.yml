@@ -1,0 +1,28 @@
+services:
+  crown-dashboard:
+    build:
+      context: .
+    image: crown-dashboard:local
+    container_name: crown-dashboard
+    environment:
+      CROWN_DASHBOARD_HOST: 0.0.0.0
+      CROWN_DASHBOARD_PORT: 8787
+      CROWN_DB_PATH: /app/storage/crown.sqlite
+      CROWN_STATIC_DIR: /app/frontend/dist
+      CROWN_SECRET_KEY: ${CROWN_SECRET_KEY:-}
+      CROWN_DASHBOARD_PASSWORD_SCRYPT: ${CROWN_DASHBOARD_PASSWORD_SCRYPT:-}
+      CROWN_DASHBOARD_SESSION_KEY: ${CROWN_DASHBOARD_SESSION_KEY:-}
+      CROWN_DASHBOARD_ALLOWED_HOSTS: ${CROWN_DASHBOARD_ALLOWED_HOSTS:-}
+      CROWN_DASHBOARD_ALLOWED_ORIGINS: ${CROWN_DASHBOARD_ALLOWED_ORIGINS:-}
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - crown-runtime:/app/data/runtime
+      - crown-config:/app/config
+      - crown-storage:/app/storage
+    restart: unless-stopped
+
+volumes:
+  crown-runtime:
+  crown-config:
+  crown-storage:

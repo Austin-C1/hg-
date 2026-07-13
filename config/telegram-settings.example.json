@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "oddsAlert": {
+    "enabled": false,
+    "botName": "赔率波动报警机器人",
+    "botToken": "",
+    "chatIds": [],
+    "parseMode": "HTML",
+    "testMessage": "测试消息"
+  },
+  "betSuccess": {
+    "enabled": false,
+    "botName": "投注成功通知机器人",
+    "botToken": "",
+    "chatIds": [],
+    "parseMode": "HTML",
+    "testMessage": "测试消息"
+  }
+}

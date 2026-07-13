@@ -1,0 +1,50 @@
+{
+  "generatedAt": "2026-07-10T02:36:28.583Z",
+  "fixtureDir": "data/fixtures/crown/20260708_004011",
+  "source": {
+    "fixtureCounts": {
+      "sourceEventCards": 38,
+      "included": 38,
+      "prematch": 20,
+      "live": 18,
+      "excluded": 0
+    },
+    "jsonResponseFiles": 231,
+    "xmlFiles": 0,
+    "htmlFiles": 0,
+    "invalidXmlFiles": 0,
+    "emptyXmlFiles": 0,
+    "loginExpiredFiles": 0,
+    "detections": {
+      "dom-football-fixture": 1,
+      "unknown": 92,
+      "irrelevant": 137,
+      "football-metadata": 2
+    }
+  },
+  "totalRecords": 100,
+  "eventsByMode": {
+    "prematch": 10,
+    "live": 5
+  },
+  "byMode": {
+    "prematch": 80,
+    "live": 20
+  },
+  "byLeague": {
+    "世界杯2026(美加墨)": 36,
+    "欧洲冠军联赛外围赛": 64
+  },
+  "byEndpoint": {
+    "LOCAL data/fixtures/crown/20260708_004011/football-today-filtered.json": 100
+  },
+  "byMarketType": {
+    "asian_handicap": 50,
+    "total": 50
+  },
+  "warnings": {
+    "inferred-dom-market": 100,
+    "local-market-id": 100,
+    "local-selection-id": 100
+  }
+}

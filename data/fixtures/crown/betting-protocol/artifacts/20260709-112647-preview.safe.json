@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "captureId": "20260709-112647",
+  "records": [
+    {
+      "recordEvidenceId": "sha256:7cc4d5e89750ac9ed3a111008560354f37f3a1b0ed3fb7eb0ec51b67c2588726",
+      "occurrence": 1,
+      "structuralFingerprint": "sha256:1b13f6ee2f91027742fe1ed7658e1cdaafd771b6df14f60185c949f86b8ef267",
+      "endpointKind": "transform",
+      "method": "POST",
+      "status": null,
+      "recordType": "request",
+      "stage": "preview",
+      "blocked": false,
+      "responseCode": null,
+      "request": {
+        "fieldSet": ["chose_team", "gid", "gtype", "langx", "odd_f_type", "p", "ver", "wtype"],
+        "fieldSetFingerprint": "sha256:50a9c1ffe0efeeed144c2c8fb0d027e49856b73caebb89675250caf0994b661e"
+      },
+      "response": { "fieldSet": [], "fieldSetFingerprint": null }
+    },
+    {
+      "recordEvidenceId": "sha256:e315f1335d3e6d5cb15ea1e2c70e9cefbfbe4b68ea592acbddcc79e3945d2ca3",
+      "occurrence": 1,
+      "structuralFingerprint": "sha256:0da28a994f87489190733251d170d6c25ea35def12a68fc5cb6722ac550eacad",
+      "endpointKind": "transform",
+      "method": "POST",
+      "status": 200,
+      "recordType": "response",
+      "stage": "preview",
+      "blocked": false,
+      "responseCode": "501",
+      "request": { "fieldSet": [], "fieldSetFingerprint": null },
+      "response": {
+        "fieldSet": ["code", "con", "dates", "game_sc", "game_so", "gold_gmax", "gold_gmin", "ioratio", "league_id", "maxcredit", "mem_sc", "mem_so", "num_c", "num_h", "ratio", "restsinglecredit", "spread", "strong", "times"],
+        "fieldSetFingerprint": "sha256:4682fa69edf56ee85cf7328948994e79163afce45277c413e805f01fb2c529ad"
+      }
+    }
+  ]
+}

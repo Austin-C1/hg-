@@ -1,0 +1,34 @@
+{
+  "enabled": true,
+  "defaultAction": "ignore",
+  "include": [
+    {
+      "name": "世界杯2026(美加墨)",
+      "aliases": ["世界杯2026", "2026世界杯"],
+      "match": "contains"
+    },
+    {
+      "name": "欧洲冠军联赛外围赛",
+      "aliases": ["欧冠外围赛", "欧洲冠军联赛外"],
+      "match": "contains"
+    }
+  ],
+  "exclude": [
+    "电竞",
+    "电子",
+    "虚拟",
+    "GT体育",
+    "梦幻足球",
+    "efootball",
+    "esport",
+    "virtual",
+    "fantasy",
+    "cyber",
+    "2x6分钟",
+    "鐢电珵",
+    "鐢靛瓙",
+    "铏氭嫙",
+    "GT浣撹偛",
+    "姊﹀够瓒崇悆"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "console": {
+    "enabled": true
+  },
+  "telegram": {
+    "enabled": false,
+    "botTokenEnv": "CROWN_TELEGRAM_BOT_TOKEN",
+    "chatIdEnv": "CROWN_TELEGRAM_CHAT_ID"
+  }
+}

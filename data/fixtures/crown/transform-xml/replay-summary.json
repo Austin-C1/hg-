@@ -1,0 +1,50 @@
+{
+  "generatedAt": "2026-07-10T02:36:36.557Z",
+  "fixtureDir": "data/fixtures/crown/transform-xml",
+  "source": {
+    "fixtureCounts": {},
+    "jsonResponseFiles": 0,
+    "xmlFiles": 5,
+    "htmlFiles": 1,
+    "invalidXmlFiles": 1,
+    "emptyXmlFiles": 0,
+    "loginExpiredFiles": 1,
+    "detections": {
+      "crown-transform-xml": 5
+    }
+  },
+  "totalRecords": 28,
+  "eventsByMode": {
+    "prematch": 2,
+    "live": 4
+  },
+  "byMode": {
+    "prematch": 10,
+    "live": 18
+  },
+  "byLeague": {
+    "Fixture Empty Odds League": 2,
+    "Fixture Live Only League": 4,
+    "Fixture Premier League": 8,
+    "Fixture Live League": 8,
+    "Fixture More League": 4,
+    "Fixture Suspended League": 2
+  },
+  "byEndpoint": {
+    "POST https://m407.mos077.com/transform.php p=get_game_list": 24,
+    "POST https://m407.mos077.com/transform.php p=get_game_more": 4
+  },
+  "byMarketType": {
+    "asian_handicap": 16,
+    "total": 12
+  },
+  "warnings": {
+    "crown-transform-xml": 28,
+    "real-event-id": 28,
+    "local-market-id": 28,
+    "local-selection-id": 28,
+    "missing-explicit-odds-id": 28,
+    "market-suspended": 4,
+    "market-closed": 2
+  }
+}

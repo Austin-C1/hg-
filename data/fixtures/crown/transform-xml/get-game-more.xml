@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<serverresponse>
+  <dataCount>1</dataCount>
+  <ec id="ec-8101" hasEC="Y" myGame="rb">
+    <game id="3001">
+      <SHOWTYPE>rb</SHOWTYPE>
+      <GID>3001</GID>
+      <GIDM>9101</GIDM>
+      <HGID>3002</HGID>
+      <ECID>8101</ECID>
+      <LID>7101</LID>
+      <DATETIME>07-08 08:00p</DATETIME>
+      <GAME_DATE_TIME>2026-07-08 20:00:00</GAME_DATE_TIME>
+      <LEAGUE>Fixture More League</LEAGUE>
+      <TEAM_H>More Home</TEAM_H>
+      <TEAM_C>More Away</TEAM_C>
+      <SCORE_H>2</SCORE_H>
+      <SCORE_C>2</SCORE_C>
+      <RETIMESET>2H^52:41</RETIMESET>
+      <GOPEN>Y</GOPEN>
+      <HGOPEN>N</HGOPEN>
+      <RATIO_RE>0 / 0.5</RATIO_RE>
+      <IOR_REH>0.920</IOR_REH>
+      <IOR_REC>0.900</IOR_REC>
+      <RATIO_ROUO>5 / 5.5</RATIO_ROUO>
+      <RATIO_ROUU>5 / 5.5</RATIO_ROUU>
+      <IOR_ROUH>0.800</IOR_ROUH>
+      <IOR_ROUC>1.000</IOR_ROUC>
+      <RATIO_ROUHO>2.5 / 3</RATIO_ROUHO>
+      <RATIO_ROUHU>2.5 / 3</RATIO_ROUHU>
+      <IOR_ROUHO>0.970</IOR_ROUHO>
+      <IOR_ROUHU>0.780</IOR_ROUHU>
+      <RATIO_ROUCO>2.5</RATIO_ROUCO>
+      <RATIO_ROUCU>2.5</RATIO_ROUCU>
+      <IOR_ROUCO>1.140</IOR_ROUCO>
+      <IOR_ROUCU>0.610</IOR_ROUCU>
+      <IOR_REOO>2.03</IOR_REOO>
+      <IOR_REOE>1.81</IOR_REOE>
+      <IOR_RTSY>1.42</IOR_RTSY>
+      <IOR_RTSN>2.60</IOR_RTSN>
+      <IS_RB>Y</IS_RB>
+    </game>
+  </ec>
+</serverresponse>

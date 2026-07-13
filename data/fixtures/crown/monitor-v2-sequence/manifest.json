@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "description": "Sanitized deterministic Crown monitor-v2 sequence: one list response followed by two event details and one changed detail.",
+  "steps": [
+    {
+      "sessionOrder": 0,
+      "pollId": "fixture-poll-20260708-120000",
+      "capturedAt": "2026-07-08T12:00:00.000Z",
+      "endpointKind": "get_game_list",
+      "file": "../transform-xml/get-game-list-today.xml",
+      "requestScope": {
+        "endpointKind": "get_game_list",
+        "p3type": "",
+        "date": "",
+        "gtype": "ft",
+        "showtype": "today",
+        "rtype": "r",
+        "ltype": "3",
+        "filter": "MIX"
+      }
+    },
+    {
+      "sessionOrder": 1,
+      "pollId": "fixture-poll-20260708-120000",
+      "capturedAt": "2026-07-08T12:00:01.000Z",
+      "endpointKind": "get_game_more",
+      "file": "detail-1001.xml",
+      "requestScope": {
+        "endpointKind": "get_game_more",
+        "gid": "1001",
+        "gtype": "ft",
+        "showtype": "today",
+        "ltype": "3",
+        "isRB": "N",
+        "lid": "7001",
+        "filter": "Main",
+        "ecid": "8001"
+      }
+    },
+    {
+      "sessionOrder": 2,
+      "pollId": "fixture-poll-20260708-120000",
+      "capturedAt": "2026-07-08T12:00:02.000Z",
+      "endpointKind": "get_game_more",
+      "file": "detail-2001.xml",
+      "requestScope": {
+        "endpointKind": "get_game_more",
+        "gid": "2001",
+        "gtype": "ft",
+        "showtype": "today",
+        "ltype": "3",
+        "isRB": "Y",
+        "lid": "7002",
+        "filter": "Main",
+        "ecid": "8002"
+      }
+    },
+    {
+      "sessionOrder": 3,
+      "pollId": "fixture-poll-20260708-120000",
+      "capturedAt": "2026-07-08T12:00:03.000Z",
+      "endpointKind": "get_game_more",
+      "file": "detail-1001-changed.xml",
+      "requestScope": {
+        "endpointKind": "get_game_more",
+        "gid": "1001",
+        "gtype": "ft",
+        "showtype": "today",
+        "ltype": "3",
+        "isRB": "N",
+        "lid": "7001",
+        "filter": "Main",
+        "ecid": "8001"
+      }
+    }
+  ]
+}
