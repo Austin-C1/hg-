@@ -158,7 +158,7 @@ export class CrownAccountPreviewProvider {
     if (this.offlineFixture) {
       let hostname = ''
       try { hostname = new URL(account.loginUrl).hostname.toLowerCase() } catch {}
-      if (hostname !== 'example.test' && !hostname.endsWith('.example.test')) {
+      if (hostname !== 'offline-preview.example.com') {
         throw new Error('offline-preview-fixture-origin-required')
       }
     }

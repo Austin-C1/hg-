@@ -422,7 +422,7 @@ test('app API creates, updates, and deletes monitor accounts and rules', async (
       body: JSON.stringify({
         label: '主监控账号',
         username: 'monitor-user',
-        loginUrl: 'https://example.test/login',
+        loginUrl: 'https://monitor.example.com',
         status: 'enabled',
         secret: 'monitor-password',
       }),
@@ -459,6 +459,112 @@ test('app API creates, updates, and deletes monitor accounts and rules', async (
   }, { CROWN_SECRET_KEY: 'api-secret-key-with-more-than-32-characters' })
 })
 
+test('manual-login API routes inherit security guards, reject payload fields, stay watcher-off, and return safe status only', async (t) => {
+  const calls = []
+  const monitorProcess = {
+    start() { calls.push({ type: 'watcher-start' }) },
+    stop() { calls.push({ type: 'watcher-stop' }) },
+  }
+  const unsafeStatus = (status, errorCode = '') => ({
+    challengeId: 'challenge-safe',
+    accountId: 'mon_owner',
+    status,
+    errorCode,
+    expiresAt: 61_000,
+    origin: 'https://monitor.example.com',
+    password: 'raw-password',
+    cookies: { SID: 'raw-cookie' },
+    uid: 'raw-uid',
+    nonce: 'raw-nonce',
+    raw: '<serverresponse>raw</serverresponse>',
+  })
+  const humanLoginController = {
+    async openManualLogin(input) { calls.push({ type: 'open', ...input }); return unsafeStatus('awaiting-user') },
+    getManualLoginStatus(input) { calls.push({ type: 'status', ...input }); return unsafeStatus('awaiting-user') },
+    async confirmManualLogin(input) { calls.push({ type: 'confirm', ...input }); return unsafeStatus('verified') },
+    async cancelManualLogin(input) { calls.push({ type: 'cancel', ...input }); return unsafeStatus('failed', 'manual-login-cancelled') },
+  }
+
+  await withAppServer(t, async (baseUrl) => {
+    const opened = await jsonFetch(`${baseUrl}/api/app/monitor-accounts/mon_owner/manual-login/open`, {
+      method: 'POST', body: '{}',
+    })
+    assert.equal(opened.response.status, 200)
+    assert.deepEqual(opened.payload.item, {
+      challengeId: 'challenge-safe', accountId: 'mon_owner', status: 'awaiting-user', errorCode: '', expiresAt: 61_000,
+    })
+
+    const status = await jsonFetch(`${baseUrl}/api/app/monitor-accounts/mon_owner/manual-login/challenge-safe`)
+    assert.equal(status.response.status, 200)
+    assert.equal(status.payload.item.status, 'awaiting-user')
+
+    const unauthenticatedStatus = await fetch(`${baseUrl}/api/app/monitor-accounts/mon_owner/manual-login/challenge-safe`)
+    assert.equal(unauthenticatedStatus.status, 401)
+    assert.deepEqual(await unauthenticatedStatus.json(), { error: 'authentication-required' })
+
+    const confirmed = await jsonFetch(`${baseUrl}/api/app/monitor-accounts/mon_owner/manual-login/challenge-safe/confirm`, {
+      method: 'POST', body: '{}',
+    })
+    assert.equal(confirmed.response.status, 200)
+    assert.equal(confirmed.payload.item.status, 'verified')
+
+    const cancelled = await jsonFetch(`${baseUrl}/api/app/monitor-accounts/mon_owner/manual-login/challenge-safe/cancel`, {
+      method: 'POST', body: '{}',
+    })
+    assert.equal(cancelled.response.status, 200)
+    assert.equal(cancelled.payload.item.errorCode, 'manual-login-cancelled')
+
+    for (const response of [opened, status, confirmed, cancelled]) {
+      assert.deepEqual(Object.keys(response.payload.item), ['challengeId', 'accountId', 'status', 'errorCode', 'expiresAt'])
+      assert.doesNotMatch(JSON.stringify(response.payload), /raw-password|raw-cookie|raw-uid|raw-nonce|serverresponse|"origin"/i)
+    }
+    assert.equal(calls.some((call) => call.type.startsWith('watcher-')), false)
+
+    const forbiddenBody = await jsonFetch(`${baseUrl}/api/app/monitor-accounts/mon_owner/manual-login/open`, {
+      method: 'POST', body: JSON.stringify({ password: 'must-not-enter-route' }),
+    })
+    assert.equal(forbiddenBody.response.status, 400)
+    assert.deepEqual(forbiddenBody.payload, {
+      error: 'validation-error', fields: { password: 'password is not allowed' },
+    })
+    assert.doesNotMatch(JSON.stringify(forbiddenBody.payload), /must-not-enter-route/)
+
+    const security = securityByOrigin.get(baseUrl)
+    const missingOrigin = await fetch(`${baseUrl}/api/app/monitor-accounts/mon_owner/manual-login/open`, {
+      method: 'POST',
+      headers: { cookie: security.cookie, 'x-csrf-token': security.csrfToken, 'content-type': 'application/json' },
+      body: '{}',
+    })
+    assert.equal(missingOrigin.status, 403)
+    assert.deepEqual(await missingOrigin.json(), { error: 'origin-required' })
+
+    const badCsrf = await fetch(`${baseUrl}/api/app/monitor-accounts/mon_owner/manual-login/open`, {
+      method: 'POST',
+      headers: { cookie: security.cookie, origin: baseUrl, 'x-csrf-token': 'wrong', 'content-type': 'application/json' },
+      body: '{}',
+    })
+    assert.equal(badCsrf.status, 403)
+    assert.deepEqual(await badCsrf.json(), { error: 'csrf-invalid' })
+  }, { CROWN_SECRET_KEY: 'api-secret-key-with-more-than-32-characters' }, {
+    monitorProcess,
+    humanLoginController,
+  })
+})
+
+test('monitor account API rejects default-scheme and path-truncating URLs', async (t) => {
+  await withAppServer(t, async (baseUrl) => {
+    for (const loginUrl of ['monitor.example.com', 'https://monitor.example.com/login']) {
+      const result = await jsonFetch(`${baseUrl}/api/app/monitor-accounts`, {
+        method: 'POST',
+        body: JSON.stringify({ label: 'invalid', username: 'owner', loginUrl, secret: 'password' }),
+      })
+      assert.equal(result.response.status, 400)
+      assert.equal(result.payload.error, 'validation-error')
+      assert.equal(Object.hasOwn(result.payload.fields, 'loginUrl'), true)
+    }
+  }, { CROWN_SECRET_KEY: 'api-secret-key-with-more-than-32-characters' })
+})
+
 test('app API exposes one Crown monitor account position with runtime status actions', async (t) => {
   await withAppServer(t, async (baseUrl) => {
     const saved = await jsonFetch(`${baseUrl}/api/app/monitor-account`, {
@@ -466,7 +572,7 @@ test('app API exposes one Crown monitor account position with runtime status act
       body: JSON.stringify({
         label: 'Primary Crown monitor',
         username: 'monitor-user',
-        loginUrl: 'https://example.test/login',
+        loginUrl: 'https://monitor.example.com',
         enabled: true,
         secret: 'monitor-password',
         oddsScanIntervalSeconds: 9,
@@ -498,7 +604,7 @@ test('app API exposes one Crown monitor account position with runtime status act
   }, { CROWN_SECRET_KEY: 'api-secret-key-with-more-than-32-characters' })
 })
 
-test('app API normalizes monitor account host and starts or stops the watcher process', async (t) => {
+test('app API preserves exact monitor origin and starts or stops the watcher process', async (t) => {
   const processCalls = []
   const monitorProcess = {
     start(options) {
@@ -517,7 +623,7 @@ test('app API normalizes monitor account host and starts or stops the watcher pr
       body: JSON.stringify({
         label: 'Primary Crown monitor',
         username: 'monitor-user',
-        loginUrl: 'm407.mos077.com',
+        loginUrl: 'https://m407.mos077.com',
         enabled: true,
         secret: 'monitor-password',
       }),
@@ -570,7 +676,7 @@ test('monitor relogin waits for delayed watcher exit before starting a replaceme
     await jsonFetch(`${baseUrl}/api/app/monitor-account`, {
       method: 'PUT',
       body: JSON.stringify({
-        label: 'Primary Crown monitor', username: 'monitor-user', loginUrl: 'm407.mos077.com',
+        label: 'Primary Crown monitor', username: 'monitor-user', loginUrl: 'https://m407.mos077.com',
         enabled: true, secret: 'monitor-password',
       }),
     })
@@ -608,7 +714,7 @@ test('monitor relogin returns a stable unsafe error and never starts a replaceme
     await jsonFetch(`${baseUrl}/api/app/monitor-account`, {
       method: 'PUT',
       body: JSON.stringify({
-        label: 'Primary Crown monitor', username: 'monitor-user', loginUrl: 'm407.mos077.com',
+        label: 'Primary Crown monitor', username: 'monitor-user', loginUrl: 'https://m407.mos077.com',
         enabled: true, secret: 'monitor-password',
       }),
     })
@@ -664,7 +770,7 @@ test('app API waits for test-login short run and returns LoginResult plus diagno
       body: JSON.stringify({
         label: 'Primary Crown monitor',
         username: 'monitor-user',
-        loginUrl: 'm407.mos077.com',
+        loginUrl: 'https://m407.mos077.com',
         enabled: true,
         secret: 'monitor-password',
       }),

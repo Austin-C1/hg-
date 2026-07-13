@@ -15,6 +15,8 @@ const DEFAULT_HOST = '127.0.0.1'
 const DEFAULT_PORT = 8787
 const DEFAULT_STATIC_DIR = 'frontend/dist'
 const INSTALLATION_ID = /^[A-Za-z0-9_-]{8,128}$/
+const LAUNCHER_TOKEN = /^[A-Za-z0-9_-]{43}$/
+const LAUNCHER_START_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
 const SESSION_COOKIE = 'crown_dashboard_session'
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000
 const DEFAULT_SESSION_MAX = 256
@@ -284,6 +286,20 @@ async function serveApi(req, requestUrl, res, {
 
   if (pathname === '/api/health') {
     const configuredInstallationId = appOptions.installationId || appOptions.env?.CROWN_INSTALLATION_ID || ''
+    const launcherEnv = appOptions.env || {}
+    const launchNonce = String(launcherEnv.CROWN_LAUNCHER_NONCE || '')
+    const launcherProcessStartTime = String(launcherEnv.CROWN_LAUNCHER_PROCESS_START_TIME || '')
+    const suppliedProbe = String(req.headers['x-crown-launcher-probe'] || '')
+    const launcherBinding = LAUNCHER_TOKEN.test(launchNonce)
+      && LAUNCHER_START_TIME.test(launcherProcessStartTime)
+      && new Date(launcherProcessStartTime).toISOString() === launcherProcessStartTime
+      ? {
+          launchNonce,
+          launcherPid: process.pid,
+          launcherProcessStartTime,
+          launcherProbe: LAUNCHER_TOKEN.test(suppliedProbe) ? suppliedProbe : '',
+        }
+      : {}
     sendJson(res, 200, {
       ok: true,
       app: 'crown-dashboard',
@@ -291,6 +307,7 @@ async function serveApi(req, requestUrl, res, {
       installationId: INSTALLATION_ID.test(configuredInstallationId) ? configuredInstallationId : '',
       version: APP_VERSION,
       appContractVersion: APP_CONTRACT_VERSION,
+      ...launcherBinding,
     })
     return true
   }

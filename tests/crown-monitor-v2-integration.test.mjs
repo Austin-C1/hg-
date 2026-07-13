@@ -147,7 +147,7 @@ test('fresh direct-v2 watcher poll warms authoritative and detail baselines befo
     changesPath: path.join(runtimeDir, 'crown-odds-changes-v2.jsonl'),
   })
   const stats = createWatcherStats()
-  const account = { id: 'mon_primary', loginUrl: 'https://fixture.invalid', consecutiveFailures: 0 }
+  const account = { id: 'mon_primary', loginUrl: 'https://fixture.example.com', consecutiveFailures: 0 }
   const configState = {
     current: {
       leagueConfig: null,
@@ -510,7 +510,7 @@ test('finite direct watcher wiring shares poll scope, chains rotated detail sess
       }
     },
   }
-  const account = { id: 'mon_primary', username: 'u', password: 'p', loginUrl: 'https://fixture.invalid', consecutiveFailures: 0 }
+  const account = { id: 'mon_primary', username: 'u', password: 'p', loginUrl: 'https://fixture.example.com', consecutiveFailures: 0 }
   const updates = []
   const stats = createWatcherStats()
 
@@ -549,7 +549,7 @@ test('direct poll marks incomplete authoritative XML as data-quality failure wit
   const dbPath = path.join(runtimeDir, 'crown.sqlite')
   const stateStore = openMonitorStateStore({ dbPath })
   const auditStore = new JsonlV2AuditStore({ snapshotsPath: path.join(runtimeDir, 's.jsonl'), changesPath: path.join(runtimeDir, 'c.jsonl') })
-  const account = { id: 'mon_primary', loginUrl: 'https://fixture.invalid', consecutiveFailures: 2, lastOddsParsedAt: 'old-odds-at' }
+  const account = { id: 'mon_primary', loginUrl: 'https://fixture.example.com', consecutiveFailures: 2, lastOddsParsedAt: 'old-odds-at' }
   const updates = []
   const stats = createWatcherStats()
   let detailCalls = 0
@@ -599,7 +599,7 @@ test('direct poll counts login-expired response or thrown session failure once a
     const dbPath = path.join(runtimeDir, 'crown.sqlite')
     const stateStore = openMonitorStateStore({ dbPath })
     const auditStore = new JsonlV2AuditStore({ snapshotsPath: path.join(runtimeDir, 's.jsonl'), changesPath: path.join(runtimeDir, 'c.jsonl') })
-    const account = { id: 'mon_primary', loginUrl: 'https://fixture.invalid', consecutiveFailures: 0 }
+    const account = { id: 'mon_primary', loginUrl: 'https://fixture.example.com', consecutiveFailures: 0 }
     const updates = []
     try {
       const result = await runDirectApiPollOnce(directArgs(runtimeDir, dbPath), {
@@ -632,7 +632,7 @@ test('direct poll treats a login-expired detail response as one session failure'
   const dbPath = path.join(runtimeDir, 'crown.sqlite')
   const stateStore = openMonitorStateStore({ dbPath })
   const auditStore = new JsonlV2AuditStore({ snapshotsPath: path.join(runtimeDir, 's.jsonl'), changesPath: path.join(runtimeDir, 'c.jsonl') })
-  const account = { id: 'mon_primary', loginUrl: 'https://fixture.invalid', consecutiveFailures: 0 }
+  const account = { id: 'mon_primary', loginUrl: 'https://fixture.example.com', consecutiveFailures: 0 }
   const updates = []
   const stats = createWatcherStats()
   try {
@@ -676,7 +676,7 @@ test('direct poll keeps malformed details degraded instead of overwriting health
   const dbPath = path.join(runtimeDir, 'crown.sqlite')
   const stateStore = openMonitorStateStore({ dbPath })
   const auditStore = new JsonlV2AuditStore({ snapshotsPath: path.join(runtimeDir, 's.jsonl'), changesPath: path.join(runtimeDir, 'c.jsonl') })
-  const account = { id: 'mon_primary', loginUrl: 'https://fixture.invalid', consecutiveFailures: 2, lastOddsParsedAt: 'old' }
+  const account = { id: 'mon_primary', loginUrl: 'https://fixture.example.com', consecutiveFailures: 2, lastOddsParsedAt: 'old' }
   const updates = []
   const stats = createWatcherStats()
   try {
@@ -724,7 +724,7 @@ test('direct watcher closes state when audit construction fails and closes audit
     stats: createWatcherStats(),
     configState: { current: disabledRuntimeConfig(), args },
     logger: { log() {}, error() {} },
-    monitorAccount: { id: 'mon_primary', username: 'u', password: 'p', loginUrl: 'https://fixture.invalid' },
+    monitorAccount: { id: 'mon_primary', username: 'u', password: 'p', loginUrl: 'https://fixture.example.com' },
   }
   const closed = []
   await assert.rejects(runDirectApiWatch(args, runtime, {

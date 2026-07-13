@@ -7,6 +7,7 @@ import {
   validateRuleCardCreatePayload,
   validateRuleCardDeletePayload,
   validateRuleCardUpdatePayload,
+  validateManualLoginMutationPayload,
 } from './app-validation.mjs'
 import { readLoginDiagnostics } from '../login/crown-login-diagnostics.mjs'
 import { CrownApiLoginManager } from '../login/crown-api-login-manager.mjs'
@@ -210,6 +211,32 @@ function todayBettingLeagueDto(item) {
   }
 }
 
+const MANUAL_LOGIN_STATES = new Set(['idle', 'opening', 'awaiting-user', 'verifying', 'verified', 'failed'])
+
+function manualLoginDto(item, expectedAccountId) {
+  const accountId = String(item?.accountId || '')
+  const challengeId = String(item?.challengeId || '')
+  const status = String(item?.status || '')
+  const errorCode = String(item?.errorCode || '')
+  const expiresAt = Number(item?.expiresAt)
+  if (
+    accountId !== String(expectedAccountId || '')
+    || !challengeId
+    || !MANUAL_LOGIN_STATES.has(status)
+    || (errorCode && !/^manual-login-[a-z0-9-]+$/.test(errorCode))
+    || !Number.isSafeInteger(expiresAt)
+    || expiresAt < 0
+  ) throw Object.assign(new Error('manual-login-state-invalid'), { code: 'manual-login-state-invalid' })
+  return { challengeId, accountId, status, errorCode, expiresAt }
+}
+
+function humanLoginController(options) {
+  if (!options.humanLoginController) {
+    throw Object.assign(new Error('manual-login-unavailable'), { code: 'manual-login-unavailable' })
+  }
+  return options.humanLoginController
+}
+
 async function dispatch(req, requestUrl, options = {}) {
   const parts = routeParts(requestUrl.pathname)
   const method = req.method || 'GET'
@@ -400,6 +427,37 @@ async function dispatch(req, requestUrl, options = {}) {
       if (method === 'GET') return { statusCode: 200, payload: { items: repo.listMonitorAccounts() } }
       if (method === 'POST') return { statusCode: 200, payload: { item: repo.createMonitorAccount(await readBody(req)) } }
       return { statusCode: 405, payload: { error: 'method-not-allowed' } }
+    }
+
+    if (parts.length >= 4 && parts[0] === 'monitor-accounts' && parts[2] === 'manual-login') {
+      if (!['password-session', 'local-trust'].includes(options.dashboardAccessMode)) {
+        return { statusCode: 401, payload: { error: 'authentication-required' } }
+      }
+      const controller = humanLoginController(options)
+      const accountId = parts[1]
+      if (parts.length === 4 && parts[3] === 'open') {
+        if (method !== 'POST') return { statusCode: 405, payload: { error: 'method-not-allowed' } }
+        validateManualLoginMutationPayload(await readBody(req))
+        const item = await controller.openManualLogin({ accountId })
+        return { statusCode: 200, payload: { item: manualLoginDto(item, accountId) } }
+      }
+      if (parts.length === 4) {
+        if (method !== 'GET') return { statusCode: 405, payload: { error: 'method-not-allowed' } }
+        const challengeId = parts[3]
+        const item = controller.getManualLoginStatus({ accountId, challengeId })
+        return { statusCode: 200, payload: { item: manualLoginDto(item, accountId) } }
+      }
+      if (parts.length === 5 && ['confirm', 'cancel'].includes(parts[4])) {
+        if (method !== 'POST') return { statusCode: 405, payload: { error: 'method-not-allowed' } }
+        validateManualLoginMutationPayload(await readBody(req))
+        const challengeId = parts[3]
+        const operation = parts[4] === 'confirm'
+          ? controller.confirmManualLogin.bind(controller)
+          : controller.cancelManualLogin.bind(controller)
+        const item = await operation({ accountId, challengeId })
+        return { statusCode: 200, payload: { item: manualLoginDto(item, accountId) } }
+      }
+      return { statusCode: 404, payload: { error: 'not-found' } }
     }
 
     if (parts.length === 2 && parts[0] === 'monitor-accounts') {
@@ -692,6 +750,21 @@ export async function handleAppApi(req, res, requestUrl, options = {}) {
     }
     if (error?.code === 'watcher-stop-unsafe' || String(error?.message || '') === 'watcher-stop-unsafe') {
       send(res, 503, { error: 'watcher-stop-unsafe' })
+      return true
+    }
+    const manualLoginCode = String(error?.code || error?.message || '')
+    if (/^manual-login-[a-z0-9-]+$/.test(manualLoginCode)) {
+      const statusCode = [
+        'manual-login-account-not-found',
+        'manual-login-challenge-not-found',
+        'manual-login-challenge-binding-mismatch',
+      ].includes(manualLoginCode) ? 404
+        : manualLoginCode === 'manual-login-challenge-expired' ? 410
+          : ['manual-login-busy', 'manual-login-challenge-state-invalid', 'manual-login-controller-closing'].includes(manualLoginCode) ? 409
+            : ['manual-login-verification-failed', 'manual-login-session-evidence-missing'].includes(manualLoginCode) ? 422
+              : ['manual-login-unavailable', 'manual-login-browser-open-failed'].includes(manualLoginCode) ? 503
+                : 400
+      send(res, statusCode, { error: manualLoginCode })
       return true
     }
     send(res, 500, { error: 'server-error' })

@@ -1,3 +1,5 @@
+import { normalizePublicHttpsExactOrigin } from '../login/crown-origin.mjs'
+
 export class ValidationError extends Error {
   constructor(error, fields = {}) {
     super(error)
@@ -183,6 +185,18 @@ function optionalUrl(value) {
   }
 }
 
+function optionalExactPublicOrigin(value, field) {
+  const text = optionalString(value)
+  if (!text) return ''
+  try {
+    return normalizePublicHttpsExactOrigin(text)
+  } catch {
+    throw new ValidationError('validation-error', {
+      [field]: `${field} must be a canonical public HTTPS origin without path, query, fragment, or credentials`,
+    })
+  }
+}
+
 function requiredString(payload, field, label = field) {
   const value = optionalString(payload[field])
   if (!value) throw new ValidationError('validation-error', { [field]: `${label} is required` })
@@ -279,7 +293,7 @@ export function normalizeMonitorAccount(payload, { partial = false } = {}) {
   const result = {}
   if (!partial || body.label !== undefined) result.label = partial ? optionalString(body.label) : requiredString(body, 'label')
   if (!partial || body.username !== undefined) result.username = partial ? optionalString(body.username) : requiredString(body, 'username')
-  if (!partial || body.loginUrl !== undefined) result.loginUrl = optionalUrl(body.loginUrl)
+  if (!partial || body.loginUrl !== undefined) result.loginUrl = optionalExactPublicOrigin(body.loginUrl, 'loginUrl')
   if (!partial || body.enabled !== undefined) result.enabled = booleanField(body, 'enabled', false)
   if (!partial || body.status !== undefined) result.status = enumField(body, 'status', ['enabled', 'disabled', 'needs-login', 'missing-secret'], 'disabled')
   if (!partial || body.notes !== undefined) result.notes = optionalString(body.notes)
@@ -298,6 +312,10 @@ export function normalizeMonitorAccount(payload, { partial = false } = {}) {
   if (!partial || body.lastLoginDiagnosticsPath !== undefined) result.lastLoginDiagnosticsPath = optionalString(body.lastLoginDiagnosticsPath)
   if (body.secret !== undefined) result.secret = String(body.secret || '')
   return result
+}
+
+export function validateManualLoginMutationPayload(payload) {
+  return validateExactPayload(payload, [])
 }
 
 export function normalizeLoginResult(payload) {

@@ -118,7 +118,7 @@ test('repository stores monitor accounts encrypted and returns only hasSecret', 
   const created = repo.createMonitorAccount({
     label: '主监控账号',
     username: 'monitor-user',
-    loginUrl: 'https://example.test/login',
+    loginUrl: 'https://monitor.example.com',
     status: 'enabled',
     secret: 'monitor-password',
     notes: '本地测试',
@@ -135,13 +135,33 @@ test('repository stores monitor accounts encrypted and returns only hasSecret', 
   assert.equal(rows[0].username, 'monitor-user')
 })
 
+test('repository requires an exact public HTTPS monitor origin and exposes a password-free manual-login owner', () => {
+  const { handle, repo } = createRepository()
+  assert.throws(() => repo.createMonitorAccount({
+    label: 'invalid', username: 'monitor-user', loginUrl: 'https://monitor.example.com/login', secret: 'password',
+  }), /validation-error/)
+  const created = repo.createMonitorAccount({
+    label: 'valid', username: 'monitor-user', loginUrl: 'https://monitor.example.com', secret: 'password',
+  })
+
+  const owner = repo.getMonitorAccountForManualLogin(created.id)
+  handle.close()
+  assert.deepEqual(owner, {
+    id: created.id,
+    accountId: created.id,
+    username: 'monitor-user',
+    loginUrl: 'https://monitor.example.com',
+  })
+  assert.doesNotMatch(JSON.stringify(owner), /password|secret|cipher/i)
+})
+
 test('repository stores and exposes monitor account LoginResult', () => {
   const { handle, repo } = createRepository()
 
   repo.savePrimaryMonitorAccount({
     label: '主监控账号',
     username: 'monitor-user',
-    loginUrl: 'https://example.test/login',
+    loginUrl: 'https://monitor.example.com',
     enabled: true,
     secret: 'monitor-password',
   })
@@ -176,7 +196,7 @@ test('repository clears stale diagnostics after a successful monitor account log
   repo.savePrimaryMonitorAccount({
     label: '主监控账号',
     username: 'monitor-user',
-    loginUrl: 'https://example.test/login',
+    loginUrl: 'https://monitor.example.com',
     enabled: true,
     secret: 'monitor-password',
   })

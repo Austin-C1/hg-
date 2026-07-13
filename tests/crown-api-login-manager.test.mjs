@@ -9,9 +9,23 @@ import {
   CrownApiLoginManager,
   CrownApiSessionStore,
   crownRequestScopeFromForm,
+  normalizeCrownBaseUrl,
 } from '../src/crown/login/crown-api-login-manager.mjs'
 
 const BETTING_ALLOWED_ORIGINS = 'https://m407.mos077.com'
+
+test('Crown API base URL requires the shared canonical public HTTPS exact origin', () => {
+  assert.equal(normalizeCrownBaseUrl('https://crown.example.com'), 'https://crown.example.com')
+  for (const value of [
+    'crown.example.com',
+    'https://crown.example.com/login',
+    'http://crown.example.com',
+    'https://localhost',
+    'https://8.8.8.8',
+  ]) {
+    assert.throws(() => normalizeCrownBaseUrl(value), /crown-origin-/)
+  }
+})
 
 function tempRuntimeDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'crown-api-login-'))
@@ -94,10 +108,10 @@ test('Crown API response decoding preserves valid UTF-8 and falls back to GB1803
   })
 
   const utf8 = await client.postForm({
-    baseUrl: 'https://crown.example.test', endpointPath: '/transform.php', form: { p: 'get_game_list' },
+    baseUrl: 'https://crown.example.com', endpointPath: '/transform.php', form: { p: 'get_game_list' },
   })
   const gb = await client.postForm({
-    baseUrl: 'https://crown.example.test', endpointPath: '/transform.php', form: { p: 'get_game_list' },
+    baseUrl: 'https://crown.example.com', endpointPath: '/transform.php', form: { p: 'get_game_list' },
   })
 
   assert.equal(utf8.text, utf8Xml)
@@ -659,7 +673,7 @@ test('strict owner store rejects an ownerless session instead of relabeling fore
     uid: 'foreign-uid',
     cookies: { SESSION: 'foreign-cookie' },
     username: 'foreign-user',
-    baseUrl: 'https://foreign.example.test',
+    baseUrl: 'https://foreign.example.com',
   }), /betting-session-owner-mismatch/)
   assert.equal(fs.existsSync(path.join(runtimeDir, 'crown-sessions', 'bet_target', 'api-session.json')), false)
 })
@@ -668,7 +682,7 @@ test('betting login failure exposes only a stable sanitized error', async () => 
   const rawResponse = '<serverresponse><status>error</status><msg>fake-sensitive-uid</msg><code_message>fake-sensitive-password fake-sensitive-cookie</code_message></serverresponse>'
   const manager = new CrownApiLoginManager({
     runtimeDir: tempRuntimeDir(),
-    bettingAllowedOrigins: 'https://crown.example.test',
+    bettingAllowedOrigins: 'https://crown.example.com',
     fetchImpl: async () => response(rawResponse),
   })
 
@@ -677,7 +691,7 @@ test('betting login failure exposes only a stable sanitized error', async () => 
       id: 'bet_error',
       username: 'fake-user',
       password: 'fake-password',
-      loginUrl: 'https://crown.example.test',
+      loginUrl: 'https://crown.example.com',
     },
   }).then(() => null, (reason) => reason)
   const serialized = JSON.stringify({ message: error?.message, details: error?.details })
@@ -697,7 +711,7 @@ test('betting origin allowlist is empty by default and rejects non-allowlisted o
     fetchImpl: async () => { networkCalls += 1; throw new Error('network-must-not-run') },
   })
   const account = {
-    id: 'bet_origin', username: 'user', password: 'password', loginUrl: 'https://crown.example.test',
+    id: 'bet_origin', username: 'user', password: 'password', loginUrl: 'https://crown.example.com',
   }
 
   await assert.rejects(() => manager.ensureBettingSession({ account }), /betting-origin-not-allowed/)
@@ -712,13 +726,13 @@ test('betting origin allowlist is empty by default and rejects non-allowlisted o
 
 test('betting origin allowlist requires public HTTPS exact origins without URL credentials', async () => {
   for (const origin of [
-    'http://crown.example.test',
+    'http://crown.example.com',
     'https://localhost',
     'https://service.internal',
     'https://127.0.0.1',
     'https://10.0.0.1',
-    'https://user:password@crown.example.test',
-    'https://crown.example.test/path',
+    'https://user:password@crown.example.com',
+    'https://crown.example.com/path',
   ]) {
     const invalidManager = new CrownApiLoginManager({
       runtimeDir: tempRuntimeDir(),
@@ -726,31 +740,31 @@ test('betting origin allowlist requires public HTTPS exact origins without URL c
       fetchImpl: async () => { throw new Error('network-must-not-run') },
     })
     await assert.rejects(() => invalidManager.ensureBettingSession({
-      account: { id: 'bet_invalid_allowlist', username: 'user', password: 'password', loginUrl: 'https://crown.example.test' },
+      account: { id: 'bet_invalid_allowlist', username: 'user', password: 'password', loginUrl: 'https://crown.example.com' },
     }), /betting-origin-allowlist-invalid/)
   }
 
   let networkCalls = 0
   const manager = new CrownApiLoginManager({
     runtimeDir: tempRuntimeDir(),
-    bettingAllowedOrigins: 'https://crown.example.test, https://other.example.test:8443',
+    bettingAllowedOrigins: 'https://crown.example.com, https://other.example.com:8443',
     fetchImpl: async () => { networkCalls += 1; throw new Error('network-must-not-run') },
   })
   const base = { id: 'bet_origin_exact', username: 'user', password: 'password' }
   await assert.rejects(() => manager.ensureBettingSession({
-    account: { ...base, loginUrl: 'https://not-allowed.example.test' },
+    account: { ...base, loginUrl: 'https://not-allowed.example.com' },
   }), /betting-origin-not-allowed/)
   await assert.rejects(() => manager.ensureBettingSession({
-    account: { ...base, loginUrl: 'https://user:password@crown.example.test' },
+    account: { ...base, loginUrl: 'https://user:password@crown.example.com' },
   }), /betting-origin-credentials-forbidden/)
   await assert.rejects(() => manager.ensureBettingSession({
-    account: { ...base, loginUrl: 'http://crown.example.test' },
+    account: { ...base, loginUrl: 'http://crown.example.com' },
   }), /betting-origin-https-required/)
   for (const loginUrl of [
-    'https://crown.example.test/',
-    'https://crown.example.test/path',
-    'https://crown.example.test?mode=bet',
-    'https://crown.example.test#bet',
+    'https://crown.example.com/',
+    'https://crown.example.com/path',
+    'https://crown.example.com?mode=bet',
+    'https://crown.example.com#bet',
   ]) {
     await assert.rejects(() => manager.ensureBettingSession({
       account: { ...base, loginUrl },
@@ -769,7 +783,7 @@ test('Crown API requests use manual redirects and reject 3xx without adopting re
   })
 
   const error = await client.postForm({
-    baseUrl: 'https://crown.example.test',
+    baseUrl: 'https://crown.example.com',
     endpointPath: '/transform.php',
     form: { p: 'get_game_list', uid: 'owner-uid' },
     cookies,
@@ -785,11 +799,11 @@ test('Crown API requests use manual redirects and reject 3xx without adopting re
 test('betting session fence runs around networks and before persistence', async () => {
   const runtimeDir = tempRuntimeDir()
   const account = {
-    id: 'bet_fenced_fresh', username: 'owner', password: 'password', loginUrl: 'https://crown.example.test',
+    id: 'bet_fenced_fresh', username: 'owner', password: 'password', loginUrl: 'https://crown.example.com',
   }
   const manager = new CrownApiLoginManager({
     runtimeDir,
-    bettingAllowedOrigins: 'https://crown.example.test',
+    bettingAllowedOrigins: 'https://crown.example.com',
     fetchImpl: fakeFetch([
       response(loginXml('fenced-uid'), { cookies: ['SESSION=fresh; Path=/'] }),
       response(gameListXml(), { cookies: ['SESSION=verified; Path=/'] }),
@@ -811,7 +825,7 @@ test('betting session fence runs around networks and before persistence', async 
 test('lease loss before cached-session invalidation propagates unchanged and preserves the old owner file', async () => {
   const runtimeDir = tempRuntimeDir()
   const account = {
-    id: 'bet_fenced_cached', username: 'owner', password: 'password', loginUrl: 'https://crown.example.test',
+    id: 'bet_fenced_cached', username: 'owner', password: 'password', loginUrl: 'https://crown.example.com',
   }
   const store = new CrownApiSessionStore({ accountId: account.id, runtimeDir, strictOwner: true })
   store.saveSession(account, {
@@ -821,7 +835,7 @@ test('lease loss before cached-session invalidation propagates unchanged and pre
   const before = fs.readFileSync(store.sessionPath(), 'utf8')
   const manager = new CrownApiLoginManager({
     runtimeDir,
-    bettingAllowedOrigins: 'https://crown.example.test',
+    bettingAllowedOrigins: 'https://crown.example.com',
     fetchImpl: fakeFetch([response('<serverresponse><status>error</status><msg>expired</msg></serverresponse>')]),
   })
   const leaseError = new Error('lease-owner-stale-before-invalidate')
@@ -843,7 +857,7 @@ test('lease loss before cached-session invalidation propagates unchanged and pre
 test('lease loss after betting detail network propagates unchanged and does not save rotated cookies', async () => {
   const runtimeDir = tempRuntimeDir()
   const account = {
-    id: 'bet_fenced_detail', username: 'owner', loginUrl: 'https://crown.example.test',
+    id: 'bet_fenced_detail', username: 'owner', loginUrl: 'https://crown.example.com',
   }
   const store = new CrownApiSessionStore({ accountId: account.id, runtimeDir, strictOwner: true })
   const session = store.saveSession(account, {
@@ -853,7 +867,7 @@ test('lease loss after betting detail network propagates unchanged and does not 
   const before = fs.readFileSync(store.sessionPath(), 'utf8')
   const manager = new CrownApiLoginManager({
     runtimeDir,
-    bettingAllowedOrigins: 'https://crown.example.test',
+    bettingAllowedOrigins: 'https://crown.example.com',
     fetchImpl: fakeFetch([response(gameListXml(), { cookies: ['SESSION=rotated-cookie; Path=/'] })]),
   })
   const leaseError = new Error('lease-owner-stale-after-detail')

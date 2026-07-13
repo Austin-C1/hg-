@@ -10,16 +10,21 @@ function tempRuntimeDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'crown-login-manager-'))
 }
 
-function fakeContext() {
-  const calls = { addCookies: [], cookies: 0, storageState: 0 }
+function fakeContext(page = null) {
+  const calls = { addCookies: [], cookies: 0, storageState: 0, routes: 0, unroutes: 0 }
   return {
     calls,
+    async route(_pattern, handler) {
+      calls.routes += 1
+      this.routeHandler = handler
+    },
+    async unroute() { calls.unroutes += 1 },
     async addCookies(cookies) {
       calls.addCookies.push(cookies)
     },
     async cookies() {
       calls.cookies += 1
-      return [{ name: 'uid', value: 'fresh', domain: '.example.test', path: '/', expires: Math.floor(Date.now() / 1000) + 3600 }]
+      return [{ name: 'uid', value: 'fresh', domain: '.crown.example.com', path: '/', expires: Math.floor(Date.now() / 1000) + 3600 }]
     },
     async storageState() {
       calls.storageState += 1
@@ -41,11 +46,16 @@ function fakeLocator({ count = 1, visible = true } = {}) {
 function fakePage({ firstState = '已登录', secondState = '已登录', form = true, human = false } = {}) {
   const calls = { fills: [], clicks: 0, goto: 0 }
   let sessionCalls = 0
+  let currentUrl = 'https://crown.example.com'
+  const mainFrame = {}
   return {
     calls,
-    async goto() {
+    async goto(url) {
       calls.goto += 1
+      currentUrl = url
     },
+    url() { return currentUrl },
+    mainFrame() { return mainFrame },
     locator(selector) {
       if (selector.includes('password')) {
         return form ? {
@@ -78,11 +88,11 @@ function fakePage({ firstState = '已登录', secondState = '已登录', form = 
     async evaluate() {
       sessionCalls += 1
       if (human) {
-        return { title: 'Verify', url: 'https://example.test', bodyText: '滑块验证码', inputs: [], buttons: [], iframes: [] }
+        return { title: 'Verify', url: 'https://crown.example.com', bodyText: '滑块验证码', inputs: [], buttons: [], iframes: [] }
       }
       const status = sessionCalls === 1 ? firstState : secondState
-      if (status === '已登录') return { title: '足球', url: 'https://example.test', bodyText: '足球 让球 今日赛事', inputs: [], buttons: [], iframes: [] }
-      return { title: 'Welcome', url: 'https://example.test', bodyText: 'Welcome Login', inputs: [{ type: 'text', name: 'username', visible: true, value: '' }, { type: 'password', name: 'password', visible: true, value: '' }], buttons: [] }
+      if (status === '已登录') return { title: '足球', url: 'https://crown.example.com', bodyText: '足球 让球 今日赛事', inputs: [], buttons: [], iframes: [] }
+      return { title: 'Welcome', url: 'https://crown.example.com', bodyText: 'Welcome Login', inputs: [{ type: 'text', name: 'username', visible: true, value: '' }, { type: 'password', name: 'password', visible: true, value: '' }], buttons: [] }
     },
     async screenshot({ path: screenshotPath }) {
       fs.writeFileSync(screenshotPath, 'png', 'utf8')
@@ -96,9 +106,13 @@ function fakePage({ firstState = '已登录', secondState = '已登录', form = 
 function fakeCrownLoginPage() {
   const calls = { fills: [], clicks: 0, promptClicks: 0, waitedSelector: '' }
   let sessionCalls = 0
+  let currentUrl = 'https://m407.mos077.com'
+  const mainFrame = {}
   return {
     calls,
-    async goto() {},
+    async goto(url) { currentUrl = url },
+    url() { return currentUrl },
+    mainFrame() { return mainFrame },
     async waitForSelector(selector) {
       calls.waitedSelector = selector
     },
@@ -170,8 +184,8 @@ function fakeCrownLoginPage() {
 test('login manager uses valid cookies without filling credentials', async () => {
   const runtimeDir = tempRuntimeDir()
   const manager = new CrownLoginManager({ runtimeDir })
-  const account = { id: 'mon_primary', username: 'mon-user', password: 'mon-pass', loginUrl: 'https://example.test' }
-  manager.cookieStoreFor(account).writeCookies([{ name: 'uid', value: 'cookie', domain: '.example.test', path: '/', expires: Math.floor(Date.now() / 1000) + 3600 }])
+  const account = { id: 'mon_primary', username: 'mon-user', password: 'mon-pass', loginUrl: 'https://crown.example.com' }
+  manager.cookieStoreFor(account).writeCookies([{ name: 'uid', value: 'cookie', domain: '.crown.example.com', path: '/', expires: Math.floor(Date.now() / 1000) + 3600 }])
   const page = fakePage({ firstState: '已登录' })
 
   const result = await manager.ensureLogin({ page, context: fakeContext(), account, verifyXml: async () => true })
@@ -186,18 +200,20 @@ test('login manager uses valid cookies without filling credentials', async () =>
 test('login manager falls back to credentials when cookies are invalid', async () => {
   const runtimeDir = tempRuntimeDir()
   const manager = new CrownLoginManager({ runtimeDir })
-  const account = { id: 'mon_primary', username: 'mon-user', password: 'mon-pass', loginUrl: 'https://example.test' }
-  manager.cookieStoreFor(account).writeCookies([{ name: 'old', value: '1', domain: '.example.test', path: '/', expires: 1 }])
+  const account = { id: 'mon_primary', username: 'mon-user', password: 'mon-pass', loginUrl: 'https://crown.example.com' }
+  manager.cookieStoreFor(account).writeCookies([{ name: 'old', value: '1', domain: '.crown.example.com', path: '/', expires: 1 }])
   const page = fakePage({ firstState: '登录失效', secondState: '已登录' })
+  const context = fakeContext()
 
-  const result = await manager.ensureLogin({ page, context: fakeContext(), account })
+  const result = await manager.ensureLogin({ page, context, account, verifyXml: async () => true })
 
   assert.equal(result.ok, true)
   assert.equal(result.loginMethod, '账号密码')
   assert.equal(result.status, '已登录')
   assert.equal(page.calls.fills.some((call) => call.value === 'mon-user'), true)
   assert.equal(page.calls.fills.some((call) => call.value === 'mon-pass'), true)
-  assert.equal(fs.existsSync(path.join(runtimeDir, 'crown-sessions', 'mon_primary', 'storage-state.json')), true)
+  assert.equal(fs.existsSync(path.join(runtimeDir, 'crown-sessions', 'mon_primary', 'storage-state.json')), false)
+  assert.equal(context.calls.storageState, 0)
 })
 
 test('login manager supports the real Crown usr pwd and btn_login controls', async () => {
@@ -205,7 +221,7 @@ test('login manager supports the real Crown usr pwd and btn_login controls', asy
   const account = { id: 'mon_primary', username: 'mon-user', password: 'mon-pass', loginUrl: 'https://m407.mos077.com' }
   const page = fakeCrownLoginPage()
 
-  const result = await manager.ensureLogin({ page, context: fakeContext(), account })
+  const result = await manager.ensureLogin({ page, context: fakeContext(), account, verifyXml: async () => true })
 
   assert.equal(result.ok, true)
   assert.equal(result.loginMethod, '账号密码')
@@ -218,7 +234,7 @@ test('login manager supports the real Crown usr pwd and btn_login controls', asy
 
 test('login manager saves diagnostics when login form is not found', async () => {
   const manager = new CrownLoginManager({ runtimeDir: tempRuntimeDir() })
-  const account = { id: 'mon_primary', username: 'mon-user', password: 'mon-pass', loginUrl: 'https://example.test' }
+  const account = { id: 'mon_primary', username: 'mon-user', password: 'mon-pass', loginUrl: 'https://crown.example.com' }
   const result = await manager.ensureLogin({ page: fakePage({ firstState: '登录失效', form: false }), context: fakeContext(), account })
 
   assert.equal(result.ok, false)
@@ -229,9 +245,86 @@ test('login manager saves diagnostics when login form is not found', async () =>
 
 test('login manager returns 需要人工验证 when the page asks for human verification', async () => {
   const manager = new CrownLoginManager({ runtimeDir: tempRuntimeDir() })
-  const account = { id: 'mon_primary', username: 'mon-user', password: 'mon-pass', loginUrl: 'https://example.test' }
+  const account = { id: 'mon_primary', username: 'mon-user', password: 'mon-pass', loginUrl: 'https://crown.example.com' }
   const result = await manager.ensureLogin({ page: fakePage({ human: true }), context: fakeContext(), account })
 
   assert.equal(result.ok, false)
   assert.equal(result.status, '需要人工验证')
+})
+
+test('login manager rejects non-exact account URLs before browser or storage access', async () => {
+  const manager = new CrownLoginManager({ runtimeDir: tempRuntimeDir() })
+  const page = fakePage()
+  const context = fakeContext()
+  await assert.rejects(() => manager.ensureLogin({
+    page,
+    context,
+    account: { id: 'mon_primary', username: 'mon-user', password: 'mon-pass', loginUrl: 'https://crown.example.com/login' },
+  }), /crown-origin-exact-required/)
+  assert.equal(page.calls.goto, 0)
+  assert.equal(context.calls.storageState, 0)
+})
+
+test('login manager aborts a foreign main-frame redirect before credentials and preserves old cookies', async () => {
+  const runtimeDir = tempRuntimeDir()
+  const manager = new CrownLoginManager({ runtimeDir })
+  const account = { id: 'mon_primary', username: 'mon-user', password: 'mon-pass', loginUrl: 'https://crown.example.com' }
+  const store = manager.cookieStoreFor(account)
+  store.writeCookies([{ name: 'old', value: 'keep', domain: '.crown.example.com', path: '/', expires: 1 }])
+  const before = fs.readFileSync(store.cookiesPath())
+  const calls = { fills: 0, clicks: 0, aborted: 0 }
+  const mainFrame = {}
+  const page = {
+    async goto() { throw new Error('navigation interrupted by redirect') },
+    url() { return 'https://evil.example.com/login' },
+    mainFrame() { return mainFrame },
+    locator() {
+      return {
+        first() { return this }, async count() { return 1 }, async isVisible() { return true },
+        async fill() { calls.fills += 1 }, async click() { calls.clicks += 1 },
+      }
+    },
+  }
+  const context = fakeContext(page)
+  context.route = async (_pattern, handler) => {
+    context.calls.routes += 1
+    await handler({
+      request: () => ({
+        isNavigationRequest: () => true,
+        frame: () => mainFrame,
+        url: () => 'https://evil.example.com/login',
+      }),
+      abort: async () => { calls.aborted += 1 },
+      continue: async () => {},
+    })
+  }
+
+  await assert.rejects(
+    () => manager.ensureLogin({ page, context, account, verifyXml: async () => true }),
+    /crown-login-origin-violation/,
+  )
+  assert.equal(calls.aborted, 1)
+  assert.equal(calls.fills, 0)
+  assert.equal(calls.clicks, 0)
+  assert.deepEqual(fs.readFileSync(store.cookiesPath()), before)
+})
+
+test('login manager requires explicit read-only verification before atomically replacing cookies', async () => {
+  for (const verifyXml of [async () => false, async () => { throw new Error('raw verifier failure') }]) {
+    const runtimeDir = tempRuntimeDir()
+    const manager = new CrownLoginManager({ runtimeDir })
+    const account = { id: 'mon_primary', username: 'mon-user', password: 'mon-pass', loginUrl: 'https://crown.example.com' }
+    const store = manager.cookieStoreFor(account)
+    store.writeCookies([{ name: 'old', value: 'keep', domain: '.crown.example.com', path: '/', expires: Math.floor(Date.now() / 1000) + 3600 }])
+    const before = fs.readFileSync(store.cookiesPath())
+    const context = fakeContext()
+
+    const result = await manager.ensureLogin({ page: fakePage(), context, account, verifyXml })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.sessionVerified, false)
+    assert.equal(result.message, 'crown-login-readonly-verification-failed')
+    assert.equal(context.calls.cookies, 0)
+    assert.deepEqual(fs.readFileSync(store.cookiesPath()), before)
+  }
 })

@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 
 function ensureParent(file) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -11,7 +12,39 @@ function readJsonFile(file) {
 
 function writeJsonFile(file, value) {
   ensureParent(file)
-  fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  const payload = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${randomUUID()}.tmp`)
+  let descriptor = null
+  let published = false
+  try {
+    descriptor = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600)
+    fs.writeFileSync(descriptor, payload)
+    fs.fsyncSync(descriptor)
+    const opened = fs.fstatSync(descriptor)
+    const linked = fs.lstatSync(temporary)
+    if (!opened.isFile() || !linked.isFile() || opened.dev !== linked.dev || opened.ino !== linked.ino) {
+      throw new Error('crown-cookie-temp-identity-mismatch')
+    }
+    fs.closeSync(descriptor)
+    descriptor = null
+    fs.renameSync(temporary, file)
+    published = true
+    descriptor = fs.openSync(file, fs.constants.O_RDWR)
+    const targetOpened = fs.fstatSync(descriptor)
+    const targetLinked = fs.lstatSync(file)
+    if (!targetOpened.isFile() || !targetLinked.isFile()
+      || targetOpened.dev !== targetLinked.dev || targetOpened.ino !== targetLinked.ino) {
+      throw new Error('crown-cookie-publish-identity-mismatch')
+    }
+    fs.fsyncSync(descriptor)
+  } finally {
+    if (descriptor !== null) {
+      try { fs.closeSync(descriptor) } catch {}
+    }
+    if (!published) {
+      try { fs.rmSync(temporary, { force: true }) } catch {}
+    }
+  }
 }
 
 function cookieExpiresAt(cookie) {

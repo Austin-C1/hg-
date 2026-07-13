@@ -559,7 +559,7 @@ export class ManualLoginBridge {
 
     let session
     try {
-      const result = await this.verifyGameList(candidate)
+      const result = await this.verifyGameList(candidate, { signal: input.signal })
       session = verifiedSession(result, candidate, challenge.origin)
     } catch {
       return this._fail(challenge, 'manual-login-verification-failed')

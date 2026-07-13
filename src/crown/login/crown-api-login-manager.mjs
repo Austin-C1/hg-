@@ -1,9 +1,9 @@
 import fs from 'node:fs'
-import { isIP } from 'node:net'
 import path from 'node:path'
 
 import { classifyCrownTransformText } from '../crown-transform-xml.mjs'
 import { saveLoginDiagnostics } from './crown-login-diagnostics.mjs'
+import { normalizePublicHttpsExactOrigin } from './crown-origin.mjs'
 
 function nowIso() {
   return new Date().toISOString()
@@ -13,36 +13,23 @@ function accountId(account = {}) {
   return account.accountId || account.id || 'mon_primary'
 }
 
-function privateBettingHostname(hostname) {
-  const value = String(hostname || '').toLowerCase().replace(/\.$/, '')
-  return !value.includes('.')
-    || value === 'localhost'
-    || ['.localhost', '.local', '.internal', '.lan', '.home', '.corp'].some((suffix) => value.endsWith(suffix))
-    || isIP(value) !== 0
-}
-
 function parseBettingOrigin(value, { allowlist = false } = {}) {
-  const raw = String(value || '').trim()
-  let url
-  try { url = new URL(raw) } catch {
-    throw new CrownApiLoginError('failed_config', allowlist ? 'betting-origin-allowlist-invalid' : 'betting-origin-invalid')
-  }
-  if (url.username || url.password) {
-    throw new CrownApiLoginError('failed_config', allowlist ? 'betting-origin-allowlist-invalid' : 'betting-origin-credentials-forbidden')
-  }
-  if (url.protocol !== 'https:') {
-    throw new CrownApiLoginError('failed_config', allowlist ? 'betting-origin-allowlist-invalid' : 'betting-origin-https-required')
-  }
-  if (!url.hostname || privateBettingHostname(url.hostname)) {
-    throw new CrownApiLoginError('failed_config', allowlist ? 'betting-origin-allowlist-invalid' : 'betting-origin-private-forbidden')
-  }
-  if (url.pathname !== '/' || url.search || url.hash || raw !== url.origin) {
+  try {
+    return normalizePublicHttpsExactOrigin(value)
+  } catch (error) {
+    if (allowlist) throw new CrownApiLoginError('failed_config', 'betting-origin-allowlist-invalid')
+    const messages = {
+      'crown-origin-credentials-forbidden': 'betting-origin-credentials-forbidden',
+      'crown-origin-https-required': 'betting-origin-https-required',
+      'crown-origin-exact-required': 'betting-origin-exact-required',
+      'crown-origin-public-host-required': 'betting-origin-private-forbidden',
+      'crown-origin-ip-forbidden': 'betting-origin-private-forbidden',
+    }
     throw new CrownApiLoginError(
       'failed_config',
-      allowlist ? 'betting-origin-allowlist-invalid' : 'betting-origin-exact-required',
+      messages[String(error?.message || '')] || 'betting-origin-invalid',
     )
   }
-  return url.origin
 }
 
 function bettingOriginAllowlist(value) {
@@ -116,11 +103,11 @@ function writeJsonFile(file, value) {
 }
 
 export function normalizeCrownBaseUrl(value) {
-  const raw = String(value || '').trim()
-  if (!raw) throw new CrownApiLoginError('failed_config', 'crown platform url is empty')
-  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
-  const url = new URL(withScheme)
-  return `${url.protocol}//${url.host}`.replace(/\/$/, '')
+  try {
+    return normalizePublicHttpsExactOrigin(value)
+  } catch (error) {
+    throw new CrownApiLoginError('failed_config', String(error?.message || 'crown-origin-invalid'))
+  }
 }
 
 function xmlTag(text, tagName) {
@@ -377,7 +364,7 @@ export class CrownApiClient {
     this.fetchImpl = fetchImpl
   }
 
-  async postForm({ baseUrl, endpointPath, form, cookies = {} }) {
+  async postForm({ baseUrl, endpointPath, form, cookies = {}, signal }) {
     if (typeof this.fetchImpl !== 'function') throw new CrownApiLoginError('failed_config', 'fetch is unavailable')
     const url = `${baseUrl.replace(/\/$/, '')}${endpointPath}`
     const headers = {
@@ -392,6 +379,7 @@ export class CrownApiClient {
       headers,
       body: new URLSearchParams(form).toString(),
       redirect: 'manual',
+      signal,
     })
     if (response.status >= 300 && response.status < 400) {
       throw new CrownApiLoginError('failed_http', 'crown redirect blocked', { status: response.status })
@@ -450,7 +438,7 @@ export class CrownApiClient {
     }
   }
 
-  async fetchGameList(session = {}) {
+  async fetchGameList(session = {}, { signal } = {}) {
     const cookies = { ...(session.cookies || {}) }
     const form = {
       uid: session.uid,
@@ -473,6 +461,7 @@ export class CrownApiClient {
       endpointPath: '/transform.php',
       form,
       cookies,
+      signal,
     })
     const failure = parseCrownApiSessionFailure(text)
     if (failure) throw new CrownApiLoginError('failed_login', `crown session expired: ${failure}`, { text, failure })

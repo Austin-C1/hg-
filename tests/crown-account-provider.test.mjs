@@ -132,14 +132,14 @@ function setup({
   preview = previewXml(),
   previewCookies = ['SESSION=preview-rotated; Path=/'],
   previewStatus = 200,
-  bettingAllowedOrigins = 'https://crown.example.test',
+  bettingAllowedOrigins = 'https://offline-preview.example.com',
 } = {}) {
   const handle = openAppDatabase({ dbPath: ':memory:' })
   const repository = createAppRepository(handle.db, { secretKey: 'provider-test-secret-key-with-more-than-32-characters' })
   const account = repository.createBettingAccount({
     username: 'bet-owner',
     password: 'bet-password',
-    websiteUrl: 'https://crown.example.test',
+    websiteUrl: 'https://offline-preview.example.com',
     status: 'enabled',
     betOrder: 1,
     perBetLimit: '100',

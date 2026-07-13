@@ -260,12 +260,13 @@ test('ordered shutdown continues every safe stop after an earlier failure', asyn
   const result = await shutdownDashboardRuntime({
     disableRealBetting: async () => { events.push('real-intent'); throw new Error('intent-failed') },
     bettingProcess: { stop: async () => { events.push('worker') } },
+    humanLoginController: { shutdown: async () => { events.push('human-login') } },
     monitorProcess: { stopAndWait: async () => { events.push('monitor') } },
     convergeDatabase: async () => { events.push('database') },
     closeHttp: async () => { events.push('http') },
     onError: (error) => errors.push(error.message),
   })
-  assert.deepEqual(events, ['real-intent', 'worker', 'monitor', 'database', 'http'])
+  assert.deepEqual(events, ['real-intent', 'worker', 'human-login', 'monitor', 'database', 'http'])
   assert.equal(result.ok, false)
   assert.deepEqual(errors, ['intent-failed'])
 })

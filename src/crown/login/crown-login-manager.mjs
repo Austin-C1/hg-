@@ -1,4 +1,5 @@
 import { CrownCookieStore } from './crown-cookie-store.mjs'
+import { normalizePublicHttpsExactOrigin } from './crown-origin.mjs'
 import { detectPageSession } from './crown-session-detector.mjs'
 import { saveLoginDiagnostics } from './crown-login-diagnostics.mjs'
 
@@ -53,6 +54,12 @@ function message(error) {
   return String(error?.message || error || '')
 }
 
+function loginError(code) {
+  const error = new Error(code)
+  error.code = code
+  return error
+}
+
 function baseResult(account, startedAt) {
   return {
     ok: false,
@@ -84,9 +91,44 @@ function log(logger, type, payload = {}) {
   else if (typeof logger?.log === 'function') logger.log({ type, at: nowIso(), ...payload })
 }
 
-async function gotoLoginUrl(page, account) {
+function assertExactPageOrigin(page, origin, violated = false) {
+  let currentOrigin = ''
+  try { currentOrigin = new URL(String(page?.url?.() || '')).origin } catch {}
+  if (violated || currentOrigin !== origin) throw loginError('crown-login-origin-violation')
+}
+
+async function installMainFrameOriginGuard({ context, page, origin }) {
+  if (typeof context?.route !== 'function' || typeof context?.unroute !== 'function') {
+    throw loginError('crown-login-origin-guard-unavailable')
+  }
+  let violated = false
+  const pattern = '**/*'
+  const handler = async (route) => {
+    const request = route.request()
+    const isMainFrameNavigation = request?.isNavigationRequest?.() === true
+      && request?.frame?.() === page?.mainFrame?.()
+    let allowed = true
+    if (isMainFrameNavigation) {
+      try { allowed = new URL(String(request.url())).origin === origin } catch { allowed = false }
+    }
+    if (!allowed) {
+      violated = true
+      await route.abort('blockedbyclient')
+      return
+    }
+    await route.continue()
+  }
+  await context.route(pattern, handler)
+  return {
+    assert() { assertExactPageOrigin(page, origin, violated) },
+    async dispose() { await context.unroute(pattern, handler).catch(() => {}) },
+  }
+}
+
+async function gotoLoginUrl(page, account, originGuard) {
   if (account?.loginUrl && typeof page?.goto === 'function') {
     await page.goto(account.loginUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {})
+    originGuard.assert()
     await page.waitForSelector?.([
       '#pwd',
       'input[type="password"]',
@@ -98,51 +140,59 @@ async function gotoLoginUrl(page, account) {
   }
 }
 
-async function fillFirstVisible(page, selectors, value) {
+async function fillFirstVisible(page, selectors, value, assertOrigin = () => {}) {
   for (const selector of selectors) {
     const locator = page.locator(selector).first()
     if (await locator.count().catch(() => 0) === 0) continue
     if (!(await locator.isVisible().catch(() => false))) continue
+    assertOrigin()
     await locator.fill(value, { timeout: 5000 })
     return true
   }
   return false
 }
 
-async function clickFirstVisible(page, selectors) {
+async function clickFirstVisible(page, selectors, assertOrigin = () => {}) {
   for (const selector of selectors) {
     const locator = page.locator(selector).first()
     if (await locator.count().catch(() => 0) === 0) continue
     if (!(await locator.isVisible().catch(() => false))) continue
+    assertOrigin()
     await locator.click({ timeout: 5000 })
     return true
   }
   return false
 }
 
-async function submitLoginForm(page) {
-  if (await clickFirstVisible(page, SUBMIT_SELECTORS)) return true
+async function submitLoginForm(page, assertOrigin) {
+  if (await clickFirstVisible(page, SUBMIT_SELECTORS, assertOrigin)) return true
+  assertOrigin()
   await page.keyboard?.press?.('Enter').catch(() => {})
   return true
 }
 
-async function dismissOptionalPostLoginPrompts(page) {
+async function dismissOptionalPostLoginPrompts(page, assertOrigin) {
   const clicked = await clickFirstVisible(page, [
     '#no_btn:visible',
     '#C_no_btn:visible',
     'button:has-text("否")',
     'div:has-text("否")',
-  ]).catch(() => false)
+  ], assertOrigin).catch((error) => {
+    if (error?.code === 'crown-login-origin-violation') throw error
+    return false
+  })
   if (clicked) return true
 
   for (const selector of ['#C_no_btn', '#no_btn']) {
     const box = await page.locator?.(selector)?.boundingBox?.().catch(() => null)
     if (box?.width > 0 && box?.height > 0 && typeof page.mouse?.click === 'function') {
+      assertOrigin()
       await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
       return true
     }
   }
 
+  assertOrigin()
   return page.evaluate?.(() => {
     const candidates = Array.from(document.querySelectorAll('#no_btn,#C_no_btn,.btn_cancel'))
     const visible = candidates.find((element) => {
@@ -163,6 +213,13 @@ async function runXmlVerification(verifyXml) {
   if (typeof value === 'boolean') return { xmlVerified: value }
   if (value && typeof value === 'object') return { xmlVerified: Boolean(value.xmlVerified ?? value.ok), ...value }
   return { xmlVerified: false }
+}
+
+function exactOriginCookies(cookies, origin) {
+  const hostname = new URL(origin).hostname.toLowerCase()
+  return (Array.isArray(cookies) ? cookies : []).filter((cookie) => (
+    String(cookie?.domain || '').toLowerCase().replace(/^\./, '') === hostname
+  ))
 }
 
 export class CrownLoginManager {
@@ -186,16 +243,45 @@ export class CrownLoginManager {
   }
 
   async success(result, { account, context, store, loginMethod, verifyXml, logger }) {
-    await store.saveFromContext(context)
-    log(logger, 'storage-state-saved', { accountId: accountId(account) })
-    const xml = await runXmlVerification(verifyXml)
+    let xml
+    try {
+      xml = await runXmlVerification(verifyXml)
+      if (xml.xmlVerified !== true) throw loginError('crown-login-readonly-verification-failed')
+    } catch {
+      log(logger, 'session-verification-failed', {
+        accountId: accountId(account), errorCode: 'crown-login-readonly-verification-failed',
+      })
+      return finish(result, {
+        ok: false,
+        status: '登录失效',
+        xmlVerified: false,
+        sessionVerified: false,
+        message: 'crown-login-readonly-verification-failed',
+      })
+    }
+    let cookies
+    try {
+      cookies = typeof context?.cookies === 'function'
+        ? exactOriginCookies(await context.cookies([account.loginUrl]), account.loginUrl)
+        : []
+      store.writeCookies(cookies)
+    } catch {
+      return finish(result, {
+        ok: false,
+        status: '登录失效',
+        xmlVerified: true,
+        sessionVerified: false,
+        message: 'crown-login-cookie-save-failed',
+      })
+    }
+    log(logger, 'exact-origin-cookies-saved', { accountId: accountId(account), cookieCount: cookies.length })
     log(logger, 'session-verified', { accountId: accountId(account), xmlVerified: xml.xmlVerified })
     return finish(result, {
       ok: true,
       status: '已登录',
       loginMethod,
-      cookieStatus: result.cookieStatus,
-      storageStateStatus: result.storageStateStatus,
+      cookieStatus: '已保存',
+      storageStateStatus: '不适用',
       xmlVerified: Boolean(xml.xmlVerified),
       sessionVerified: true,
       message: '',
@@ -217,45 +303,53 @@ export class CrownLoginManager {
 
   async ensureLogin({ page, context, account, verifyXml, logger } = {}) {
     const startedAt = nowIso()
-    const result = baseResult(account, startedAt)
-    const store = this.cookieStoreFor(account)
-    log(logger, 'login-start', { accountId: accountId(account) })
-    log(logger, 'cookie-load-start', { accountId: accountId(account) })
+    const exactAccount = {
+      ...account,
+      loginUrl: normalizePublicHttpsExactOrigin(account?.loginUrl),
+    }
+    const result = baseResult(exactAccount, startedAt)
+    const store = this.cookieStoreFor(exactAccount)
+    const originGuard = await installMainFrameOriginGuard({ context, page, origin: exactAccount.loginUrl })
+    const assertOrigin = () => originGuard.assert()
+    try {
+    log(logger, 'login-start', { accountId: accountId(exactAccount) })
+    log(logger, 'cookie-load-start', { accountId: accountId(exactAccount) })
 
     const cookieRead = store.readCookies()
-    const storageRead = store.readStorageState()
     result.cookieStatus = cookieRead.status
-    result.storageStateStatus = storageRead.status
-    if (cookieRead.status === '已过期') log(logger, 'cookie-expired', { accountId: accountId(account) })
-    await store.loadIntoContext(context)
+    result.storageStateStatus = '不适用'
+    if (cookieRead.status === '已过期') log(logger, 'cookie-expired', { accountId: accountId(exactAccount) })
+    if (cookieRead.status === '已加载' && typeof context?.addCookies === 'function') {
+      await context.addCookies(exactOriginCookies(cookieRead.cookies, exactAccount.loginUrl))
+    }
 
-    if (cookieRead.status === '已加载' || storageRead.status === '已加载') {
-      log(logger, 'cookie-valid', { accountId: accountId(account), cookieStatus: cookieRead.status, storageStateStatus: storageRead.status })
-      await gotoLoginUrl(page, account)
+    if (cookieRead.status === '已加载') {
+      log(logger, 'cookie-valid', { accountId: accountId(exactAccount), cookieStatus: cookieRead.status, storageStateStatus: '不适用' })
+      await gotoLoginUrl(page, exactAccount, originGuard)
       const session = await detectPageSession(page)
       if (session.humanRequired) {
-        log(logger, 'human-verification-required', { accountId: accountId(account) })
-        return this.failWithDiagnostics(result, { page, account, status: '需要人工验证', error: '需要人工验证', logger })
+        log(logger, 'human-verification-required', { accountId: accountId(exactAccount) })
+        return this.failWithDiagnostics(result, { page, account: exactAccount, status: '需要人工验证', error: '需要人工验证', logger })
       }
       if (session.loggedIn) {
-        return this.success(result, { account, context, store, loginMethod: 'cookies', verifyXml, logger })
+        return this.success(result, { account: exactAccount, context, store, loginMethod: 'cookies', verifyXml, logger })
       }
     }
 
-    log(logger, 'credential-login-start', { accountId: accountId(account) })
-    await gotoLoginUrl(page, account)
+    log(logger, 'credential-login-start', { accountId: accountId(exactAccount) })
+    await gotoLoginUrl(page, exactAccount, originGuard)
     const beforeLogin = await detectPageSession(page)
     if (beforeLogin.humanRequired) {
-      log(logger, 'human-verification-required', { accountId: accountId(account) })
-      return this.failWithDiagnostics(result, { page, account, status: '需要人工验证', error: '需要人工验证', logger })
+      log(logger, 'human-verification-required', { accountId: accountId(exactAccount) })
+      return this.failWithDiagnostics(result, { page, account: exactAccount, status: '需要人工验证', error: '需要人工验证', logger })
     }
 
-    const usernameFilled = await fillFirstVisible(page, USERNAME_SELECTORS, account?.username || '')
-    const passwordFilled = await fillFirstVisible(page, PASSWORD_SELECTORS, account?.password || '')
+    const usernameFilled = await fillFirstVisible(page, USERNAME_SELECTORS, exactAccount?.username || '', assertOrigin)
+    const passwordFilled = await fillFirstVisible(page, PASSWORD_SELECTORS, exactAccount?.password || '', assertOrigin)
     if (!usernameFilled || !passwordFilled) {
       return this.failWithDiagnostics(result, {
         page,
-        account,
+        account: exactAccount,
         status: '表单未找到',
         error: '未找到账号或密码输入框',
         logger,
@@ -265,28 +359,31 @@ export class CrownLoginManager {
 
     await Promise.allSettled([
       page.waitForLoadState?.('domcontentloaded', { timeout: 10_000 }),
-      submitLoginForm(page),
+      submitLoginForm(page, assertOrigin),
     ])
     await page.waitForTimeout?.(5000).catch(() => {})
-    await dismissOptionalPostLoginPrompts(page)
+    await dismissOptionalPostLoginPrompts(page, assertOrigin)
     await page.waitForTimeout?.(5000).catch(() => {})
     const afterLogin = await detectPageSession(page)
     if (afterLogin.humanRequired) {
-      log(logger, 'human-verification-required', { accountId: accountId(account) })
-      return this.failWithDiagnostics(result, { page, account, status: '需要人工验证', error: '需要人工验证', logger })
+      log(logger, 'human-verification-required', { accountId: accountId(exactAccount) })
+      return this.failWithDiagnostics(result, { page, account: exactAccount, status: '需要人工验证', error: '需要人工验证', logger })
     }
     if (!afterLogin.loggedIn) {
       return this.failWithDiagnostics(result, {
         page,
-        account,
+        account: exactAccount,
         status: afterLogin.status === '未知' ? '登录失效' : afterLogin.status,
         error: afterLogin.status,
         logger,
       })
     }
 
-    log(logger, 'credential-login-success', { accountId: accountId(account) })
-    return this.success(result, { account, context, store, loginMethod: '账号密码', verifyXml, logger })
+    log(logger, 'credential-login-success', { accountId: accountId(exactAccount) })
+    return this.success(result, { account: exactAccount, context, store, loginMethod: '账号密码', verifyXml, logger })
+    } finally {
+      await originGuard.dispose()
+    }
   }
 }
 

@@ -121,7 +121,7 @@ function mapMonitorAccount(row) {
     id: row.id,
     label: row.label,
     username: row.username,
-    loginUrl: normalizeLoginUrlValue(row.login_url),
+    loginUrl: String(row.login_url || '').trim(),
     status: row.status,
     enabled: intToBool(row.enabled),
     secret_ciphertext: row.secret_ciphertext,
@@ -1005,6 +1005,19 @@ export function createAppRepository(db, {
 
     listMonitorAccounts() {
       return db.prepare('SELECT * FROM monitor_accounts ORDER BY updated_at DESC, label ASC').all().map(mapMonitorAccount)
+    },
+
+    getMonitorAccountForManualLogin(accountId) {
+      const row = requiredRow(
+        db.prepare('SELECT id, username, login_url FROM monitor_accounts WHERE id = ?').get(accountId),
+        'monitor-account',
+      )
+      return {
+        id: row.id,
+        accountId: row.id,
+        username: String(row.username || '').trim(),
+        loginUrl: String(row.login_url || '').trim(),
+      }
     },
 
     getPrimaryMonitorAccount() {

@@ -7,7 +7,9 @@ import { APP_CONTRACT_VERSION } from '../src/crown/app/app-contract-version.mjs'
 import { APP_VERSION } from '../src/crown/app/app-version.mjs'
 import { openAppDatabase, openRuntimeDatabase } from '../src/crown/app/app-db.mjs'
 import { createBettingProcessController } from '../src/crown/app/betting-process.mjs'
+import { CrownHumanLoginController } from '../src/crown/app/crown-human-login-controller.mjs'
 import { createMonitorProcessController } from '../src/crown/app/monitor-process.mjs'
+import { createAppRepository } from '../src/crown/app/app-repository.mjs'
 import {
   collectRealBettingPreflight,
   getRealBettingStatus,
@@ -72,6 +74,7 @@ export function resolveDashboardRuntime({ env = process.env } = {}) {
 export async function shutdownDashboardRuntime({
   disableRealBetting,
   bettingProcess,
+  humanLoginController,
   monitorProcess,
   convergeDatabase,
   closeHttp,
@@ -91,6 +94,7 @@ export async function shutdownDashboardRuntime({
   }
   await step('real-intent', disableRealBetting)
   await step('betting-worker', () => bettingProcess?.stop?.())
+  await step('human-login', () => humanLoginController?.shutdown?.())
   const monitorStoppedSafely = await step('monitor', () => monitorProcess?.stopAndWait?.())
   let watcherStillRunning = !monitorStoppedSafely
   try {
@@ -173,6 +177,30 @@ export async function startCrownDashboard({ env = process.env, registerSignals =
     startupDatabase.close()
   }
 
+  const humanLoginController = runtime.portable
+    ? new CrownHumanLoginController({
+      installationId: runtimeEnv.CROWN_INSTALLATION_ID,
+      appRoot: paths.appRoot,
+      dataRoot: paths.dataRoot,
+      runtimeDir: paths.runtimeDir,
+      profileRoot: paths.profileDir,
+      chromiumExecutable: paths.chromiumExe,
+      loadAccount(accountId) {
+        const handle = openAppDatabase({ dbPath: paths.dbPath, env: runtimeEnv })
+        try {
+          const repository = createAppRepository(handle.db, {
+            env: runtimeEnv,
+            dbPath: paths.dbPath,
+            runtimeDir: paths.runtimeDir,
+          })
+          return repository.getMonitorAccountForManualLogin(accountId)
+        } finally {
+          handle.close()
+        }
+      },
+    })
+    : null
+
   const dataOptions = {
     dbPath: paths.dbPath,
     runtimeDir: paths.runtimeDir,
@@ -197,6 +225,7 @@ export async function startCrownDashboard({ env = process.env, registerSignals =
     dbPath: paths.dbPath,
     monitorProcess,
     bettingProcess,
+    humanLoginController,
     env: runtimeEnv,
     installationId: runtimeEnv.CROWN_INSTALLATION_ID || '',
     version: runtimeEnv.CROWN_APP_VERSION || APP_VERSION,
@@ -237,6 +266,7 @@ export async function startCrownDashboard({ env = process.env, registerSignals =
         try { requestRealBettingStop(handle.db) } finally { handle.close() }
       },
       bettingProcess,
+      humanLoginController,
       monitorProcess,
       convergeDatabase: async () => {
         await realBettingTick.wait()
@@ -256,7 +286,7 @@ export async function startCrownDashboard({ env = process.env, registerSignals =
     }
   }
 
-  return { ...runtime, server, monitorProcess, bettingProcess, shutdown }
+  return { ...runtime, server, monitorProcess, bettingProcess, humanLoginController, shutdown }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
