@@ -8,6 +8,8 @@ const VERSION_V1 = 'v1'
 const VERSION_V2 = 'v2'
 const ALGORITHM = 'aes-256-gcm'
 const DEFAULT_LOCAL_SECRET_KEY_PATH = 'storage/crown-local-secret.key'
+const KEY_PUBLICATION_WAIT_MS = 1_000
+const KEY_PUBLICATION_POLL_MS = 5
 
 export class SecretKeyRequiredError extends Error {
   constructor() {
@@ -41,18 +43,30 @@ function localSecretKeyPath({ env = process.env, cwd = process.cwd(), keyPath } 
   return path.resolve(cwd, configured)
 }
 
+function waitForPublishedLocalSecretKey(file) {
+  const deadline = Date.now() + KEY_PUBLICATION_WAIT_MS
+  while (true) {
+    const existing = fs.readFileSync(file, 'utf8').trim()
+    if (existing) return existing
+    if (Date.now() >= deadline) throw new Error('local-secret-key-empty')
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, KEY_PUBLICATION_POLL_MS)
+  }
+}
+
 export function readOrCreateLocalSecretKey(options = {}) {
   const file = localSecretKeyPath(options)
   try {
-    if (fs.existsSync(file)) {
-      const existing = fs.readFileSync(file, 'utf8').trim()
-      if (existing) return existing
-    }
+    if (fs.existsSync(file)) return waitForPublishedLocalSecretKey(file)
 
     fs.mkdirSync(path.dirname(file), { recursive: true })
     const generated = crypto.randomBytes(32).toString('base64url')
-    fs.writeFileSync(file, `${generated}\n`, { encoding: 'utf8', mode: 0o600 })
-    return generated
+    try {
+      fs.writeFileSync(file, `${generated}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+      return generated
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+      return waitForPublishedLocalSecretKey(file)
+    }
   } catch (error) {
     const wrapped = new Error('local-secret-key-unavailable')
     wrapped.cause = error

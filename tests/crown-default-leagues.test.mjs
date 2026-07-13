@@ -8,6 +8,7 @@ import {
   DEFAULT_LEAGUES_CONFIG,
   isDefaultLeagueMatched,
   normalizeDefaultLeaguesConfig,
+  validateDefaultLeagueSeed,
 } from '../src/crown/config/default-leagues.mjs'
 
 const userDefaultLeagueNames = [
@@ -211,4 +212,16 @@ test('project default whitelist contains only the user supplied leagues', () => 
     assert.equal(league.autoTrack, true, `${league.name} should auto track`)
     assert.deepEqual(league.modes, ['prematch', 'live'], `${league.name} should support prematch/live`)
   }
+})
+
+test('bundled whitelist is a canonical 118-item seed without credentials, URLs, sessions, profiles, or database data', () => {
+  const configPath = path.resolve('config/default-leagues.json')
+  const fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+  const validated = validateDefaultLeagueSeed(fileConfig)
+  const serialized = JSON.stringify(validated)
+
+  assert.equal(validated.leagues.length, 118)
+  assert.deepEqual(validated, DEFAULT_LEAGUES_CONFIG)
+  assert.doesNotMatch(serialized, /https?:\/\//i)
+  assert.doesNotMatch(serialized, /(?:account|username|password|token|cookie|session|profile|sqlite)/i)
 })

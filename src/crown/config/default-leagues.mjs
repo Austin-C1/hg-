@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util'
+
 import { normalizeText } from '../filters/blacklist.mjs'
 import { readJsonConfig, writeJsonConfig } from './json-config.mjs'
 
@@ -137,6 +139,18 @@ function defaultLeagueRule(name) {
 export const DEFAULT_LEAGUES_CONFIG = {
   version: 1,
   leagues: DEFAULT_LEAGUE_NAMES.map(defaultLeagueRule),
+}
+
+const FORBIDDEN_SEED_TEXT = /https?:\/\/|(?:account|username|password|token|cookie|session|profile|sqlite)/i
+
+export function validateDefaultLeagueSeed(config) {
+  if (!isDeepStrictEqual(config, DEFAULT_LEAGUES_CONFIG)
+    || FORBIDDEN_SEED_TEXT.test(JSON.stringify(config))) {
+    const error = new Error('default-league-seed-unsafe')
+    error.code = 'default-league-seed-unsafe'
+    throw error
+  }
+  return normalizeDefaultLeaguesConfig(config)
 }
 
 const VALID_MODES = new Set(['prematch', 'live'])

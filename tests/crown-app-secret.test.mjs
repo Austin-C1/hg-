@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { promisify } from 'node:util'
 
 import {
   canStoreSecrets,
@@ -12,6 +14,7 @@ import {
   redactSecretFields,
 } from '../src/crown/app/app-secret.mjs'
 
+const execFileAsync = promisify(execFile)
 const key = 'local-test-secret-key-with-more-than-32-characters'
 const legacyV1Ciphertext = 'v1:t0KQOFEk-1HqeMTX:tMZ3caqlOiiyq4--wTXySA:7Ak01v3-j5VWIw4IsrBWQ1yrxD-gnkoyZA'
 
@@ -131,6 +134,32 @@ test('portable local key rejects drive-root-relative paths before filesystem acc
     }),
     /portable-secret-key-path-absolute-required/,
   )
+})
+
+test('six independent creators atomically read the same winning local key', async () => {
+  const dataRoot = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'crown-secret-concurrent-')), 'data')
+  const keyPath = path.join(dataRoot, 'storage', 'crown-local-secret.key')
+  fs.mkdirSync(path.dirname(keyPath), { recursive: true })
+  const moduleUrl = new URL('../src/crown/app/app-secret.mjs', import.meta.url).href
+  const startAt = Date.now() + 1_000
+  const script = `
+    const [moduleUrl, dataRoot, keyPath, startAt] = process.argv.slice(1);
+    const wait = Math.max(0, Number(startAt) - Date.now());
+    if (wait) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
+    const { readOrCreateLocalSecretKey } = await import(moduleUrl);
+    const key = readOrCreateLocalSecretKey({ env: {
+      CROWN_PORTABLE: '1', CROWN_DATA_ROOT: dataRoot, CROWN_LOCAL_SECRET_KEY_PATH: keyPath,
+    }});
+    process.stdout.write(key);
+  `
+  const results = await Promise.all(Array.from({ length: 6 }, () => execFileAsync(process.execPath, [
+    '--input-type=module', '--eval', script,
+    moduleUrl, dataRoot, keyPath, String(startAt),
+  ], { timeout: 10_000 })))
+  const keys = results.map(({ stdout }) => stdout.trim())
+
+  assert.equal(new Set(keys).size, 1)
+  assert.equal(fs.readFileSync(keyPath, 'utf8').trim(), keys[0])
 })
 
 test('secret redaction returns hasSecret without ciphertext or plaintext', () => {
