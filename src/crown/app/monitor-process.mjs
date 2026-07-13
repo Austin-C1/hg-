@@ -1,20 +1,27 @@
 import { spawn } from 'node:child_process'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { watcherLeaseKey } from './watcher-lease-key.mjs'
 
 const DEFAULT_DB_PATH = 'storage/crown.sqlite'
 const DEFAULT_RUNTIME_DIR = 'data/runtime'
+const DEFAULT_APP_DIR = fileURLToPath(new URL('../../../', import.meta.url))
 
 function isChildRunning(child) {
-  return Boolean(child && child.exitCode === null && child.signalCode === null && !child.killed)
+  return Boolean(child && child.exitCode === null && child.signalCode === null)
 }
 
 export function createMonitorProcessController({
-  cwd = process.cwd(),
+  cwd,
   env = process.env,
   dbPath = env.CROWN_DB_PATH || DEFAULT_DB_PATH,
-  runtimeDir = DEFAULT_RUNTIME_DIR,
+  runtimeDir = env.CROWN_RUNTIME_DIR || DEFAULT_RUNTIME_DIR,
+  configDir = env.CROWN_CONFIG_DIR || '',
+  profileDir = env.CROWN_BROWSER_PROFILE_DIR || '',
+  nodeExe = env.CROWN_NODE_EXECUTABLE_PATH || process.execPath,
+  watchScriptPath = path.join(cwd || DEFAULT_APP_DIR, 'scripts', 'crown-watch.mjs'),
+  appDir = cwd || path.dirname(path.dirname(watchScriptPath)),
   spawnCommand = spawn,
 } = {}) {
   let child = null
@@ -22,12 +29,22 @@ export function createMonitorProcessController({
 
   function watchArgs({ action = 'start', dbPath: actionDbPath = dbPath, runtimeDir: actionRuntimeDir = runtimeDir, maxSeconds = 0 } = {}) {
     const args = [
-      path.resolve(cwd, 'scripts/crown-watch.mjs'),
+      watchScriptPath,
       '--app-db',
       actionDbPath || DEFAULT_DB_PATH,
       '--runtime-dir',
       actionRuntimeDir || DEFAULT_RUNTIME_DIR,
     ]
+    if (configDir) {
+      args.push(
+        '--league-config', path.join(configDir, 'monitored-leagues.json'),
+        '--default-leagues-config', path.join(configDir, 'default-leagues.json'),
+        '--monitor-settings', path.join(configDir, 'monitor-settings.json'),
+        '--telegram-settings', path.join(configDir, 'telegram-settings.json'),
+        '--alerts-config', path.join(configDir, 'alerts.json'),
+      )
+    }
+    if (profileDir) args.push('--profile', profileDir)
     if (action === 'test-login') args.push('--login-test')
     const seconds = Number(maxSeconds || (action === 'test-login' ? 120 : 0))
     if (seconds > 0) args.push('--max-seconds', String(seconds))
@@ -38,7 +55,7 @@ export function createMonitorProcessController({
     const requestedLeaseKey = watcherLeaseKey({
       dbPath: actionDbPath || DEFAULT_DB_PATH,
       runtimeDir: actionRuntimeDir || DEFAULT_RUNTIME_DIR,
-      cwd,
+      cwd: appDir,
     })
     if (isChildRunning(child)) {
       if (childLeaseKey !== requestedLeaseKey) {
@@ -59,8 +76,8 @@ export function createMonitorProcessController({
       }
     }
 
-    const nextChild = spawnCommand(process.execPath, watchArgs({ action, dbPath: actionDbPath, runtimeDir: actionRuntimeDir, maxSeconds }), {
-      cwd,
+    const nextChild = spawnCommand(nodeExe, watchArgs({ action, dbPath: actionDbPath, runtimeDir: actionRuntimeDir, maxSeconds }), {
+      cwd: appDir,
       env,
       stdio: 'ignore',
       windowsHide: true,
@@ -85,13 +102,13 @@ export function createMonitorProcessController({
   }
 
   function runLoginTest({ dbPath: actionDbPath = dbPath, runtimeDir: actionRuntimeDir = runtimeDir, maxSeconds = 120, timeoutMs = 0 } = {}) {
-    const nextChild = spawnCommand(process.execPath, watchArgs({
+    const nextChild = spawnCommand(nodeExe, watchArgs({
       action: 'test-login',
       dbPath: actionDbPath,
       runtimeDir: actionRuntimeDir,
       maxSeconds,
     }), {
-      cwd,
+      cwd: appDir,
       env,
       stdio: 'ignore',
       windowsHide: true,
@@ -119,38 +136,50 @@ export function createMonitorProcessController({
     if (!isChildRunning(child)) return { stopped: false }
     const pid = child.pid
     child.kill()
-    child = null
-    childLeaseKey = ''
     return { stopped: true, pid }
   }
 
-  function stopAndWait({ timeoutMs = 10_000 } = {}) {
-    if (!isChildRunning(child)) return Promise.resolve({ stopped: false })
-    const stopping = child
-    const pid = stopping.pid
-    return new Promise((resolve, reject) => {
+  function signalAndWait(target, signal, timeoutMs) {
+    if (!isChildRunning(target)) return Promise.resolve(true)
+    return new Promise((resolve) => {
       let settled = false
-      const finish = () => {
+      let timer = null
+      const finish = (exited) => {
         if (settled) return
         settled = true
         clearTimeout(timer)
-        if (child === stopping) {
-          child = null
-          childLeaseKey = ''
-        }
-        resolve({ stopped: true, pid })
+        target.removeListener('exit', onExit)
+        resolve(exited)
       }
-      const timer = setTimeout(() => {
-        if (settled) return
-        settled = true
-        const error = new Error('watcher-stop-timeout')
-        error.code = 'watcher-stop-timeout'
-        reject(error)
-      }, Math.max(1, Number(timeoutMs || 10_000)))
-      stopping.once('exit', finish)
-      stopping.kill()
-      if (!isChildRunning(stopping)) finish()
+      const onExit = () => finish(true)
+      target.once('exit', onExit)
+      try { target.kill(signal) } catch { return finish(false) }
+      if (!isChildRunning(target)) return finish(true)
+      timer = setTimeout(() => finish(false), Math.max(1, Number(timeoutMs || 1)))
     })
+  }
+
+  async function stopAndWait({ timeoutMs = 10_000, forceTimeoutMs = 2_000 } = {}) {
+    if (!isChildRunning(child)) return Promise.resolve({ stopped: false })
+    const stopping = child
+    const pid = stopping.pid
+    const graceful = await signalAndWait(stopping, 'SIGTERM', timeoutMs)
+    let forced = false
+    if (!graceful) {
+      forced = true
+      const forceExited = await signalAndWait(stopping, 'SIGKILL', forceTimeoutMs)
+      if (!forceExited) {
+        const error = new Error('watcher-stop-unsafe')
+        error.code = 'watcher-stop-unsafe'
+        error.pid = pid
+        throw error
+      }
+    }
+    if (child === stopping) {
+      child = null
+      childLeaseKey = ''
+    }
+    return { stopped: true, pid, forced }
   }
 
   return {

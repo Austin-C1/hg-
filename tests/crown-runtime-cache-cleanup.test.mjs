@@ -98,7 +98,7 @@ test('failed cleanup still restores a watcher that was running', async () => {
   assert.deepEqual(events, ['stop', 'start'])
 })
 
-test('safe-start cleanup pauses betting accounts and starts an enabled configured monitor', async () => {
+test('safe-start cleanup pauses betting accounts without starting a watcher that was previously off', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-cache-safe-start-'))
   const dbPath = path.join(root, 'storage', 'crown.sqlite')
   const handle = openAppDatabase({ dbPath })
@@ -123,10 +123,10 @@ test('safe-start cleanup pauses betting accounts and starts an enabled configure
 
   const result = await runRuntimeCleanup({ workspaceDir: root, dbPath, monitorProcess })
 
-  assert.equal(result.restartedWatcher, true)
+  assert.equal(result.restartedWatcher, false)
   assert.equal(result.accountsPaused, 1)
-  assert.equal(result.monitorStartReason, 'enabled-configured-account')
-  assert.equal(events.length, 1)
+  assert.equal(result.monitorStartReason, 'not-running-before-cleanup')
+  assert.equal(events.length, 0)
   const verify = openAppDatabase({ dbPath })
   assert.equal(verify.db.prepare("SELECT allocation_status FROM betting_accounts WHERE id='bet-enabled'").get().allocation_status, 'paused')
   const runtime = verify.db.prepare('SELECT requested, runtime_state FROM real_betting_runtime WHERE singleton_id=1').get()

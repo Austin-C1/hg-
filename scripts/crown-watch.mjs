@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { sendConsoleAlert, sendConsoleSignalAlert } from '../src/crown/alerts/console-alert.mjs'
 import { sendTelegramAlert, sendTelegramSignalAlert } from '../src/crown/alerts/telegram-alert.mjs'
@@ -34,6 +34,7 @@ import { normalizeFootballResponse } from '../src/crown/normalize-football.mjs'
 import { JsonlOddsStore } from '../src/crown/storage/jsonl-store.mjs'
 import { drainCandidateOutbox } from '../src/crown/storage/jsonl-candidate-store.mjs'
 import { JsonlV2AuditStore } from '../src/crown/storage/jsonl-v2-audit-store.mjs'
+import { portableEnvironment, resolvePortablePaths } from '../src/crown/runtime/portable-paths.mjs'
 
 const DEFAULT_URL = 'https://m321.mos077.com'
 const HUMAN_VERIFICATION_RE = /(captcha|recaptcha|verify|verification|slider|slide|otp|2fa|two[-\s]?factor|验证码|滑块|二次验证|安全验证|人机验证|动态码|短信验证|谷歌验证)/i
@@ -42,6 +43,22 @@ const WELCOME_RE = /\bwelcome\b|欢迎/i
 const FOOTBALL_RE = /(football|soccer|足球|今日赛事|滚球|让球|大小)/i
 const V2_SNAPSHOT_FILE = 'crown-odds-snapshots-v2.jsonl'
 const V2_CHANGE_FILE = 'crown-odds-changes-v2.jsonl'
+const APP_DIR = fileURLToPath(new URL('../', import.meta.url))
+
+export function resolvePortableWatcherEnvironment(env = process.env) {
+  if (env.CROWN_PORTABLE !== '1') return env
+  const paths = resolvePortablePaths({
+    appRoot: env.CROWN_APP_ROOT,
+    dataRoot: env.CROWN_DATA_ROOT,
+    version: env.CROWN_APP_VERSION,
+    env,
+  })
+  const canonical = portableEnvironment(paths)
+  for (const [name, value] of Object.entries(canonical)) {
+    if (env[name] !== value) throw new Error(`portable-watcher-environment-mismatch:${name}`)
+  }
+  return { ...env, ...canonical }
+}
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''))
@@ -221,28 +238,33 @@ function validateCandidateGeneration(args, version = Number(args.monitorStateVer
   }
 }
 
-export function parseArgs(argv) {
+export function parseArgs(argv, { env = process.env } = {}) {
+  env = resolvePortableWatcherEnvironment(env)
+  const configDir = env.CROWN_CONFIG_DIR || path.join(APP_DIR, 'config')
+  const runtimeDir = env.CROWN_RUNTIME_DIR || path.join(APP_DIR, 'data', 'runtime')
+  const portable = env.CROWN_PORTABLE === '1'
   const args = {
     url: DEFAULT_URL,
-    profile: 'data/crown-profile',
+    profile: env.CROWN_BROWSER_PROFILE_DIR || path.join(APP_DIR, 'data', 'crown-profile'),
     profileSet: false,
-    runtimeDir: 'data/runtime',
+    runtimeDir,
     monitorStateVersion: 2,
-    leagueConfigPath: 'config/monitored-leagues.json',
-    defaultLeaguesPath: 'config/default-leagues.json',
-    monitorSettingsPath: 'config/monitor-settings.json',
-    telegramSettingsPath: 'config/telegram-settings.json',
-    alertsConfigPath: 'config/alerts.json',
-    appDbPath: process.env.CROWN_DB_PATH || 'storage/crown.sqlite',
+    leagueConfigPath: path.join(configDir, 'monitored-leagues.json'),
+    defaultLeaguesPath: path.join(configDir, 'default-leagues.json'),
+    monitorSettingsPath: path.join(configDir, 'monitor-settings.json'),
+    telegramSettingsPath: path.join(configDir, 'telegram-settings.json'),
+    alertsConfigPath: path.join(configDir, 'alerts.json'),
+    appDbPath: env.CROWN_DB_PATH || path.join(APP_DIR, 'storage', 'crown.sqlite'),
     bettingCandidatesPath: '',
     bettingCandidatesPathSet: false,
-    channel: process.env.CROWN_BROWSER_CHANNEL || 'msedge',
+    channel: portable ? '' : (env.CROWN_BROWSER_CHANNEL || ''),
+    chromiumExecutablePath: env.CROWN_CHROMIUM_EXECUTABLE_PATH || '',
     headless: false,
     fromFixture: '',
     maxSeconds: 0,
     domPollSeconds: 10,
     domPollSecondsSet: false,
-    maxGameMore: Number(process.env.CROWN_MAX_GAME_MORE || 8),
+    maxGameMore: Number(env.CROWN_MAX_GAME_MORE || 8),
     runtimeLogPath: '',
     configReloadSeconds: 30,
     zeroDomWarnAfter: 3,
@@ -306,7 +328,7 @@ export function parseArgs(argv) {
     else throw new Error(`Unknown argument: ${current}`)
   }
 
-  if (args.loginTest && !args.profileSet) {
+  if (args.loginTest && !args.profileSet && !portable) {
     args.profile = path.join(args.runtimeDir, 'crown-login-profile')
   }
   if (!args.bettingCandidatesPath) {
@@ -315,6 +337,25 @@ export function parseArgs(argv) {
 
   if (!Number.isFinite(args.maxGameMore) || args.maxGameMore < 0) {
     throw new Error('--max-game-more must be a finite non-negative number')
+  }
+  if (portable && (!args.chromiumExecutablePath || !path.isAbsolute(args.chromiumExecutablePath))) {
+    throw new Error('portable-chromium-executable-required')
+  }
+  if (portable) {
+    const canonicalPaths = {
+      appDbPath: env.CROWN_DB_PATH,
+      runtimeDir: env.CROWN_RUNTIME_DIR,
+      profile: env.CROWN_BROWSER_PROFILE_DIR,
+      leagueConfigPath: path.join(env.CROWN_CONFIG_DIR, 'monitored-leagues.json'),
+      defaultLeaguesPath: path.join(env.CROWN_CONFIG_DIR, 'default-leagues.json'),
+      monitorSettingsPath: path.join(env.CROWN_CONFIG_DIR, 'monitor-settings.json'),
+      telegramSettingsPath: path.join(env.CROWN_CONFIG_DIR, 'telegram-settings.json'),
+      alertsConfigPath: path.join(env.CROWN_CONFIG_DIR, 'alerts.json'),
+      chromiumExecutablePath: env.CROWN_CHROMIUM_EXECUTABLE_PATH,
+    }
+    for (const [field, value] of Object.entries(canonicalPaths)) {
+      if (args[field] !== value) throw new Error(`portable-watcher-path-mismatch:${field}`)
+    }
   }
   validateCandidateGeneration(args)
 
@@ -377,7 +418,7 @@ Options:
   --app-db <file>          Dashboard SQLite config DB, default storage/crown.sqlite
   --betting-candidates <file>
                             Override candidate JSONL. Defaults: direct-v2 betting-candidates-v2.jsonl; legacy betting-candidates.jsonl
-  --channel <name>         Browser channel, default msedge
+  --channel <name>         Development-only browser channel; Portable uses bundled Chromium
   --headless               Run browser headless
   --from-fixture <dir>     Offline verification mode using football-today-filtered.json
   --max-seconds <n>        Stop live watcher after n seconds
@@ -1161,12 +1202,9 @@ export async function runDomPollOnce({
   return stats
 }
 
-async function launchContext(args) {
-  const { chromium } = await import('playwright')
-  fs.mkdirSync(args.profile, { recursive: true })
-
+export function browserLaunchOptions(args = {}) {
   const launchOptions = {
-    headless: args.headless,
+    headless: Boolean(args.headless),
     viewport: { width: 1440, height: 960 },
     locale: 'zh-CN',
     timezoneId: 'Asia/Shanghai',
@@ -1177,8 +1215,15 @@ async function launchContext(args) {
       '--no-sandbox',
     ],
   }
-  if (args.channel && args.channel !== 'chromium') launchOptions.channel = args.channel
-  return chromium.launchPersistentContext(args.profile, launchOptions)
+  if (args.chromiumExecutablePath) launchOptions.executablePath = args.chromiumExecutablePath
+  else if (args.channel && args.channel !== 'chromium') launchOptions.channel = args.channel
+  return launchOptions
+}
+
+async function launchContext(args) {
+  const { chromium } = await import('playwright')
+  fs.mkdirSync(args.profile, { recursive: true })
+  return chromium.launchPersistentContext(args.profile, browserLaunchOptions(args))
 }
 
 async function pageSessionSnapshot(page) {
@@ -2186,7 +2231,7 @@ export async function executeFromArgs(args, dependencies = {}) {
 }
 
 async function main() {
-  loadProjectEnv()
+  if (process.env.CROWN_PORTABLE !== '1') loadProjectEnv({ cwd: APP_DIR })
   const args = parseArgs(process.argv.slice(2))
   if (args.help) {
     printHelp()

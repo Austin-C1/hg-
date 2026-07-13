@@ -142,3 +142,52 @@ test('stopAndWait resolves only after the managed watcher exits', async () => {
   assert.equal(calls[0].child.killed, true)
   assert.equal(controller.isRunning(), false)
 })
+
+test('stopAndWait escalates to forced termination and waits for the watcher exit', async () => {
+  const calls = []
+  const controller = createMonitorProcessController({
+    cwd: process.cwd(), dbPath: 'storage/test.sqlite', runtimeDir: 'data/runtime-test',
+    spawnCommand(command, args, options) {
+      const child = new EventEmitter()
+      child.pid = 3001
+      child.exitCode = null
+      child.signalCode = null
+      child.killed = false
+      child.killSignals = []
+      child.kill = (signal = 'SIGTERM') => {
+        child.killed = true
+        child.killSignals.push(signal)
+        if (signal === 'SIGKILL') queueMicrotask(() => { child.signalCode = signal; child.emit('exit', null, signal) })
+      }
+      calls.push({ command, args, options, child })
+      return child
+    },
+  })
+  controller.start()
+  const result = await controller.stopAndWait({ timeoutMs: 5, forceTimeoutMs: 20 })
+  assert.equal(result.forced, true)
+  assert.deepEqual(calls[0].child.killSignals, ['SIGTERM', 'SIGKILL'])
+  assert.equal(controller.isRunning(), false)
+})
+
+test('stopAndWait reports a stable unsafe failure when forced termination cannot stop the watcher', async () => {
+  const calls = []
+  const controller = createMonitorProcessController({
+    cwd: process.cwd(), dbPath: 'storage/test.sqlite', runtimeDir: 'data/runtime-test',
+    spawnCommand(command, args, options) {
+      const child = new EventEmitter()
+      child.pid = 3002
+      child.exitCode = null
+      child.signalCode = null
+      child.killed = false
+      child.killSignals = []
+      child.kill = (signal = 'SIGTERM') => { child.killed = true; child.killSignals.push(signal) }
+      calls.push({ command, args, options, child })
+      return child
+    },
+  })
+  controller.start()
+  await assert.rejects(controller.stopAndWait({ timeoutMs: 5, forceTimeoutMs: 5 }), /watcher-stop-unsafe/)
+  assert.deepEqual(calls[0].child.killSignals, ['SIGTERM', 'SIGKILL'])
+  assert.equal(controller.isRunning(), true)
+})

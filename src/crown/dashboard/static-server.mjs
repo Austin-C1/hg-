@@ -5,6 +5,8 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { pathToFileURL } from 'node:url'
 
+import { APP_CONTRACT_VERSION } from '../app/app-contract-version.mjs'
+import { APP_VERSION } from '../app/app-version.mjs'
 import { handleAppApi } from '../app/app-api.mjs'
 import { handleLocalConfigApi } from '../app/local-config-api.mjs'
 import { readDashboardChanges, readDashboardConfig, readDashboardData } from './dashboard-data.mjs'
@@ -12,6 +14,7 @@ import { readDashboardChanges, readDashboardConfig, readDashboardData } from './
 const DEFAULT_HOST = '127.0.0.1'
 const DEFAULT_PORT = 8787
 const DEFAULT_STATIC_DIR = 'frontend/dist'
+const INSTALLATION_ID = /^[A-Za-z0-9_-]{8,128}$/
 const SESSION_COOKIE = 'crown_dashboard_session'
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000
 const DEFAULT_SESSION_MAX = 256
@@ -280,11 +283,14 @@ async function serveApi(req, requestUrl, res, {
   }
 
   if (pathname === '/api/health') {
+    const configuredInstallationId = appOptions.installationId || appOptions.env?.CROWN_INSTALLATION_ID || ''
     sendJson(res, 200, {
       ok: true,
       app: 'crown-dashboard',
       readonly: true,
-      time: new Date().toISOString(),
+      installationId: INSTALLATION_ID.test(configuredInstallationId) ? configuredInstallationId : '',
+      version: APP_VERSION,
+      appContractVersion: APP_CONTRACT_VERSION,
     })
     return true
   }

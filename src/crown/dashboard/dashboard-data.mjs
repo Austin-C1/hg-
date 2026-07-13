@@ -785,6 +785,7 @@ export async function readDashboardData({
   dbPath = DEFAULT_DB_PATH,
   runtimeLogPath = DEFAULT_RUNTIME_LOG_PATH,
   fixtureSnapshotPath = DEFAULT_FIXTURE_SNAPSHOT_PATH,
+  allowFixtureFallback = false,
   configPath = DEFAULT_CONFIG_PATH,
   changeLimit = DEFAULT_CHANGE_LIMIT,
   changeEventKey = null,
@@ -810,7 +811,7 @@ export async function readDashboardData({
   let source = generation.schemaVersion === 2 ? 'monitor-v2' : 'runtime-jsonl'
   const warnings = dataWarnings({ snapshots: runtimeSnapshots, changes })
 
-  if (generation.schemaVersion !== 2 && (!runtimeSnapshots.exists || snapshots.records.length === 0)) {
+  if (allowFixtureFallback && generation.schemaVersion !== 2 && (!runtimeSnapshots.exists || snapshots.records.length === 0)) {
     snapshots = await readJsonlFile(fixtureSnapshotPath)
     source = 'fixture-replay'
     warnings.push(runtimeSnapshots.exists ? 'snapshots:runtime-empty-fallback' : 'snapshots:runtime-missing-fallback')

@@ -82,7 +82,10 @@ async function withReadRepository(appOptions = {}, handler) {
 }
 
 async function withWriteRepository(appOptions = {}, handler) {
-  const handle = openRuntimeDatabase({ dbPath: repositoryDbPath(appOptions) })
+  const handle = openRuntimeDatabase({
+    dbPath: repositoryDbPath(appOptions),
+    env: appOptions.env || process.env,
+  })
   try {
     const repo = createAppRepository(handle.db, repositoryOptions(appOptions))
     return await handler(repo)

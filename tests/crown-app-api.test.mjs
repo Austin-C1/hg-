@@ -544,6 +544,84 @@ test('app API normalizes monitor account host and starts or stops the watcher pr
   }, { CROWN_SECRET_KEY: '' }, { monitorProcess })
 })
 
+test('monitor relogin waits for delayed watcher exit before starting a replacement', async (t) => {
+  const events = []
+  let releaseExit
+  const exitGate = new Promise((resolve) => { releaseExit = resolve })
+  let running = true
+  const monitorProcess = {
+    stop() { events.push('sync-stop') },
+    async stopAndWait() {
+      events.push('stop-wait')
+      await exitGate
+      running = false
+      events.push('old-exit')
+      return { stopped: true }
+    },
+    isRunning: () => running,
+    start() {
+      events.push(running ? 'start-before-exit' : 'start-after-exit')
+      running = true
+      return { running: true }
+    },
+  }
+
+  await withAppServer(t, async (baseUrl) => {
+    await jsonFetch(`${baseUrl}/api/app/monitor-account`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        label: 'Primary Crown monitor', username: 'monitor-user', loginUrl: 'm407.mos077.com',
+        enabled: true, secret: 'monitor-password',
+      }),
+    })
+    const relogin = jsonFetch(`${baseUrl}/api/app/monitor-account/actions`, {
+      method: 'POST', body: JSON.stringify({ action: 'relogin' }),
+    })
+    for (let attempt = 0; attempt < 20 && events.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    const beforeExit = [...events]
+    releaseExit()
+    const result = await relogin
+
+    assert.deepEqual(beforeExit, ['stop-wait'])
+    assert.equal(result.response.status, 200)
+    assert.deepEqual(events, ['stop-wait', 'old-exit', 'start-after-exit'])
+  }, { CROWN_SECRET_KEY: '' }, { monitorProcess })
+})
+
+test('monitor relogin returns a stable unsafe error and never starts a replacement', async (t) => {
+  const events = []
+  const monitorProcess = {
+    stop() { events.push('sync-stop') },
+    async stopAndWait() {
+      events.push('stop-wait')
+      const error = new Error('watcher-stop-unsafe')
+      error.code = 'watcher-stop-unsafe'
+      throw error
+    },
+    isRunning: () => true,
+    start() { events.push('start'); return { running: true } },
+  }
+
+  await withAppServer(t, async (baseUrl) => {
+    await jsonFetch(`${baseUrl}/api/app/monitor-account`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        label: 'Primary Crown monitor', username: 'monitor-user', loginUrl: 'm407.mos077.com',
+        enabled: true, secret: 'monitor-password',
+      }),
+    })
+    const result = await jsonFetch(`${baseUrl}/api/app/monitor-account/actions`, {
+      method: 'POST', body: JSON.stringify({ action: 'relogin' }),
+    })
+
+    assert.equal(result.response.status, 503)
+    assert.deepEqual(result.payload, { error: 'watcher-stop-unsafe' })
+    assert.deepEqual(events, ['stop-wait'])
+  }, { CROWN_SECRET_KEY: '' }, { monitorProcess })
+})
+
 test('app API waits for test-login short run and returns LoginResult plus diagnostics', async (t) => {
   const monitorProcess = {
     async runLoginTest(options) {

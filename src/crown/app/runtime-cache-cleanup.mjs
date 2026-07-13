@@ -38,6 +38,15 @@ const GENERATED_DIRS = [
   'logs',
   '.playwright-cli',
 ]
+const PORTABLE_RUNTIME_DIRS = [
+  'login-diagnostics',
+  'betting-intents',
+  'crown-login-debug-profile',
+  'crown-login-debug-profile-2',
+  'crown-login-debug-profile-3',
+  'crown-login-debug-profile-4',
+  'crown-login-debug-profile-5',
+]
 const RESET_TABLES = [
   'bet_notification_outbox',
   'bet_reconciliation_evidence',
@@ -68,6 +77,43 @@ function inside(root, candidate) {
   return candidate === root || candidate.startsWith(`${root}${path.sep}`)
 }
 
+function comparablePath(value) {
+  const normalized = path.normalize(String(value || '').replace(/^\\\\\?\\/, ''))
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
+function unsafeReparse(field) {
+  const error = new Error(`runtime-cleanup-unsafe-reparse:${field}`)
+  error.code = 'runtime-cleanup-unsafe-reparse'
+  return error
+}
+
+function assertSafePathSegments(target, field) {
+  const resolved = path.resolve(target)
+  const parsed = path.parse(resolved)
+  let current = parsed.root
+  for (const segment of path.relative(parsed.root, resolved).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment)
+    let stat
+    try { stat = fs.lstatSync(current) } catch (error) {
+      if (error?.code === 'ENOENT') break
+      throw error
+    }
+    if (stat.isSymbolicLink()) throw unsafeReparse(field)
+    if (comparablePath(fs.realpathSync(current)) !== comparablePath(current)) throw unsafeReparse(field)
+  }
+  return resolved
+}
+
+function assertSafeTree(target, field) {
+  const resolved = assertSafePathSegments(target, field)
+  const stat = fs.lstatSync(resolved)
+  if (stat.isSymbolicLink()) throw unsafeReparse(field)
+  if (!stat.isDirectory()) return resolved
+  for (const name of fs.readdirSync(resolved)) assertSafeTree(path.join(resolved, name), field)
+  return resolved
+}
+
 function walkDirectories(root, visit) {
   if (!fs.existsSync(root)) return
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
@@ -90,7 +136,50 @@ function sizeOf(target) {
   return total
 }
 
-function cleanupTargets({ workspaceDir = process.cwd(), runtimeDir = 'data/runtime' } = {}) {
+function portableCleanupTargets({ dataRoot, runtimeDir, profileDir = '' } = {}) {
+  const root = assertSafePathSegments(dataRoot, 'dataRoot')
+  const runtime = assertSafePathSegments(runtimeDir || path.join(root, 'runtime'), 'runtimeDir')
+  if (!inside(root, runtime)) throw new Error('runtime cache path is outside data root')
+  const profile = profileDir ? assertSafePathSegments(profileDir, 'profileDir') : ''
+  if (profile && (!inside(root, profile) || !inside(runtime, profile))) {
+    throw new Error('browser profile path is outside runtime directory')
+  }
+  const targets = []
+  const add = (candidate, category) => {
+    const resolved = path.resolve(candidate)
+    if (!inside(root, resolved)) throw new Error('runtime cache target is outside data root')
+    if (fs.existsSync(resolved)) {
+      assertSafeTree(resolved, category)
+      targets.push({ path: resolved, category })
+    }
+  }
+  for (const name of RUNTIME_FILES) add(path.join(runtime, name), 'monitor-history')
+  for (const name of PORTABLE_RUNTIME_DIRS) add(path.join(runtime, name), 'generated-output')
+  if (profile) walkSafeDirectories(profile, (directory, name) => {
+    if (!CACHE_DIR_NAMES.has(name)) return true
+    add(directory, 'browser-cache')
+    return false
+  })
+  const sorted = targets.sort((left, right) => left.path.length - right.path.length)
+  return sorted.filter((item, index) => !sorted.slice(0, index).some((parent) => inside(parent.path, item.path)))
+}
+
+function walkSafeDirectories(root, visit) {
+  if (!fs.existsSync(root)) return
+  assertSafePathSegments(root, 'profileDir')
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const file = path.join(root, entry.name)
+    const stat = fs.lstatSync(file)
+    if (stat.isSymbolicLink()) throw unsafeReparse('profileDir')
+    if (!stat.isDirectory()) continue
+    assertSafePathSegments(file, 'profileDir')
+    if (visit(file, entry.name) === false) continue
+    walkSafeDirectories(file, visit)
+  }
+}
+
+function cleanupTargets({ dataRoot = '', workspaceDir = process.cwd(), runtimeDir = 'data/runtime', profileDir = '' } = {}) {
+  if (dataRoot) return portableCleanupTargets({ dataRoot, runtimeDir, profileDir })
   const root = path.resolve(workspaceDir)
   const runtime = path.resolve(root, runtimeDir)
   if (!inside(root, runtime)) throw new Error('runtime cache path is outside workspace')
@@ -131,9 +220,11 @@ function databaseHistoryCounts(dbPath) {
 }
 
 export function previewRuntimeCleanup(options = {}) {
-  const root = path.resolve(options.workspaceDir || process.cwd())
+  const portable = Boolean(options.dataRoot)
+  const root = path.resolve(options.dataRoot || options.workspaceDir || process.cwd())
   const dbPath = path.resolve(root, options.dbPath || 'storage/crown.sqlite')
-  if (!inside(root, dbPath)) throw new Error('app database is outside workspace')
+  if (!inside(root, dbPath)) throw new Error(portable ? 'app database is outside data root' : 'app database is outside workspace')
+  if (portable) assertSafePathSegments(dbPath, 'dbPath')
   const targets = cleanupTargets(options)
   const categories = {}
   let bytes = 0
@@ -202,19 +293,6 @@ function resetRuntimeDatabase(dbPath) {
   }
 }
 
-function configuredMonitorAccount(dbPath) {
-  if (!fs.existsSync(dbPath)) return false
-  const db = new DatabaseSync(dbPath, { readOnly: true })
-  try {
-    const table = db.prepare("SELECT 1 AS present FROM sqlite_schema WHERE type='table' AND name='monitor_accounts'").get()
-    if (!table) return false
-    return Boolean(db.prepare(`SELECT 1 AS configured FROM monitor_accounts
-      WHERE enabled=1 AND trim(secret_ciphertext) <> '' ORDER BY updated_at DESC LIMIT 1`).get())
-  } finally {
-    db.close()
-  }
-}
-
 function hasActiveWatcherLease(dbPath, now = new Date().toISOString()) {
   if (!fs.existsSync(dbPath)) return false
   const db = new DatabaseSync(dbPath, { readOnly: true })
@@ -229,35 +307,48 @@ function hasActiveWatcherLease(dbPath, now = new Date().toISOString()) {
 
 export async function runRuntimeCleanup({
   workspaceDir = process.cwd(),
+  dataRoot = '',
   runtimeDir = 'data/runtime',
+  profileDir = '',
   dbPath = 'storage/crown.sqlite',
+  env = process.env,
   monitorProcess = null,
   bettingProcess = null,
 } = {}) {
-  const root = path.resolve(workspaceDir)
+  const portable = Boolean(dataRoot)
+  const root = path.resolve(dataRoot || workspaceDir)
   const resolvedDbPath = path.resolve(root, dbPath)
-  if (!inside(root, resolvedDbPath)) throw new Error('app database is outside workspace')
+  if (!inside(root, resolvedDbPath)) throw new Error(portable ? 'app database is outside data root' : 'app database is outside workspace')
+  if (portable) {
+    assertSafePathSegments(root, 'dataRoot')
+    assertSafePathSegments(runtimeDir, 'runtimeDir')
+    if (profileDir) assertSafePathSegments(profileDir, 'profileDir')
+    assertSafePathSegments(resolvedDbPath, 'dbPath')
+    cleanupTargets({ dataRoot: root, runtimeDir, profileDir })
+  }
   const wasRunning = Boolean(monitorProcess?.isRunning?.())
   const bettingWasRunning = Boolean(bettingProcess?.isRunning?.())
   if (!wasRunning && hasActiveWatcherLease(resolvedDbPath)) throw new Error('watcher-active-unmanaged')
-  if (wasRunning && typeof monitorProcess?.stopAndWait !== 'function') throw new Error('watcher cannot be stopped safely')
+  if (wasRunning && (typeof monitorProcess?.stopAndWait !== 'function' || typeof monitorProcess?.start !== 'function')) {
+    throw new Error('watcher cannot be stopped and restored safely')
+  }
   if (bettingWasRunning) await bettingProcess.stop()
   if (wasRunning) await monitorProcess.stopAndWait()
   let result
-  let shouldStartMonitor = wasRunning
-  let monitorStartReason = wasRunning ? 'restore-running-watcher' : 'not-configured'
+  const shouldStartMonitor = wasRunning
+  const monitorStartReason = wasRunning ? 'restore-running-watcher' : 'not-running-before-cleanup'
   try {
-    const preview = previewRuntimeCleanup({ workspaceDir: root, runtimeDir, dbPath: resolvedDbPath })
-    for (const target of cleanupTargets({ workspaceDir: root, runtimeDir }).sort((left, right) => right.path.length - left.path.length)) {
+    const cleanupOptions = portable
+      ? { dataRoot: root, runtimeDir, profileDir, dbPath: resolvedDbPath }
+      : { workspaceDir: root, runtimeDir, dbPath: resolvedDbPath }
+    const preview = previewRuntimeCleanup(cleanupOptions)
+    for (const target of cleanupTargets(cleanupOptions).sort((left, right) => right.path.length - left.path.length)) {
+      if (portable) assertSafeTree(target.path, target.category)
       fs.rmSync(target.path, { recursive: true, force: true })
     }
     const reset = resetRuntimeDatabase(resolvedDbPath)
-    const reopened = openAppDatabase({ dbPath: resolvedDbPath })
+    const reopened = openAppDatabase({ dbPath: resolvedDbPath, env })
     reopened.close()
-    if (configuredMonitorAccount(resolvedDbPath)) {
-      shouldStartMonitor = true
-      monitorStartReason = 'enabled-configured-account'
-    }
     result = {
       ...preview,
       databaseRows: reset.databaseRows,

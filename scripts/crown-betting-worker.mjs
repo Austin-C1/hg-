@@ -2,6 +2,7 @@
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { openAppDatabase } from '../src/crown/app/app-db.mjs'
 import { bettingRoleLeaseKeys } from '../src/crown/app/betting-process.mjs'
@@ -16,13 +17,17 @@ import { createRealWorkerProvider, realCoordinatorDependencies, startRoleLeaseHe
 import { listCrownCapabilities } from '../src/crown/betting/crown-capability-matrix.mjs'
 import { assertRealBettingIntentRequested, blockRealBettingRuntime, collectRealBettingPreflight, refreshRealBettingRuntime } from '../src/crown/betting/real-betting-runtime.mjs'
 
-function argumentsFrom(argv) {
+const APP_DIR = fileURLToPath(new URL('../', import.meta.url))
+
+export function argumentsFrom(argv, { env = process.env } = {}) {
+  const configDir = env.CROWN_CONFIG_DIR || path.join(APP_DIR, 'config')
   const result = {
-    mode: process.env.CROWN_BETTING_MODE || 'off',
+    mode: env.CROWN_BETTING_MODE || 'off',
     once: false,
-    dbPath: process.env.CROWN_DB_PATH || '',
-    simulatedScriptJson: process.env.CROWN_SIMULATED_SCRIPT_JSON || '',
-    defaultLeaguesConfig: process.env.CROWN_DEFAULT_LEAGUES_CONFIG || 'config/default-leagues.json',
+    dbPath: env.CROWN_DB_PATH || '',
+    runtimeDir: env.CROWN_RUNTIME_DIR || path.join(APP_DIR, 'data', 'runtime'),
+    simulatedScriptJson: env.CROWN_SIMULATED_SCRIPT_JSON || '',
+    defaultLeaguesConfig: env.CROWN_DEFAULT_LEAGUES_CONFIG || path.join(configDir, 'default-leagues.json'),
     workerLeaseKey: '',
     generation: '',
     readyNonce: '',
@@ -32,6 +37,7 @@ function argumentsFrom(argv) {
     if (argument === '--once') result.once = true
     else if (argument === '--mode') result.mode = argv[++index] || ''
     else if (argument === '--db-path') result.dbPath = argv[++index] || ''
+    else if (argument === '--runtime-dir') result.runtimeDir = argv[++index] || ''
     else if (argument === '--simulated-script-json') result.simulatedScriptJson = argv[++index] || ''
     else if (argument === '--default-leagues-config') result.defaultLeaguesConfig = argv[++index] || ''
     else if (argument === '--worker-lease-key') result.workerLeaseKey = argv[++index] || ''
@@ -41,6 +47,9 @@ function argumentsFrom(argv) {
   }
   if (!['off', 'simulated', 'preview', 'real'].includes(result.mode)) throw new Error('betting-worker-mode')
   if (['simulated', 'preview'].includes(result.mode) && !result.simulatedScriptJson) throw new Error('simulated-script-required')
+  if (env.CROWN_PORTABLE === '1' && [result.dbPath, result.runtimeDir, result.defaultLeaguesConfig].some((value) => !path.isAbsolute(value))) {
+    throw new Error('portable-worker-path-required')
+  }
   return result
 }
 
@@ -98,7 +107,7 @@ async function main() {
   if (['simulated', 'preview'].includes(options.mode) && providerScript.length === 0) throw new Error('simulated-script-required')
   if (!options.defaultLeaguesConfig || !existsSync(options.defaultLeaguesConfig)) throw new Error('default-leagues-config-missing')
   const defaultLeagues = await readStrictDefaultLeagues(options.defaultLeaguesConfig)
-  const handle = openAppDatabase({ dbPath: options.dbPath || undefined })
+  const handle = openAppDatabase({ dbPath: options.dbPath || undefined, env: process.env })
   const roleKeys = bettingRoleLeaseKeys({ dbPath: handle.dbPath })
   const workerLeaseKey = options.workerLeaseKey || roleKeys.worker
   if (workerLeaseKey !== roleKeys.worker) throw new Error('betting-worker-lease-key-mismatch')
@@ -131,7 +140,7 @@ async function main() {
     if (options.mode !== 'real') return true
     try {
       const checks = collectRealBettingPreflight(handle.db, {
-        env: process.env, dbPath: handle.dbPath, runtimeDir: 'data/runtime', readyTicket,
+        env: process.env, dbPath: handle.dbPath, runtimeDir: options.runtimeDir, readyTicket,
       })
       const status = refreshRealBettingRuntime(handle.db, { checks })
       if (status.state !== 'running') throw new Error('real-betting-exact-preflight')
@@ -225,7 +234,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${String(error?.message || error)}\n`)
-  process.exitCode = 1
-})
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    process.stderr.write(`${String(error?.message || error)}\n`)
+    process.exitCode = 1
+  })
+}

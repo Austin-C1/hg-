@@ -474,6 +474,7 @@ test('readDashboardData marks fixture fallback when runtime snapshots are empty'
     changesPath,
     fixtureSnapshotPath,
     configPath,
+    allowFixtureFallback: true,
   })
 
   assert.equal(data.summary.source, 'fixture-replay')

@@ -31,6 +31,10 @@ import {
 } from '../betting/real-betting-runtime.mjs'
 
 const MAX_BODY_BYTES = 1024 * 1024
+function effectiveRuntimeDir(options = {}) {
+  return options.runtimeDir || options.dataOptions?.runtimeDir || 'data/runtime'
+}
+
 async function realBettingService(options, db) {
   if (options.realBettingRuntime) return options.realBettingRuntime
   const readChecks = async (readyTicket = null) => {
@@ -39,7 +43,7 @@ async function realBettingService(options, db) {
     ? await options.realBettingPreflight({ db, readyTicket: effectiveTicket })
     : collectRealBettingPreflight(db, {
       env: options.env || process.env, now: options.now, readyTicket: effectiveTicket,
-      dbPath: options.dbPath, runtimeDir: options.runtimeDir || 'data/runtime',
+      dbPath: options.dbPath, runtimeDir: effectiveRuntimeDir(options),
     })
   }
   return {
@@ -150,14 +154,14 @@ function safeMonitorAlertFields(fields) {
 
 async function withRepository(options, handler) {
   if (options.repository) return handler(options.repository, options.repositoryDb || null)
-  const handle = openAppDatabase({ dbPath: options.dbPath })
+  const handle = openAppDatabase({ dbPath: options.dbPath, env: options.env || process.env })
   try {
     const repo = createAppRepository(handle.db, {
       secretKey: options.secretKey,
       env: options.env || process.env,
       now: options.now,
       dbPath: handle.dbPath,
-      runtimeDir: options.runtimeDir || 'data/runtime',
+      runtimeDir: effectiveRuntimeDir(options),
     })
     return await handler(repo, handle.db)
   } finally {
@@ -218,19 +222,22 @@ async function dispatch(req, requestUrl, options = {}) {
         ...(options.csrfToken ? { csrfToken: options.csrfToken } : {}),
         dashboardAccessMode: options.dashboardAccessMode || 'readonly',
         appContractVersion: APP_CONTRACT_VERSION,
-        schemaVersion: readAppSchemaVersion({ dbPath: options.dbPath }),
+        schemaVersion: readAppSchemaVersion({ dbPath: options.dbPath, env: options.env || process.env }),
       },
     }
   }
 
   if (parts.length === 1 && parts[0] === 'runtime-cache-cleanup') {
+    const cleanupBoundary = options.dataRoot
+      ? { dataRoot: options.dataRoot }
+      : { workspaceDir: options.appDir || options.cwd }
     const cleanup = options.runtimeCleanup || {
       preview: () => previewRuntimeCleanup({
-        workspaceDir: options.cwd || process.cwd(), runtimeDir: options.runtimeDir || 'data/runtime', dbPath: options.dbPath,
+        ...cleanupBoundary, runtimeDir: effectiveRuntimeDir(options), profileDir: options.profileDir, dbPath: options.dbPath,
       }),
       run: () => runRuntimeCleanup({
-        workspaceDir: options.cwd || process.cwd(), runtimeDir: options.runtimeDir || 'data/runtime', dbPath: options.dbPath,
-        monitorProcess: options.monitorProcess, bettingProcess: options.bettingProcess,
+        ...cleanupBoundary, runtimeDir: effectiveRuntimeDir(options), profileDir: options.profileDir, dbPath: options.dbPath,
+        monitorProcess: options.monitorProcess, bettingProcess: options.bettingProcess, env: options.env || process.env,
       }),
     }
     if (method === 'GET') return { statusCode: 200, payload: { item: await cleanup.preview() } }
@@ -359,11 +366,19 @@ async function dispatch(req, requestUrl, options = {}) {
       if (method === 'POST') {
         const body = await readBody(req)
         const action = String(body.action || '')
+        if (action === 'relogin' && options.monitorProcess) {
+          if (typeof options.monitorProcess.stopAndWait !== 'function') {
+            throw Object.assign(new Error('watcher-stop-unsafe'), { code: 'watcher-stop-unsafe' })
+          }
+          await options.monitorProcess.stopAndWait()
+          if (options.monitorProcess.isRunning?.() === true) {
+            throw Object.assign(new Error('watcher-stop-unsafe'), { code: 'watcher-stop-unsafe' })
+          }
+        }
         const item = repo.applyMonitorAccountAction(action)
         if (action === 'stop') {
           options.monitorProcess?.stop?.()
         } else if (action === 'relogin') {
-          options.monitorProcess?.stop?.()
           options.monitorProcess?.start?.({ action, dbPath: options.dbPath })
         } else if (action === 'test-login') {
           if (typeof options.monitorProcess?.runLoginTest === 'function') {
@@ -526,7 +541,7 @@ async function dispatch(req, requestUrl, options = {}) {
       const checker = options.bettingAccountAccessChecker || {
         check(exactAccount) {
           const manager = new CrownApiLoginManager({
-            runtimeDir: options.runtimeDir || 'data/runtime',
+            runtimeDir: effectiveRuntimeDir(options),
             fetchImpl: options.fetchImpl || globalThis.fetch,
             bettingAllowedOrigins: (options.env || process.env).CROWN_BETTING_ALLOWED_ORIGINS || '',
           })
@@ -567,7 +582,7 @@ async function dispatch(req, requestUrl, options = {}) {
         const checker = options.bettingAccountAccessChecker || {
           check(exactAccount) {
             const manager = new CrownApiLoginManager({
-              runtimeDir: options.runtimeDir || 'data/runtime',
+              runtimeDir: effectiveRuntimeDir(options),
               fetchImpl: options.fetchImpl || globalThis.fetch,
               bettingAllowedOrigins: (options.env || process.env).CROWN_BETTING_ALLOWED_ORIGINS || '',
             })
@@ -673,6 +688,10 @@ export async function handleAppApi(req, res, requestUrl, options = {}) {
     }
     if (String(error?.message || '') === 'local-secret-key-unavailable') {
       send(res, 500, { error: 'local-secret-key-unavailable', fields: { secret: 'local secret key file is not writable' } })
+      return true
+    }
+    if (error?.code === 'watcher-stop-unsafe' || String(error?.message || '') === 'watcher-stop-unsafe') {
+      send(res, 503, { error: 'watcher-stop-unsafe' })
       return true
     }
     send(res, 500, { error: 'server-error' })
