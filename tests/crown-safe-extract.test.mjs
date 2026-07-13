@@ -102,8 +102,13 @@ test('safe extraction validates all metadata and hashes before atomically publis
   assert.equal(await readFile(join(versionsDir, '0.1.1', 'app', 'main.mjs'), 'utf8'), 'export const ok = true\n')
   assert.equal(await readFile(join(versionsDir, '0.1.1', 'version.txt'), 'utf8'), '0.1.1\n')
   const published = await lstat(join(versionsDir, '0.1.1'), { bigint: true })
-  assert.deepEqual(result, {
-    versionDir: join(versionsDir, '0.1.1'),
+  const returned = await lstat(result.versionDir, { bigint: true })
+  assert.deepEqual({ dev: returned.dev, ino: returned.ino }, { dev: published.dev, ino: published.ino })
+  assert.deepEqual({
+    fileCount: result.fileCount,
+    totalSize: result.totalSize,
+    publishedIdentity: result.publishedIdentity,
+  }, {
     fileCount: 3,
     totalSize: files[0].size + files[2].size,
     publishedIdentity: { dev: published.dev, ino: published.ino },

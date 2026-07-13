@@ -44,6 +44,10 @@ function sameStableMetadata(left, right) {
     && left.nlink === right.nlink)
 }
 
+function sameIdentity(left, right) {
+  return Boolean(left && right && left.dev === right.dev && left.ino === right.ino)
+}
+
 async function stableFileDigest(path) {
   const pathBefore = await lstat(path, { bigint: true })
   if (!pathBefore.isFile() || pathBefore.isSymbolicLink() || pathBefore.nlink > 1n) {
@@ -403,7 +407,17 @@ async function assertCleanCheckout(sourceRoot) {
   }
   const topLevel = topLevelResult.stdout
   const statusOutput = statusResult.stdout
-  if (resolve(topLevel.trim()).toLowerCase() !== sourceRoot.toLowerCase()) {
+  let requestedRoot
+  let repositoryRoot
+  try {
+    [requestedRoot, repositoryRoot] = await Promise.all([
+      stat(sourceRoot, { bigint: true }),
+      stat(resolve(topLevel.trim()), { bigint: true }),
+    ])
+  } catch {
+    throw codedError('release-source-not-clean-checkout')
+  }
+  if (!requestedRoot.isDirectory() || !repositoryRoot.isDirectory() || !sameIdentity(requestedRoot, repositoryRoot)) {
     throw codedError('release-source-not-clean-checkout')
   }
   if (statusOutput.trim() !== '') throw codedError('release-source-dirty')

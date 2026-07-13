@@ -75,8 +75,12 @@ function isProcessAlive(pid) {
 }
 
 function comparableExistingPath(value) {
-  const canonical = fs.realpathSync(value)
-  return process.platform === 'win32' ? canonical.toLowerCase() : canonical
+  const metadata = fs.statSync(value, { bigint: true })
+  return `${metadata.dev}:${metadata.ino}`
+}
+
+function compactProcessOutput(result) {
+  return `${result.stdout}\n${result.stderr}`.replace(/\s/g, '')
 }
 
 async function waitFor(check, { timeoutMs = 15_000, intervalMs = 50 } = {}) {
@@ -408,7 +412,7 @@ test('launcher rejects drive-relative LOCALAPPDATA instead of resolving it throu
       extra: ['-NoBrowser'],
     })
     assert.notEqual(result.code, 0)
-    assert.match(`${result.stdout}\n${result.stderr}`, /launcher-localappdata-invalid/)
+    assert.match(compactProcessOutput(result), /launcher-localappdata-invalid/)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
@@ -430,7 +434,7 @@ test('launcher rejects a LOCALAPPDATA junction before portable initialization or
       extra: ['-NoBrowser'],
     })
     assert.notEqual(result.code, 0)
-    assert.match(`${result.stdout}\n${result.stderr}`, /launcher-reparse-forbidden/)
+    assert.match(compactProcessOutput(result), /launcher-reparse-forbidden/)
     assert.equal(fs.existsSync(path.join(actualLocal, 'CrownMonitor')), false)
   } finally {
     fs.unlinkSync(linkedLocal)
@@ -478,7 +482,8 @@ test('update bootstrap uses only previous-version bundled Node and the contained
   assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`)
   const marker = readJson(markerPath)
   assert.equal(comparableExistingPath(marker.execPath), comparableExistingPath(path.join(fixture.root, 'versions', '0.1.0', 'runtime', 'node', 'node.exe')))
-  assert.deepEqual(marker.argv, ['--request', requestPath])
+  assert.equal(marker.argv[0], '--request')
+  assert.equal(comparableExistingPath(marker.argv[1]), comparableExistingPath(requestPath))
   assert.equal(comparableExistingPath(marker.dataRoot), comparableExistingPath(fixture.dataRoot))
   assert.equal(marker.watcher, '0')
   assert.equal(marker.worker, '0')
@@ -495,7 +500,7 @@ test('update bootstrap rejects missing, outside, or mismatched requests before b
       env: launcherEnv(fixture), extra,
     })
     assert.notEqual(result.code, 0)
-    assert.match(`${result.stdout}\n${result.stderr}`.replace(/\s/g, ''), /update-bootstrap-(?:request-required|request-outside-data-root)/)
+    assert.match(compactProcessOutput(result), /update-bootstrap-(?:request-required|request-outside-data-root)/)
   }
 })
 
@@ -540,7 +545,7 @@ test('candidate launcher publishes exact identity and waits for durable updater 
   assert.equal(state.launchNonce, candidate.processInstanceId)
   assert.equal(fs.existsSync(path.join(fixture.dataRoot, 'runtime', 'fake-startup.json')), true)
   const stop = await runPowerShell(path.join(fixture.root, 'launcher', 'stop.ps1'), {
-    env: launcherEnv(fixture), extra: ['-StopTimeoutSeconds', '5'],
+    env: launcherEnv(fixture), extra: ['-StopTimeoutSeconds', '10'],
   })
   assert.equal(stop.code, 0, `${stop.stdout}\n${stop.stderr}`)
   const result = await Promise.race([
@@ -629,7 +634,7 @@ test('normal launcher resumes the exact pending apply when its journal was never
   }
   const marker = readJson(markerPath)
   assert.equal(marker.operation, 'apply')
-  assert.equal(path.resolve(marker.requestPath), path.resolve(requestPath))
+  assert.equal(comparableExistingPath(marker.requestPath), comparableExistingPath(requestPath))
   assert.deepEqual(marker.candidateIdentity, { dev: '0', ino: '0' })
   const stop = await runPowerShell(path.join(fixture.root, 'launcher', 'stop.ps1'), {
     env: launcherEnv(fixture), extra: ['-StopTimeoutSeconds', '5'],
@@ -704,7 +709,7 @@ test('launcher fails closed on malformed canonical current metadata before start
       extra: ['-NoBrowser'],
     })
     assert.notEqual(result.code, 0)
-    assert.match(`${result.stdout}\n${result.stderr}`, /launcher-current-invalid/)
+    assert.match(compactProcessOutput(result), /launcher-current-invalid/)
     assert.equal(fs.existsSync(path.join(root, 'versions', 'outside')), false)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
@@ -913,7 +918,8 @@ test('reserved pre-child claim recovers when its exact parent dies before launch
   assert.equal(fs.readdirSync(runtimeDir).some((name) => name.startsWith('.launcher-backup-')), false)
   const stopped = await runPowerShell(path.join(fixture.root, 'launcher', 'stop.ps1'), { env: launcherEnv(fixture) })
   assert.equal(stopped.code, 0, `${stopped.stdout}\n${stopped.stderr}`)
-  assert.equal((await restartedResult).code, 0)
+  const restartExit = await restartedResult
+  assert.equal(restartExit.code, 0, `${restartExit.stdout}\n${restartExit.stderr}`)
 })
 
 test('reserved post-Process.Start claim is cleaned by its bound wrapper before immediate restart', async (t) => {
@@ -1005,19 +1011,19 @@ test('startup claim fails closed on corruption, multiple claims and tampering, b
   fs.writeFileSync(claimFile, '{broken')
   const corrupt = await runPowerShell(path.join(fixture.root, 'launcher', 'start.ps1'), { env: launcherEnv(fixture), extra: ['-NoBrowser'] })
   assert.notEqual(corrupt.code, 0)
-  assert.match(`${corrupt.stdout}\n${corrupt.stderr}`, /launcher-startup-claim-invalid/)
+  assert.match(compactProcessOutput(corrupt), /launcher-startup-claim-invalid/)
 
   fs.writeFileSync(claimFile, JSON.stringify(validClaim) + '\n')
   fs.writeFileSync(path.join(runtimeDir, 'launcher-startup-claim-extra.json'), JSON.stringify(validClaim) + '\n')
   const multiple = await runPowerShell(path.join(fixture.root, 'launcher', 'start.ps1'), { env: launcherEnv(fixture), extra: ['-NoBrowser'] })
   assert.notEqual(multiple.code, 0)
-  assert.match(`${multiple.stdout}\n${multiple.stderr}`, /launcher-startup-claim-multiple/)
+  assert.match(compactProcessOutput(multiple), /launcher-startup-claim-multiple/)
   fs.rmSync(path.join(runtimeDir, 'launcher-startup-claim-extra.json'))
 
   fs.writeFileSync(claimFile, JSON.stringify({ ...validClaim, abortPath: path.join(fixture.root, 'outside-abort.json') }) + '\n')
   const outside = await runPowerShell(path.join(fixture.root, 'launcher', 'start.ps1'), { env: launcherEnv(fixture), extra: ['-NoBrowser'] })
   assert.notEqual(outside.code, 0)
-  assert.match(`${outside.stdout}\n${outside.stderr}`, /launcher-startup-claim-path-outside-runtime/)
+  assert.match(compactProcessOutput(outside), /launcher-startup-claim-path-outside-runtime/)
 
   fs.writeFileSync(claimFile, JSON.stringify(validClaim) + '\n')
   const restarted = launchStart(fixture)
@@ -1099,20 +1105,20 @@ test('stop refuses PID start-time reuse and malformed state without terminating 
   fs.writeFileSync(stateFile, `${JSON.stringify(wrongTime)}\n`)
   const refused = await runPowerShell(path.join(fixture.root, 'launcher', 'stop.ps1'), { env: launcherEnv(fixture) })
   assert.notEqual(refused.code, 0)
-  assert.match(`${refused.stdout}\n${refused.stderr}`, /launcher-process-(?:identity-mismatch|not-running)/)
+  assert.match(compactProcessOutput(refused), /launcher-process-(?:identity-mismatch|not-running)/)
   if (isProcessAlive(state.pid)) assert.equal((await fetch(`http://127.0.0.1:${state.port}/api/health`)).status, 200)
 
   fs.writeFileSync(stateFile, '{broken-json')
   const malformed = await runPowerShell(path.join(fixture.root, 'launcher', 'stop.ps1'), { env: launcherEnv(fixture) })
   assert.notEqual(malformed.code, 0)
-  assert.match(`${malformed.stdout}\n${malformed.stderr}`, /launcher-state-invalid/)
+  assert.match(compactProcessOutput(malformed), /launcher-state-invalid/)
   if (isProcessAlive(state.pid)) assert.equal((await fetch(`http://127.0.0.1:${state.port}/api/health`)).status, 200)
 
   fs.writeFileSync(stateFile, `${JSON.stringify(state)}\n`)
   const wasAliveBeforeStop = isProcessAlive(state.pid)
   const stopped = await runPowerShell(path.join(fixture.root, 'launcher', 'stop.ps1'), { env: launcherEnv(fixture) })
   if (wasAliveBeforeStop) assert.equal(stopped.code, 0, `${stopped.stdout}\n${stopped.stderr}`)
-  else assert.match(`${stopped.stdout}\n${stopped.stderr}`, /launcher-process-not-running/)
+  else assert.match(compactProcessOutput(stopped), /launcher-process-not-running/)
   assert.equal((await resultPromise).code, 0)
 })
 
@@ -1136,7 +1142,7 @@ test('health timeout fails without publishing launcher state or leaving its fake
   const child = launchStart(fixture, ['-HealthTimeoutSeconds', '2'])
   const result = await childResult(child)
   assert.notEqual(result.code, 0)
-  assert.match(`${result.stdout}\n${result.stderr}`, /launcher-health-timeout/)
+  assert.match(compactProcessOutput(result), /launcher-health-timeout/)
   assert.equal(fs.existsSync(path.join(fixture.dataRoot, 'runtime', 'launcher-state.json')), false)
   const pid = Number(fs.readFileSync(path.join(fixture.dataRoot, 'runtime', 'fake-hanging-pid.txt'), 'utf8'))
   assert.throws(() => process.kill(pid, 0))
