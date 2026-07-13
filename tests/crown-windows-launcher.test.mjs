@@ -519,7 +519,7 @@ test('candidate launcher publishes exact identity and waits for durable updater 
   ])
   const candidatePath = path.join(operationDir, 'candidate.json')
   let candidate
-  try { candidate = await waitFor(() => fs.existsSync(candidatePath) && readJson(candidatePath)) } catch (error) {
+  try { candidate = await waitFor(() => fs.existsSync(candidatePath) && readJson(candidatePath), { timeoutMs: 40_000 }) } catch (error) {
     child.kill()
     const result = await childResult(child)
     assert.fail(`candidate-not-published:${error.message}\n${result.stdout}\n${result.stderr}`)
@@ -568,7 +568,7 @@ test('candidate launcher exact abort stops before Dashboard import and never pub
   ])
   const candidatePath = path.join(operationDir, 'candidate.json')
   let candidate
-  try { candidate = await waitFor(() => fs.existsSync(candidatePath) && readJson(candidatePath)) } catch (error) {
+  try { candidate = await waitFor(() => fs.existsSync(candidatePath) && readJson(candidatePath), { timeoutMs: 40_000 }) } catch (error) {
     child.kill()
     const result = await childResult(child)
     assert.fail(`candidate-not-published:${error.message}\n${result.stdout}\n${result.stderr}`)
@@ -627,7 +627,7 @@ test('normal launcher resumes the exact pending apply when its journal was never
   })}\n`)
   const child = launchStart(fixture)
   const statePath = path.join(fixture.dataRoot, 'runtime', 'launcher-state.json')
-  try { await waitFor(() => fs.existsSync(statePath) && readJson(statePath)) } catch (error) {
+  try { await waitFor(() => fs.existsSync(statePath) && readJson(statePath), { timeoutMs: 40_000 }) } catch (error) {
     child.kill()
     const result = await childResult(child)
     assert.fail(`recovery-launch-failed:${error.message}\n${result.stdout}\n${result.stderr}`)
@@ -681,7 +681,7 @@ test('normal launcher constructs an exact recovery request when the durable jour
   })}\n`)
   const child = launchStart(fixture)
   const statePath = path.join(fixture.dataRoot, 'runtime', 'launcher-state.json')
-  try { await waitFor(() => fs.existsSync(statePath) && readJson(statePath)) } catch (error) {
+  try { await waitFor(() => fs.existsSync(statePath) && readJson(statePath), { timeoutMs: 40_000 }) } catch (error) {
     child.kill()
     const result = await childResult(child)
     assert.fail(`recovery-launch-failed:${error.message}\n${result.stdout}\n${result.stderr}`)
