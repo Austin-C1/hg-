@@ -1,0 +1,166 @@
+name: Windows unsigned portable build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-unsigned-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22.23.1'
+  NODE_SHA256: '7df0bc9375723f4a86b3aa1b7cc73342423d9677a8df4538aca31a049e309c29'
+  NODE_URL: 'https://nodejs.org/dist/v22.23.1/node-v22.23.1-win-x64.zip'
+  PLAYWRIGHT_VERSION: '1.61.1'
+  CHROMIUM_BROWSER_VERSION: '149.0.7827.55'
+  CHROMIUM_REVISION: '1228'
+  CHROMIUM_SHA256: 'ebc0c2b75e2ea98151a7f18ff47037bfcbab44a8660e79b9ffa6520f9b7607ab'
+  CHROMIUM_URL: 'https://storage.googleapis.com/chrome-for-testing-public/149.0.7827.55/win64/chrome-win64.zip'
+
+jobs:
+  build-unsigned:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Check out clean source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up pinned build Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.23.1'
+
+      - name: Validate source ref and release version
+        id: source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Get-Content -Raw -LiteralPath 'package.json' | ConvertFrom-Json
+          $releaseVersion = [string]$package.version
+          if ($releaseVersion -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') {
+            throw 'package version is not a supported release version'
+          }
+          if ("$env:GITHUB_REF_TYPE" -eq 'tag' -and "$env:GITHUB_REF_NAME" -cne "v$releaseVersion") {
+            throw 'tag must exactly match package version'
+          }
+          "version=$releaseVersion" >> $env:GITHUB_OUTPUT
+
+      - name: Install locked dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw 'backend npm ci failed' }
+          npm --prefix frontend ci
+          if ($LASTEXITCODE -ne 0) { throw 'frontend npm ci failed' }
+
+      - name: Test and build backend and frontend
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm test
+          if ($LASTEXITCODE -ne 0) { throw 'backend tests failed' }
+          npm run check
+          if ($LASTEXITCODE -ne 0) { throw 'syntax check failed' }
+          npm --prefix frontend test
+          if ($LASTEXITCODE -ne 0) { throw 'frontend tests failed' }
+          npm --prefix frontend run build
+          if ($LASTEXITCODE -ne 0) { throw 'frontend build failed' }
+
+      - name: Verify clean checkout before staging
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git diff --exit-code -- .
+          if ($LASTEXITCODE -ne 0) { throw 'tracked source changed during build' }
+          $status = @(git status --porcelain=v1 --untracked-files=all)
+          if ($LASTEXITCODE -ne 0) { throw 'git status failed' }
+          if ($status.Count -ne 0) { throw 'checkout is not clean before release staging' }
+
+      - name: Prepare checksum-verified portable runtimes
+        id: runtimes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runtimeLock = Get-Content -Raw -LiteralPath 'release/windows-runtime-lock.json' | ConvertFrom-Json
+          $package = Get-Content -Raw -LiteralPath 'package.json' | ConvertFrom-Json
+          if ([string]$runtimeLock.node.version -cne $env:NODE_VERSION -or
+              [string]$runtimeLock.node.executable -cne 'node.exe' -or
+              [string]$runtimeLock.chromium.browserVersion -cne $env:CHROMIUM_BROWSER_VERSION -or
+              [string]$runtimeLock.chromium.revision -cne $env:CHROMIUM_REVISION -or
+              [string]$runtimeLock.chromium.executable -cne 'chrome.exe') {
+            throw 'runtime lock does not match pinned workflow inputs'
+          }
+          if ([string]$runtimeLock.chromium.playwrightVersion -cne $env:PLAYWRIGHT_VERSION -or
+              [string]$package.dependencies.playwright -cne $env:PLAYWRIGHT_VERSION) {
+            throw 'Playwright package does not match runtime lock'
+          }
+
+          $nodeArchive = Join-Path $env:RUNNER_TEMP 'node-win-x64.zip'
+          $nodeExtract = Join-Path $env:RUNNER_TEMP 'node-portable'
+          Invoke-WebRequest -Uri $env:NODE_URL -OutFile $nodeArchive -MaximumRedirection 0
+          $nodeHash = (Get-FileHash -LiteralPath $nodeArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($nodeHash -cne $env:NODE_SHA256) { throw 'Node portable archive checksum mismatch' }
+          Expand-Archive -LiteralPath $nodeArchive -DestinationPath $nodeExtract
+          $nodeRuntime = Join-Path $nodeExtract "node-v$env:NODE_VERSION-win-x64"
+          if (-not (Test-Path -LiteralPath (Join-Path $nodeRuntime 'node.exe') -PathType Leaf)) {
+            throw 'Node portable executable is missing'
+          }
+
+          $chromiumArchive = Join-Path $env:RUNNER_TEMP 'chromium-win-x64.zip'
+          $chromiumExtract = Join-Path $env:RUNNER_TEMP 'chromium-portable'
+          Invoke-WebRequest -Uri $env:CHROMIUM_URL -OutFile $chromiumArchive -MaximumRedirection 0
+          $chromiumHash = (Get-FileHash -LiteralPath $chromiumArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($chromiumHash -cne $env:CHROMIUM_SHA256) { throw 'Chromium portable archive checksum mismatch' }
+          Expand-Archive -LiteralPath $chromiumArchive -DestinationPath $chromiumExtract
+          $chromiumRuntime = Join-Path $chromiumExtract 'chrome-win64'
+          if (-not (Test-Path -LiteralPath (Join-Path $chromiumRuntime 'chrome.exe') -PathType Leaf)) {
+            throw 'Chromium portable executable is missing'
+          }
+
+          "node=$nodeRuntime" >> $env:GITHUB_OUTPUT
+          "chromium=$chromiumRuntime" >> $env:GITHUB_OUTPUT
+
+      - name: Build and audit unsigned portable artifact
+        id: release
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          NODE_RUNTIME: ${{ steps.runtimes.outputs.node }}
+          CHROMIUM_RUNTIME: ${{ steps.runtimes.outputs.chromium }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseVersion = $env:RELEASE_VERSION
+          $nodeRuntime = $env:NODE_RUNTIME
+          $chromiumRuntime = $env:CHROMIUM_RUNTIME
+          $releaseRoot = Join-Path $env:RUNNER_TEMP "crown-windows-portable-$releaseVersion"
+          npm run release:portable -- --version $releaseVersion --node-runtime "$nodeRuntime" --chromium-runtime "$chromiumRuntime" --out "$releaseRoot"
+          if ($LASTEXITCODE -ne 0) { throw 'allowlist release staging failed' }
+          npm run release:audit -- --root "$releaseRoot"
+          if ($LASTEXITCODE -ne 0) { throw 'release audit failed' }
+
+          New-Item -ItemType Directory -Force -Path 'output' | Out-Null
+          $artifactPath = Join-Path (Resolve-Path -LiteralPath 'output') "crown-windows-portable-unsigned-$releaseVersion.zip"
+          Compress-Archive -Path "$releaseRoot\*" -DestinationPath "$artifactPath"
+          if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) { throw 'unsigned artifact was not created' }
+          "version=$releaseVersion" >> $env:GITHUB_OUTPUT
+
+      - name: Upload unsigned portable artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: crown-windows-portable-unsigned-${{ steps.release.outputs.version }}
+          path: output/crown-windows-portable-unsigned-${{ steps.release.outputs.version }}.zip
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 7
