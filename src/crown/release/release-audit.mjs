@@ -177,7 +177,9 @@ function auditPolicy(value) {
     }
     return candidate
   }
-  const allowedSourceStorageModules = list('allowedSourceStorageModules', [])
+  const allowedSourceStorageModules = source.allowedSourceStorageModules === undefined
+    ? ALLOWED_SOURCE_STORAGE_MODULES
+    : list('allowedSourceStorageModules', [])
   const exactStorageAllowlist = allowedSourceStorageModules.slice().sort().join('\0')
     === ALLOWED_SOURCE_STORAGE_MODULES.slice().sort().join('\0')
     ? allowedSourceStorageModules

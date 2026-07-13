@@ -97,7 +97,7 @@ test('release audit permits local-path examples in dependency docs but still det
   assert.equal(secretReport.findings.some((finding) => finding.code === 'secret-material'), true)
 })
 
-test('release audit allows only the three explicitly named source storage modules', async (t) => {
+test('default release audit allows only the three explicitly named source storage modules', async (t) => {
   const allowedSourceStorageModules = [
     'src/crown/storage/jsonl-store.mjs',
     'src/crown/storage/jsonl-candidate-store.mjs',
@@ -118,7 +118,7 @@ test('release audit allows only the three explicitly named source storage module
     rm(root, { recursive: true, force: true }),
     rm(caseRoot, { recursive: true, force: true }),
   ]))
-  const report = await scanReleaseArtifacts({ root, policy: { allowedSourceStorageModules } })
+  const report = await scanReleaseArtifacts({ root })
   const rejected = report.findings
     .filter((finding) => finding.code === 'forbidden-artifact-path')
     .map((finding) => finding.path)
@@ -127,7 +127,7 @@ test('release audit allows only the three explicitly named source storage module
     'versions/0.1.0/app/src/crown/storage/private.json',
     'versions/0.1.0/app/src/x/storage/private.mjs',
   ])
-  const caseReport = await scanReleaseArtifacts({ root: caseRoot, policy: { allowedSourceStorageModules } })
+  const caseReport = await scanReleaseArtifacts({ root: caseRoot })
   assert.equal(caseReport.findings.some((finding) => finding.code === 'forbidden-artifact-path'), true)
 })
 
