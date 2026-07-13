@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "platform": "win32",
+  "arch": "x64",
+  "node": {
+    "version": "22.23.1",
+    "executable": "node.exe",
+    "archiveUrl": "https://nodejs.org/dist/v22.23.1/node-v22.23.1-win-x64.zip",
+    "archiveSha256": "7df0bc9375723f4a86b3aa1b7cc73342423d9677a8df4538aca31a049e309c29",
+    "archiveRoot": "node-v22.23.1-win-x64",
+    "treeDigestAlgorithm": "crown-runtime-tree-sha256-v1",
+    "treeSha256": "59b2b74a39116deb4b0baf42332c9bd0386b8ef1fb766e807d87095aae6ef8e6",
+    "treeEntries": 2539
+  },
+  "chromium": {
+    "playwrightVersion": "1.61.1",
+    "revision": "1228",
+    "browserVersion": "149.0.7827.55",
+    "executable": "chrome.exe",
+    "archiveUrl": "https://storage.googleapis.com/chrome-for-testing-public/149.0.7827.55/win64/chrome-win64.zip",
+    "archiveSha256": "ebc0c2b75e2ea98151a7f18ff47037bfcbab44a8660e79b9ffa6520f9b7607ab",
+    "archiveRoot": "chrome-win64",
+    "treeDigestAlgorithm": "crown-runtime-tree-sha256-v1",
+    "treeSha256": "c6036d7646de33fe81487a369e00b3beb92dbc0333e46e4ccadf6caa7008adba",
+    "treeEntries": 316
+  }
+}

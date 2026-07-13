@@ -15,6 +15,7 @@ test('dashboard Docker config keeps the image buildable without copying local se
   assert.match(dockerfile, /CROWN_DASHBOARD_HOST=0\.0\.0\.0/)
   assert.match(dockerfile, /CROWN_DB_PATH=\/app\/storage\/crown\.sqlite/)
   assert.match(dockerfile, /CROWN_STATIC_DIR=\/app\/frontend\/dist/)
+  assert.match(dockerfile, /PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1/)
   assert.match(dockerfile, /EXPOSE 8787/)
   assert.doesNotMatch(dockerfile, /^COPY\s+\.\s/m)
   assert.doesNotMatch(dockerfile, /^COPY\s+config\s+\.\/config/m)
@@ -59,4 +60,6 @@ test('dashboard Docker config keeps the image buildable without copying local se
     assert.equal(line.replace(/^[^=]*=/, '').trim(), '')
   }
   assert.equal(pkg.scripts['crown:dashboard:docker'], 'docker compose -p crown-dashboard up --build')
+  assert.equal(pkg.dependencies.playwright, '1.61.1')
+  assert.equal(pkg.devDependencies?.playwright, undefined)
 })

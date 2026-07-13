@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "artifactManifest": "release-files.json",
+  "launcherFiles": [
+    { "source": "packaging/windows/启动程序.cmd", "target": "启动程序.cmd" },
+    { "source": "packaging/windows/停止程序.cmd", "target": "停止程序.cmd" },
+    { "source": "packaging/windows/首次使用说明.txt", "target": "首次使用说明.txt" },
+    { "source": "packaging/windows/launcher/start.ps1", "target": "launcher/start.ps1" },
+    { "source": "packaging/windows/launcher/stop.ps1", "target": "launcher/stop.ps1" },
+    { "source": "packaging/windows/launcher/update-bootstrap.ps1", "target": "launcher/update-bootstrap.ps1" }
+  ],
+  "appFiles": [
+    "package.json",
+    "package-lock.json",
+    "config/default-leagues.json",
+    "release/windows-runtime-lock.json",
+    "release/windows-production-allowlist.json",
+    "scripts/crown-dashboard.mjs",
+    "scripts/crown-watch.mjs",
+    "scripts/crown-betting-worker.mjs"
+  ],
+  "appTrees": [
+    "src",
+    "frontend/dist"
+  ],
+  "allowedSourceStorageModules": [
+    "src/crown/storage/jsonl-store.mjs",
+    "src/crown/storage/jsonl-candidate-store.mjs",
+    "src/crown/storage/jsonl-v2-audit-store.mjs"
+  ],
+  "productionDependencies": [
+    { "name": "iconv-lite", "version": "0.7.3", "direct": true },
+    { "name": "pend", "version": "1.2.0", "direct": false },
+    { "name": "playwright", "version": "1.61.1", "direct": true },
+    { "name": "playwright-core", "version": "1.61.1", "direct": false },
+    { "name": "safer-buffer", "version": "2.1.2", "direct": false },
+    { "name": "yauzl", "version": "3.4.0", "direct": true }
+  ],
+  "forbiddenArtifactSegments": [
+    "tests",
+    "fixtures",
+    "storage",
+    "data/runtime",
+    "session",
+    "sessions",
+    "profile",
+    "profiles",
+    "log",
+    "logs"
+  ],
+  "forbiddenArtifactExtensions": [
+    ".env",
+    ".sqlite",
+    ".sqlite3",
+    ".db",
+    ".key",
+    ".pem",
+    ".log"
+  ],
+  "forbiddenArtifactNames": [
+    "crown-bet-bootstrap.mjs",
+    "crown-bet-execute.mjs",
+    "crown-bet-execute-sequence.mjs",
+    "crown-betting-candidate-dry-run.mjs",
+    "telegram-settings.json"
+  ],
+  "allowedContentLiterals": [
+    "127.0.0.1",
+    "Asia/Shanghai"
+  ]
+}
