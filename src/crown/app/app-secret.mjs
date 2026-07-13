@@ -2,6 +2,8 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { assertPathWithin } from '../runtime/portable-paths.mjs'
+
 const VERSION_V1 = 'v1'
 const VERSION_V2 = 'v2'
 const ALGORITHM = 'aes-256-gcm'
@@ -16,11 +18,30 @@ export class SecretKeyRequiredError extends Error {
 }
 
 function localSecretKeyPath({ env = process.env, cwd = process.cwd(), keyPath } = {}) {
-  const configured = keyPath || env.CROWN_LOCAL_SECRET_KEY_PATH || env.CROWN_SECRET_KEY_FILE || DEFAULT_LOCAL_SECRET_KEY_PATH
+  const configuredPath = keyPath || env.CROWN_LOCAL_SECRET_KEY_PATH || env.CROWN_SECRET_KEY_FILE
+  if (env.CROWN_PORTABLE === '1') {
+    if (!env.CROWN_DATA_ROOT) throw new Error('portable-data-root-required')
+    let dataRoot
+    try {
+      dataRoot = assertPathWithin(env.CROWN_DATA_ROOT, env.CROWN_DATA_ROOT, 'dataRoot')
+    } catch {
+      throw new Error('portable-data-root-invalid')
+    }
+    if (!configuredPath) throw new Error('portable-secret-key-path-required')
+    try {
+      return assertPathWithin(dataRoot, configuredPath, 'secretKeyPath')
+    } catch (error) {
+      if (error?.code === 'portable-path-invalid') {
+        throw new Error('portable-secret-key-path-absolute-required')
+      }
+      throw error
+    }
+  }
+  const configured = configuredPath || DEFAULT_LOCAL_SECRET_KEY_PATH
   return path.resolve(cwd, configured)
 }
 
-function readOrCreateLocalSecretKey(options = {}) {
+export function readOrCreateLocalSecretKey(options = {}) {
   const file = localSecretKeyPath(options)
   try {
     if (fs.existsSync(file)) {

@@ -8,6 +8,7 @@ import {
   canStoreSecrets,
   decryptSecret,
   encryptSecret,
+  readOrCreateLocalSecretKey,
   redactSecretFields,
 } from '../src/crown/app/app-secret.mjs'
 
@@ -72,6 +73,64 @@ test('non-empty secrets use an auto-generated local key when CROWN_SECRET_KEY is
   assert.equal(fs.existsSync(keyPath), true)
   assert.equal(encrypted.includes('secret-value'), false)
   assert.equal(decryptSecret(encrypted, { env }), 'secret-value')
+})
+
+test('portable local key uses an explicit absolute path and rejects repository-relative fallback', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-portable-secret-'))
+  const dataRoot = path.join(dir, 'data')
+  const keyPath = path.join(dataRoot, 'storage', 'crown-local-secret.key')
+  const env = { CROWN_PORTABLE: '1', CROWN_DATA_ROOT: dataRoot, CROWN_LOCAL_SECRET_KEY_PATH: keyPath }
+
+  const generated = readOrCreateLocalSecretKey({ env })
+  assert.equal(typeof generated, 'string')
+  assert.equal(fs.readFileSync(keyPath, 'utf8').trim(), generated)
+  assert.equal(readOrCreateLocalSecretKey({ env }), generated)
+  assert.throws(
+    () => readOrCreateLocalSecretKey({ env: { CROWN_PORTABLE: '1', CROWN_DATA_ROOT: dataRoot } }),
+    /portable-secret-key-path-required/,
+  )
+  assert.throws(
+    () => readOrCreateLocalSecretKey({ keyPath: 'storage/local.key', env }),
+    /portable-secret-key-path-absolute-required/,
+  )
+})
+
+test('portable local key requires a fully-qualified data root and stays contained within it', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-portable-secret-root-'))
+  const dataRoot = path.join(dir, 'data')
+  const keyPath = path.join(dataRoot, 'storage', 'crown-local-secret.key')
+  const outsidePath = path.join(dir, 'data-sibling', 'crown-local-secret.key')
+
+  assert.throws(
+    () => readOrCreateLocalSecretKey({ keyPath, env: { CROWN_PORTABLE: '1' } }),
+    /portable-data-root-required/,
+  )
+  assert.throws(
+    () => readOrCreateLocalSecretKey({
+      keyPath,
+      env: { CROWN_PORTABLE: '1', CROWN_DATA_ROOT: '\\data' },
+    }),
+    /portable-data-root-invalid/,
+  )
+  assert.throws(
+    () => readOrCreateLocalSecretKey({
+      keyPath: outsidePath,
+      env: { CROWN_PORTABLE: '1', CROWN_DATA_ROOT: dataRoot },
+    }),
+    /portable-path-outside-data-root:secretKeyPath/,
+  )
+})
+
+test('portable local key rejects drive-root-relative paths before filesystem access', () => {
+  const dataRoot = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'crown-portable-secret-qualified-')), 'data')
+
+  assert.throws(
+    () => readOrCreateLocalSecretKey({
+      keyPath: '\\',
+      env: { CROWN_PORTABLE: '1', CROWN_DATA_ROOT: dataRoot },
+    }),
+    /portable-secret-key-path-absolute-required/,
+  )
 })
 
 test('secret redaction returns hasSecret without ciphertext or plaintext', () => {

@@ -6,6 +6,7 @@ import { APP_CONTRACT_VERSION } from './app-contract-version.mjs'
 import { decideAlertBettingMigration } from './alert-betting-settings-migration.mjs'
 import { canonicalAutoBettingDecimal } from '../betting/auto-betting-settings.mjs'
 import { migrateFixedSettingsToRuleCards } from '../betting/dynamic-card-migration.mjs'
+import { assertPathWithin } from '../runtime/portable-paths.mjs'
 
 const DEFAULT_DB_PATH = 'storage/crown.sqlite'
 
@@ -1577,11 +1578,44 @@ function applyCanonicalTableRebuilds(db) {
 }
 
 export function defaultDbPath(env = process.env) {
+  if (env.CROWN_PORTABLE === '1') return resolvePortableDbPath(env.CROWN_DB_PATH, env)
   return path.resolve(env.CROWN_DB_PATH || DEFAULT_DB_PATH)
 }
 
-export function readAppSchemaVersion({ dbPath = defaultDbPath() } = {}) {
-  const resolvedPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath)
+function portableDataRoot(env) {
+  if (!env.CROWN_DATA_ROOT) throw new Error('portable-data-root-required')
+  try {
+    return assertPathWithin(env.CROWN_DATA_ROOT, env.CROWN_DATA_ROOT, 'dataRoot')
+  } catch {
+    throw new Error('portable-data-root-invalid')
+  }
+}
+
+function resolvePortableDbPath(dbPath, env) {
+  const dataRoot = portableDataRoot(env)
+  if (!dbPath) throw new Error('portable-db-path-required')
+  if (dbPath === ':memory:') throw new Error('portable-db-memory-forbidden')
+  try {
+    return assertPathWithin(dataRoot, dbPath, 'dbPath')
+  } catch (error) {
+    if (error?.code === 'portable-path-invalid') {
+      throw new Error('portable-db-path-absolute-required')
+    }
+    throw error
+  }
+}
+
+function resolveDbPath(dbPath, env) {
+  if (env.CROWN_PORTABLE === '1') {
+    return resolvePortableDbPath(dbPath ?? env.CROWN_DB_PATH, env)
+  }
+  if (dbPath === undefined) return defaultDbPath(env)
+  if (dbPath === ':memory:') return dbPath
+  return path.resolve(dbPath)
+}
+
+export function readAppSchemaVersion({ dbPath, env = process.env } = {}) {
+  const resolvedPath = resolveDbPath(dbPath, env)
   if (resolvedPath === ':memory:' || !fs.existsSync(resolvedPath)) return null
   let db
   try {
@@ -1597,8 +1631,8 @@ export function readAppSchemaVersion({ dbPath = defaultDbPath() } = {}) {
   }
 }
 
-export function openRuntimeDatabase({ dbPath = defaultDbPath() } = {}) {
-  const resolvedPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath)
+export function openRuntimeDatabase({ dbPath, env = process.env } = {}) {
+  const resolvedPath = resolveDbPath(dbPath, env)
   if (resolvedPath !== ':memory:' && !fs.existsSync(resolvedPath)) {
     throw new Error(`app database does not exist: ${resolvedPath}`)
   }
@@ -1621,8 +1655,8 @@ export function openRuntimeDatabase({ dbPath = defaultDbPath() } = {}) {
   }
 }
 
-export function openAppDatabase({ dbPath = defaultDbPath(), monitorJson } = {}) {
-  const resolvedPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath)
+export function openAppDatabase({ dbPath, env = process.env, monitorJson } = {}) {
+  const resolvedPath = resolveDbPath(dbPath, env)
   if (resolvedPath !== ':memory:') fs.mkdirSync(path.dirname(resolvedPath), { recursive: true })
 
   const db = new DatabaseSync(resolvedPath)

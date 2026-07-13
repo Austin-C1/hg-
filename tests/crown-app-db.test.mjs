@@ -5,7 +5,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 
-import { openAppDatabase, openRuntimeDatabase } from '../src/crown/app/app-db.mjs'
+import { defaultDbPath, openAppDatabase, openRuntimeDatabase } from '../src/crown/app/app-db.mjs'
 
 function tempDbPath() {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'crown-app-db-')), 'crown.sqlite')
@@ -20,6 +20,71 @@ test('runtime database connection opens an initialized file without running sche
   const handle = openRuntimeDatabase({ dbPath })
   assert.deepEqual(handle.db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map((row) => row.name), ['marker'])
   handle.close()
+})
+
+test('portable database uses an explicit absolute path and rejects repository-relative fallback', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-portable-db-'))
+  const dataRoot = path.join(dir, 'data')
+  const dbPath = path.join(dataRoot, 'storage', 'crown.sqlite')
+  const env = { CROWN_PORTABLE: '1', CROWN_DATA_ROOT: dataRoot, CROWN_DB_PATH: dbPath }
+  const handle = openAppDatabase({ env })
+
+  assert.equal(handle.dbPath, path.resolve(dbPath))
+  handle.close()
+  assert.equal(fs.existsSync(dbPath), true)
+  assert.throws(
+    () => openAppDatabase({ env: { CROWN_PORTABLE: '1', CROWN_DATA_ROOT: dataRoot } }),
+    /portable-db-path-required/,
+  )
+  assert.throws(
+    () => openAppDatabase({ dbPath: 'storage/portable.sqlite', env }),
+    /portable-db-path-absolute-required/,
+  )
+})
+
+test('portable database requires a fully-qualified data root and stays contained within it', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-portable-db-root-'))
+  const dataRoot = path.join(dir, 'data')
+  const dbPath = path.join(dataRoot, 'storage', 'crown.sqlite')
+  const outsidePath = path.join(dir, 'data-sibling', 'crown.sqlite')
+
+  assert.throws(
+    () => {
+      const handle = openAppDatabase({ dbPath, env: { CROWN_PORTABLE: '1' } })
+      handle.close()
+    },
+    /portable-data-root-required/,
+  )
+  assert.throws(
+    () => defaultDbPath({ CROWN_PORTABLE: '1', CROWN_DATA_ROOT: '\\data', CROWN_DB_PATH: dbPath }),
+    /portable-data-root-invalid/,
+  )
+  assert.throws(
+    () => {
+      const handle = openAppDatabase({
+        dbPath: outsidePath,
+        env: { CROWN_PORTABLE: '1', CROWN_DATA_ROOT: dataRoot },
+      })
+      handle.close()
+    },
+    /portable-path-outside-data-root:dbPath/,
+  )
+})
+
+test('portable database rejects drive-root-relative paths and in-memory storage', () => {
+  const dataRoot = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'crown-portable-db-qualified-')), 'data')
+
+  assert.throws(
+    () => defaultDbPath({ CROWN_PORTABLE: '1', CROWN_DATA_ROOT: dataRoot, CROWN_DB_PATH: '\\crown.sqlite' }),
+    /portable-db-path-absolute-required/,
+  )
+  assert.throws(
+    () => {
+      const handle = openAppDatabase({ dbPath: ':memory:', env: { CROWN_PORTABLE: '1', CROWN_DATA_ROOT: dataRoot } })
+      handle.close()
+    },
+    /portable-db-memory-forbidden/,
+  )
 })
 
 test('app database creates the required SQLite tables', () => {
