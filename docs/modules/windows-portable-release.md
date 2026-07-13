@@ -94,6 +94,8 @@ node --test tests/crown-release-workflow.test.mjs
 
 正式发布还必须执行全量 backend/frontend 测试、syntax/build、实际发行物审计、仓库外 cwd smoke 和 Fresh Windows 矩阵。单元测试通过不等于 ZIP 可供下载。
 
+全量 backend 测试必须串行执行。Launcher fault-injection 用例会启动真实 PowerShell/Node 子进程；提高 Node test 文件级并发会使端口、子进程退出和恢复状态相互干扰，形成非确定性失败。项目根目录的 `npm test` 已固定为 `--test-concurrency=1`。
+
 ## 发布状态
 
 公开仓库可以保存受审源码和开发分支。Actions workflow 只产生 unsigned 审计 artifact。只有离线私钥签名、最终资产复验和 Fresh Windows 证据全部完成后，才能创建面向用户的 Private Beta Release。
