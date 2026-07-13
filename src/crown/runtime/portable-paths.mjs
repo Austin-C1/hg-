@@ -30,7 +30,7 @@ function portableError(code, field) {
   return error
 }
 
-function normalizedAbsolute(value, code) {
+export function normalizeFullyQualifiedWindowsPath(value, code = 'portable-path-invalid') {
   if (typeof value !== 'string' || !value || (!DRIVE_QUALIFIED.test(value) && !COMPLETE_UNC_SHARE.test(value))) {
     throw portableError(code)
   }
@@ -48,8 +48,8 @@ export function assertPathWithin(root, candidate, field = 'path') {
   let normalizedRoot
   let normalizedCandidate
   try {
-    normalizedRoot = normalizedAbsolute(root, 'portable-path-invalid')
-    normalizedCandidate = normalizedAbsolute(candidate, 'portable-path-invalid')
+    normalizedRoot = normalizeFullyQualifiedWindowsPath(root, 'portable-path-invalid')
+    normalizedCandidate = normalizeFullyQualifiedWindowsPath(candidate, 'portable-path-invalid')
   } catch {
     throw portableError('portable-path-invalid', field)
   }
@@ -62,7 +62,7 @@ export function assertPathWithin(root, candidate, field = 'path') {
 }
 
 export function resolvePortablePaths({ appRoot, dataRoot, env = process.env, version } = {}) {
-  const normalizedAppRoot = normalizedAbsolute(appRoot, 'portable-app-root-invalid')
+  const normalizedAppRoot = normalizeFullyQualifiedWindowsPath(appRoot, 'portable-app-root-invalid')
   const normalizedVersion = strictVersion(version)
   const configuredDataRoot = dataRoot || env.CROWN_DATA_ROOT
   const defaultDataRoot = env.LOCALAPPDATA
@@ -71,7 +71,7 @@ export function resolvePortablePaths({ appRoot, dataRoot, env = process.env, ver
   if (!configuredDataRoot && !defaultDataRoot) {
     throw portableError('portable-localappdata-required')
   }
-  const normalizedDataRoot = normalizedAbsolute(
+  const normalizedDataRoot = normalizeFullyQualifiedWindowsPath(
     configuredDataRoot || defaultDataRoot,
     'portable-data-root-invalid',
   )
