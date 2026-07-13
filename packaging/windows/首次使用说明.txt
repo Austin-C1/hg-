@@ -1,0 +1,12 @@
+皇冠监控 Portable Private Beta（Windows x64）
+
+1. 请先把整个 ZIP 完整解压到普通文件夹，不要在压缩软件预览窗口内运行。
+2. 双击“启动程序.cmd”。运行窗口必须保持打开；关闭窗口或按 Ctrl+C 会停止程序。
+3. 启动成功后浏览器会打开 Dashboard。若未自动打开，请使用窗口显示的本机地址。
+4. 首次运行为空数据库，Watcher 和真实投注都处于停止状态。Watcher 只能在 Dashboard 内手动启动。
+5. 在“监控账号”中填写你自己的皇冠 HTTPS 网址、账号和密码。验证码、滑块或 OTP 必须由本人在内置 Chromium 中手工完成。
+6. 需要停止时，可在运行窗口按 Ctrl+C，或双击“停止程序.cmd”。停止脚本只会停止身份完全匹配的本安装实例。
+7. 用户数据位于 %LOCALAPPDATA%\CrownMonitor。更新不会覆盖你修改后的联赛白名单、账号、session 或数据库。
+8. 更新只由 Dashboard 内的手动“检查更新/确认安装”触发；启动程序不会自动更新，也不会自动启动 Watcher。
+
+本程序不需要管理员权限，不安装 Windows Service，不写注册表，也不使用系统 Node、Chrome 或 Edge 代替下载包内运行时。
