@@ -16,6 +16,7 @@ import type {
   LeagueSummary,
   LoginDiagnostics,
   LoginResult,
+  ManualLoginStatus,
   MonitorAccount,
   MonitorAlertSettingsResponse,
   MonitorAlertSettingUpdate,
@@ -165,8 +166,8 @@ export const api = {
   async updateDefaultLeagues(config: DefaultLeagueOverview['config']) {
     return (await apiClient.put<DefaultLeagueOverview>('/default-leagues', { config })).data
   },
-  async getMonitorAccount() {
-    return (await apiClient.get<{ item: MonitorAccount }>('/app/monitor-account')).data
+  async getMonitorAccount(signal?: AbortSignal) {
+    return (await apiClient.get<{ item: MonitorAccount }>('/app/monitor-account', { signal })).data
   },
   async saveMonitorAccount(payload: Partial<MonitorAccount> & { secret?: string }) {
     return (await apiClient.put<{ item: MonitorAccount }>('/app/monitor-account', payload)).data
@@ -176,6 +177,33 @@ export const api = {
   },
   async getLoginDiagnostics() {
     return (await apiClient.get<LoginDiagnostics>('/app/monitor-account/login-diagnostics')).data
+  },
+  async openManualLogin(accountId: string, signal?: AbortSignal) {
+    return (await apiClient.post<{ item: ManualLoginStatus }>(
+      `/app/monitor-accounts/${encodeURIComponent(accountId)}/manual-login/open`,
+      {},
+      { signal },
+    )).data.item
+  },
+  async getManualLoginStatus(accountId: string, challengeId: string, signal?: AbortSignal) {
+    return (await apiClient.get<{ item: ManualLoginStatus }>(
+      `/app/monitor-accounts/${encodeURIComponent(accountId)}/manual-login/${encodeURIComponent(challengeId)}`,
+      { signal },
+    )).data.item
+  },
+  async confirmManualLogin(accountId: string, challengeId: string, signal?: AbortSignal) {
+    return (await apiClient.post<{ item: ManualLoginStatus }>(
+      `/app/monitor-accounts/${encodeURIComponent(accountId)}/manual-login/${encodeURIComponent(challengeId)}/confirm`,
+      {},
+      { signal },
+    )).data.item
+  },
+  async cancelManualLogin(accountId: string, challengeId: string, signal?: AbortSignal) {
+    return (await apiClient.post<{ item: ManualLoginStatus }>(
+      `/app/monitor-accounts/${encodeURIComponent(accountId)}/manual-login/${encodeURIComponent(challengeId)}/cancel`,
+      {},
+      { signal },
+    )).data.item
   },
   async getMonitorSettings() {
     return (await apiClient.get<MonitorSettingsPayload>('/monitor-settings')).data

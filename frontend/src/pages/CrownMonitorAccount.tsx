@@ -1,8 +1,8 @@
 import { Alert, Button, Descriptions, Form, Input, InputNumber, Modal, Space, Switch, Tag, message } from 'antd'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { api } from '../services/api'
-import type { LoginResult, MonitorAccount } from '../types'
+import type { LoginResult, ManualLoginStatus, MonitorAccount } from '../types'
 import { formatDateTime } from '../utils/formatDateTime'
 
 const statusColors: Record<string, string> = {
@@ -36,6 +36,52 @@ function xmlVerificationText(result: LoginResult | null) {
   return '未验证'
 }
 
+const manualLoginErrors: Record<string, string> = {
+  'manual-login-unavailable': '当前版本无法使用内置 Chromium，请检查发行包是否完整',
+  'manual-login-browser-open-failed': '无法打开内置 Chromium，请检查发行包后重试',
+  'manual-login-busy': '已有人工登录窗口正在处理，请先完成或取消',
+  'manual-login-account-not-found': '监控账号不存在，请先保存账号配置',
+  'manual-login-account-binding-changed': '账号配置已变化，请重新打开人工登录',
+  'manual-login-challenge-not-found': '本次人工登录已失效，请重新打开',
+  'manual-login-challenge-expired': '本次人工登录已过期，请重新打开',
+  'manual-login-challenge-state-invalid': '本次人工登录状态已变化，请重新打开',
+  'manual-login-challenge-binding-mismatch': '本次人工登录已失效，请重新打开',
+  'manual-login-verification-failed': '只读登录验证失败，请确认浏览器内已完成登录',
+  'manual-login-session-evidence-missing': '未检测到完整登录结果，请在浏览器内完成登录后重试',
+  'manual-login-security-violation': '登录页面离开了已配置的皇冠网站，本次登录已终止',
+  'manual-login-controller-closing': '程序正在关闭，人工登录已停止',
+  'manual-login-status-unavailable': '无法确认人工登录状态，请重新打开',
+}
+
+const unrecoverableChallengeErrors = new Set([
+  'manual-login-account-binding-changed',
+  'manual-login-challenge-not-found',
+  'manual-login-challenge-expired',
+  'manual-login-challenge-state-invalid',
+  'manual-login-challenge-binding-mismatch',
+  'manual-login-controller-closing',
+])
+
+function manualLoginErrorCode(error: unknown) {
+  return error instanceof Error && /^manual-login-[a-z0-9-]+$/.test(error.message)
+    ? error.message
+    : ''
+}
+
+function manualLoginErrorText(error: unknown) {
+  const code = manualLoginErrorCode(error)
+  return manualLoginErrors[code] || '人工登录操作失败，请重试'
+}
+
+function manualLoginMessage(status: ManualLoginStatus) {
+  if (status.status === 'opening') return '正在打开内置 Chromium'
+  if (status.status === 'awaiting-user') return '等待您在内置 Chromium 中完成登录'
+  if (status.status === 'verifying') return '正在进行只读登录验证'
+  if (status.status === 'verified') return '人工登录验证完成'
+  if (status.errorCode === 'manual-login-cancelled') return '已取消本次人工登录'
+  return manualLoginErrors[status.errorCode] || '人工登录未完成，请重新打开'
+}
+
 export default function CrownMonitorAccount() {
   const [account, setAccount] = useState<MonitorAccount | null>(null)
   const [loginResult, setLoginResult] = useState<LoginResult | null>(null)
@@ -46,7 +92,43 @@ export default function CrownMonitorAccount() {
   const [saving, setSaving] = useState(false)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [editingSecret, setEditingSecret] = useState(false)
+  const [manualLogin, setManualLogin] = useState<ManualLoginStatus | null>(null)
+  const [manualLoginError, setManualLoginError] = useState('')
+  const [manualActionLoading, setManualActionLoading] = useState<'open' | 'confirm' | 'cancel' | null>(null)
+  const manualRequests = useRef(new Set<AbortController>())
+  const manualActionInFlight = useRef(false)
   const [form] = Form.useForm<MonitorAccount & { secret?: string }>()
+
+  function beginManualRequest() {
+    const controller = new AbortController()
+    manualRequests.current.add(controller)
+    return controller
+  }
+
+  function finishManualRequest(controller: AbortController) {
+    manualRequests.current.delete(controller)
+  }
+
+  function beginManualAction(action: 'open' | 'confirm' | 'cancel') {
+    if (manualActionInFlight.current) return null
+    manualActionInFlight.current = true
+    setManualActionLoading(action)
+    return beginManualRequest()
+  }
+
+  function finishManualAction(controller: AbortController) {
+    finishManualRequest(controller)
+    manualActionInFlight.current = false
+    if (!controller.signal.aborted) setManualActionLoading(null)
+  }
+
+  function handleUnrecoverableChallenge(error: unknown) {
+    const code = manualLoginErrorCode(error)
+    if (!unrecoverableChallengeErrors.has(code)) return false
+    setManualLogin((current) => current ? { ...current, status: 'failed', errorCode: code } : current)
+    setManualLoginError('')
+    return true
+  }
 
   function syncForm(next: MonitorAccount) {
     form.setFieldsValue({
@@ -85,6 +167,50 @@ export default function CrownMonitorAccount() {
     }, 5000)
     return () => window.clearInterval(timer)
   }, [])
+
+  useEffect(() => () => {
+    for (const controller of manualRequests.current) controller.abort()
+    manualRequests.current.clear()
+  }, [])
+
+  useEffect(() => {
+    if (!account || !manualLogin || manualActionLoading
+      || !['opening', 'awaiting-user', 'verifying'].includes(manualLogin.status)) return
+    const controller = beginManualRequest()
+    let timer: number | undefined
+    let failures = 0
+    const poll = async () => {
+      try {
+        const next = await api.getManualLoginStatus(account.id, manualLogin.challengeId, controller.signal)
+        if (controller.signal.aborted) return
+        failures = 0
+        setManualLoginError('')
+        setManualLogin(next)
+        if (['opening', 'awaiting-user', 'verifying'].includes(next.status)) {
+          timer = window.setTimeout(poll, 1500)
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return
+        if (handleUnrecoverableChallenge(error)) return
+        failures += 1
+        if (failures < 3) {
+          setManualLoginError(`状态查询暂时失败，正在重试（${failures}/3）`)
+          timer = window.setTimeout(poll, 1500)
+          return
+        }
+        setManualLoginError('')
+        setManualLogin((current) => current
+          ? { ...current, status: 'failed', errorCode: 'manual-login-status-unavailable' }
+          : current)
+      }
+    }
+    void poll()
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer)
+      controller.abort()
+      finishManualRequest(controller)
+    }
+  }, [account?.id, manualLogin?.challengeId, manualLogin?.status, manualActionLoading])
 
   async function save(values: Partial<MonitorAccount> & { secret?: string }) {
     setSaving(true)
@@ -142,6 +268,52 @@ export default function CrownMonitorAccount() {
     form.setFieldValue('secret', '')
   }
 
+  async function openManualLogin() {
+    if (!account) return
+    const controller = beginManualAction('open')
+    if (!controller) return
+    setManualLoginError('')
+    try {
+      setManualLogin(await api.openManualLogin(account.id, controller.signal))
+    } catch (error) {
+      if (!controller.signal.aborted) setManualLoginError(manualLoginErrorText(error))
+    } finally {
+      finishManualAction(controller)
+    }
+  }
+
+  async function confirmManualLogin() {
+    if (!account || !manualLogin) return
+    const controller = beginManualAction('confirm')
+    if (!controller) return
+    setManualLoginError('')
+    try {
+      setManualLogin(await api.confirmManualLogin(account.id, manualLogin.challengeId, controller.signal))
+    } catch (error) {
+      if (!controller.signal.aborted && !handleUnrecoverableChallenge(error)) {
+        setManualLoginError(manualLoginErrorText(error))
+      }
+    } finally {
+      finishManualAction(controller)
+    }
+  }
+
+  async function cancelManualLogin() {
+    if (!account || !manualLogin) return
+    const controller = beginManualAction('cancel')
+    if (!controller) return
+    setManualLoginError('')
+    try {
+      setManualLogin(await api.cancelManualLogin(account.id, manualLogin.challengeId, controller.signal))
+    } catch (error) {
+      if (!controller.signal.aborted && !handleUnrecoverableChallenge(error)) {
+        setManualLoginError(manualLoginErrorText(error))
+      }
+    } finally {
+      finishManualAction(controller)
+    }
+  }
+
   return (
     <div className="page-stack">
       <div className="page-title">
@@ -195,6 +367,63 @@ export default function CrownMonitorAccount() {
             <Button danger loading={actionLoading === 'clear-state'} onClick={() => runAction('clear-state')}>清除状态</Button>
           </Space>
         </Form>
+      </div>
+
+      <div className="panel">
+        <div className="section-header">
+          <div>
+            <h2>皇冠人工登录</h2>
+            <p>使用发行包内置 Chromium；验证码、滑块或 OTP 必须由您本人在浏览器中处理。</p>
+          </div>
+          {manualLogin && <Tag>{manualLogin.status}</Tag>}
+        </div>
+        {manualLoginError && (
+          <Alert type="error" showIcon message={manualLoginError} style={{ marginBottom: 12 }} />
+        )}
+        {manualLogin ? (
+          <>
+            <Alert
+              type={manualLogin.status === 'verified' ? 'success'
+                : manualLogin.status === 'failed' ? 'warning' : 'info'}
+              showIcon
+              message={manualLoginMessage(manualLogin)}
+              description={manualLogin.status === 'verified'
+                ? 'Session 已通过只读验证。Watcher 保持停止，如需监控请另行点击“开始监控”。'
+                : '请只在内置 Chromium 中自行完成账号登录、验证码、滑块或 OTP；程序不会尝试绕过。'}
+            />
+            <Space wrap style={{ marginTop: 12 }}>
+              {manualLogin.status === 'awaiting-user' && (
+                <Button type="primary" disabled={manualActionLoading !== null} loading={manualActionLoading === 'confirm'} onClick={confirmManualLogin}>
+                  我已完成登录，开始验证
+                </Button>
+              )}
+              {['opening', 'awaiting-user', 'verifying'].includes(manualLogin.status) && (
+                <Button disabled={manualActionLoading !== null} loading={manualActionLoading === 'cancel'} onClick={cancelManualLogin}>取消人工登录</Button>
+              )}
+              {['verified', 'failed'].includes(manualLogin.status) && (
+                <Button disabled={manualActionLoading !== null} loading={manualActionLoading === 'open'} onClick={openManualLogin}>重新打开人工登录</Button>
+              )}
+            </Space>
+          </>
+        ) : (
+          <>
+            <Alert
+              type="info"
+              showIcon
+              message="需要人工验证时，在内置 Chromium 中完成登录"
+              description="打开后请自行处理验证码、滑块或 OTP，完成后返回本页确认验证。"
+            />
+            <Button
+              type="primary"
+              style={{ marginTop: 12 }}
+              disabled={!account || manualActionLoading !== null}
+              loading={manualActionLoading === 'open'}
+              onClick={openManualLogin}
+            >
+              打开皇冠人工登录
+            </Button>
+          </>
+        )}
       </div>
 
       <div className="panel">

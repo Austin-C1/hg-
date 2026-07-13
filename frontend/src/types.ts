@@ -315,6 +315,16 @@ export interface LoginDiagnostics {
   item: Record<string, unknown> | null
 }
 
+export type ManualLoginState = 'idle' | 'opening' | 'awaiting-user' | 'verifying' | 'verified' | 'failed'
+
+export interface ManualLoginStatus {
+  challengeId: string
+  accountId: string
+  status: ManualLoginState
+  errorCode: string
+  expiresAt: number
+}
+
 export interface MonitorRule {
   id: string
   name: string
