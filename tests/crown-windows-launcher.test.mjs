@@ -313,12 +313,21 @@ test('Windows package exposes only self-relative manual launch, stop, and update
   for (const relative of requiredFiles) {
     assert.equal(fs.existsSync(path.join(packagingRoot, ...relative.split('/'))), true, relative)
   }
-  const startCmd = fs.readFileSync(path.join(packagingRoot, '启动程序.cmd'), 'utf8')
-  const stopCmd = fs.readFileSync(path.join(packagingRoot, '停止程序.cmd'), 'utf8')
+  const startCmdBytes = fs.readFileSync(path.join(packagingRoot, '启动程序.cmd'))
+  const stopCmdBytes = fs.readFileSync(path.join(packagingRoot, '停止程序.cmd'))
+  const startCmd = startCmdBytes.toString('utf8')
+  const stopCmd = stopCmdBytes.toString('utf8')
   const startPs = fs.readFileSync(startScript, 'utf8')
   const stopPs = fs.readFileSync(stopScript, 'utf8')
   const updater = fs.readFileSync(path.join(packagingRoot, 'launcher', 'update-bootstrap.ps1'), 'utf8')
   const all = [startCmd, stopCmd, startPs, stopPs, updater].join('\n')
+
+  for (const command of [startCmd, stopCmd]) {
+    assert.equal(/^[\x09\x0a\x0d\x20-\x7e]*$/.test(command), true)
+    assert.match(command, /\r\n/)
+    assert.doesNotMatch(command, /(^|[^\r])\n/)
+    assert.doesNotMatch(command, /chcp/i)
+  }
 
   assert.match(startCmd, /%~dp0/)
   assert.match(stopCmd, /%~dp0/)
