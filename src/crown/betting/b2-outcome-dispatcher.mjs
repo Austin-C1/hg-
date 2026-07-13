@@ -109,7 +109,6 @@ export class B2OutcomeDispatcher {
         controller.abort()
         resolve({ sent: false, permanent: false, reason: 'notification-send-timeout', deliveryState: safeDeliveryState(workingDeliveryState) })
       }, this.sendTimeoutMs)
-      timer.unref?.()
     })
     try {
       const result = await Promise.race([

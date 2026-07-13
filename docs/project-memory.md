@@ -557,4 +557,5 @@
 - 首次运行把 118 项默认联赛白名单复制到用户数据目录，后续启动、更新和回滚不覆盖用户修改。账号、密码、session、SQLite、浏览器 Profile、日志和私钥永不进入发行物或 Git 仓库。
 - GitHub 更新链使用 HTTPS Release、严格 manifest、SHA-256、Ed25519 和安全解压；可信公钥未配置时 fail-closed，不能检查或安装更新。CI 只构建 unsigned 审计产物，不持有离线私钥，也不自动创建面向用户的 Release。
 - Windows launcher 与 fault-injection 测试会启动真实 PowerShell/Node 子进程。文件级并发会造成端口、进程回收和恢复用例之间的非确定性干扰，因此全量 backend 测试固定使用 `--test-concurrency=1`；相关用例单独运行和串行全量运行都必须通过。
+- 正式 backend 验证必须使用发行物锁定的 Node `22.23.1` 再跑一遍。被当前业务 `await` 的发送/对账 timeout 不能 `unref`；Windows 受控路径按文件系统 identity 判定同一对象，允许合法 8.3 短路径别名，但仍拒绝 symlink/junction。该约束用于消除开发机 Node 25 与 GitHub Windows runner 的行为差异。
 - 源码公开前已按 allowlist 清理：不包含截图、平博程序、运行数据库、凭据、浏览器资料或旧投注 CLI。最终可下载 Release 仍要求离线签名和 Fresh Windows 10/11 x64 验收证据，不能把 GitHub 源码 ZIP 当作用户可运行包。

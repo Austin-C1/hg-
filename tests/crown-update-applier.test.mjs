@@ -39,6 +39,7 @@ test('external applier CLI fails closed with one stable code when no request is 
   const child = spawn(process.execPath, ['scripts/crown-update-apply.mjs'], {
     cwd: new URL('..', import.meta.url),
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, NODE_NO_WARNINGS: '1' },
   })
   let stdout = ''
   let stderr = ''

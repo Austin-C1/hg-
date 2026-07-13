@@ -96,6 +96,8 @@ node --test tests/crown-release-workflow.test.mjs
 
 全量 backend 测试必须串行执行。Launcher fault-injection 用例会启动真实 PowerShell/Node 子进程；提高 Node test 文件级并发会使端口、子进程退出和恢复状态相互干扰，形成非确定性失败。项目根目录的 `npm test` 已固定为 `--test-concurrency=1`。
 
+Windows runner 可能通过 8.3 短路径表示 `%TEMP%` 或 `%LOCALAPPDATA%`。安全路径校验以 `dev/ino` 文件 identity 确认 canonical path 与输入路径指向同一对象，不按路径字符串相等判断；symlink/junction 仍在逐段 `lstat` 阶段拒绝。正在被业务 Promise 等待的 timeout 保持 ref，只有后台轮询 timer 可以 `unref`，否则 Node 22 会在 timeout 完成前结束事件循环。
+
 ## 发布状态
 
 公开仓库可以保存受审源码和开发分支。Actions workflow 只产生 unsigned 审计 artifact。只有离线私钥签名、最终资产复验和 Fresh Windows 证据全部完成后，才能创建面向用户的 Private Beta Release。

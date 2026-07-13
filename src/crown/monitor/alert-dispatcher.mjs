@@ -29,7 +29,6 @@ function timeout(promise, milliseconds) {
       error.code = 'delivery-timeout'
       reject(error)
     }, milliseconds)
-    timer.unref?.()
   })
   return Promise.race([Promise.resolve(promise), expired]).finally(() => clearTimeout(timer))
 }

@@ -74,6 +74,11 @@ function isProcessAlive(pid) {
   try { process.kill(pid, 0); return true } catch { return false }
 }
 
+function comparableExistingPath(value) {
+  const canonical = fs.realpathSync(value)
+  return process.platform === 'win32' ? canonical.toLowerCase() : canonical
+}
+
 async function waitFor(check, { timeoutMs = 15_000, intervalMs = 50 } = {}) {
   const deadline = Date.now() + timeoutMs
   let lastError
@@ -84,7 +89,8 @@ async function waitFor(check, { timeoutMs = 15_000, intervalMs = 50 } = {}) {
     } catch (error) {
       lastError = error
     }
-    await sleep(intervalMs)
+    if (intervalMs === 0) await new Promise((resolve) => setImmediate(resolve))
+    else await sleep(intervalMs)
   }
   if (lastError) throw lastError
   throw new Error('wait-timeout')
@@ -471,9 +477,9 @@ test('update bootstrap uses only previous-version bundled Node and the contained
   })
   assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`)
   const marker = readJson(markerPath)
-  assert.equal(path.resolve(marker.execPath), path.resolve(path.join(fixture.root, 'versions', '0.1.0', 'runtime', 'node', 'node.exe')))
+  assert.equal(comparableExistingPath(marker.execPath), comparableExistingPath(path.join(fixture.root, 'versions', '0.1.0', 'runtime', 'node', 'node.exe')))
   assert.deepEqual(marker.argv, ['--request', requestPath])
-  assert.equal(marker.dataRoot, fixture.dataRoot)
+  assert.equal(comparableExistingPath(marker.dataRoot), comparableExistingPath(fixture.dataRoot))
   assert.equal(marker.watcher, '0')
   assert.equal(marker.worker, '0')
   assert.equal(marker.realRequested, '0')
@@ -744,10 +750,10 @@ test('launcher starts from a foreign cwd and Chinese path, falls back from 8787,
     assert.equal(health.launcherPid, state.pid)
     assert.equal(health.launcherProcessStartTime, state.processStartTime)
     const startup = readJson(path.join(fixture.dataRoot, 'runtime', 'fake-startup.json'))
-    assert.equal(startup.appRoot, fixture.root)
-    assert.equal(startup.appDir, fixture.appDir)
-    assert.equal(startup.dataRoot, fixture.dataRoot)
-    assert.equal(startup.node.toLowerCase(), path.join(fixture.root, 'versions', fixture.version, 'runtime', 'node', 'node.exe').toLowerCase())
+    assert.equal(comparableExistingPath(startup.appRoot), comparableExistingPath(fixture.root))
+    assert.equal(comparableExistingPath(startup.appDir), comparableExistingPath(fixture.appDir))
+    assert.equal(comparableExistingPath(startup.dataRoot), comparableExistingPath(fixture.dataRoot))
+    assert.equal(comparableExistingPath(startup.node), comparableExistingPath(path.join(fixture.root, 'versions', fixture.version, 'runtime', 'node', 'node.exe')))
     assert.equal(startup.watcherAutostart, '0')
     assert.equal(startup.workerAutostart, '0')
 
@@ -920,7 +926,7 @@ test('reserved post-Process.Start claim is cleaned by its bound wrapper before i
     if (!fs.existsSync(claimFile)) return false
     const claim = readJson(claimFile)
     return claim.status === 'reserved' && claim.childLaunchAuthorized === true && claim.childProcessStartReturned === true
-  }, { timeoutMs: 25_000, intervalMs: 1 })
+  }, { timeoutMs: 25_000, intervalMs: 0 })
   assert.equal(first.kill(), true)
   await firstResult
 

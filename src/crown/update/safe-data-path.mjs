@@ -13,11 +13,6 @@ function isFullyQualified(value) {
   return /^[A-Za-z]:[\\/]$/.test(root) || /^\\\\[^\\/]+[\\/][^\\/]+[\\/]$/.test(root)
 }
 
-function normalizedIdentityPath(value) {
-  const normalized = resolve(value)
-  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
-}
-
 export function sameFileIdentity(left, right) {
   return Boolean(left && right && left.dev === right.dev && left.ino === right.ino)
 }
@@ -43,13 +38,14 @@ async function inspectSegments(path) {
       throw codedError('safe-data-path-inspection-failed')
     }
     if (metadata.isSymbolicLink()) throw codedError('safe-data-path-reparse-point')
-    let canonical
+    let canonicalMetadata
     try {
-      canonical = await realpath(current)
+      const canonical = await realpath(current)
+      canonicalMetadata = await lstat(canonical, { bigint: true })
     } catch {
       throw codedError('safe-data-path-inspection-failed')
     }
-    if (normalizedIdentityPath(canonical) !== normalizedIdentityPath(current)) {
+    if (!sameFileIdentity(identityOf(metadata), identityOf(canonicalMetadata))) {
       throw codedError('safe-data-path-reparse-point')
     }
     previousWasDirectory = metadata.isDirectory()

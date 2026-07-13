@@ -335,7 +335,6 @@ async function callWithDeadline(operation, { timeoutMs, deadlineAt, nowMs }) {
       controller.abort()
       reject(new Error('reconciliation-source-timeout'))
     }, duration)
-    timer.unref?.()
   })
   try {
     return await Promise.race([operation(controller.signal), timeout])
