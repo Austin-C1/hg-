@@ -64,11 +64,11 @@ function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''))
 }
 
-function fileMtimeMs(file) {
+function fileContentRevision(file) {
   try {
-    return fs.statSync(file).mtimeMs
+    return createHash('sha256').update(fs.readFileSync(file)).digest('hex')
   } catch {
-    return 0
+    return ''
   }
 }
 
@@ -488,7 +488,7 @@ function recordMonitorLastAlert(configState, mode, at) {
   const file = configState.args?.monitorSettingsPath
   const next = writeMonitorSettings(file, withLastAlertAt(configState.current?.monitorSettings, mode, at))
   configState.current.monitorSettings = next
-  if (configState.mtimes && file) configState.mtimes.monitorSettingsPath = fileMtimeMs(file)
+  if (configState.mtimes && file) configState.mtimes.monitorSettingsPath = fileContentRevision(file)
 }
 
 function loadTelegramSettings(file) {
@@ -520,13 +520,13 @@ export function createRuntimeConfigState(args) {
   return {
     args,
     current: loadRuntimeConfig(args),
-    mtimes: Object.fromEntries(Object.entries(files).map(([key, file]) => [key, fileMtimeMs(file)])),
+    mtimes: Object.fromEntries(Object.entries(files).map(([key, file]) => [key, fileContentRevision(file)])),
   }
 }
 
 export function reloadRuntimeConfig(state) {
   const files = configFiles(state.args)
-  const nextMtimes = Object.fromEntries(Object.entries(files).map(([key, file]) => [key, fileMtimeMs(file)]))
+  const nextMtimes = Object.fromEntries(Object.entries(files).map(([key, file]) => [key, fileContentRevision(file)]))
   const changed = Object.keys(nextMtimes).some((key) => nextMtimes[key] !== state.mtimes[key])
   if (changed) {
     const nextCurrent = loadRuntimeConfig(state.args)
@@ -1178,7 +1178,7 @@ export async function runDomPollOnce({
   const configState = {
     args: { monitorSettingsPath, appDbPath, bettingCandidatesPath },
     current: { monitorSettings },
-    mtimes: { monitorSettingsPath: fileMtimeMs(monitorSettingsPath) },
+    mtimes: { monitorSettingsPath: fileContentRevision(monitorSettingsPath) },
   }
   const bettingRule = loadLegacyRuntimeBettingRule({ appDbPath })
 

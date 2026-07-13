@@ -98,6 +98,8 @@ node --test tests/crown-release-workflow.test.mjs
 
 Windows runner 可能通过 8.3 短路径表示 `%TEMP%` 或 `%LOCALAPPDATA%`。安全路径校验以 `dev/ino` 文件 identity 确认 canonical path 与输入路径指向同一对象，不按路径字符串相等判断；symlink/junction 仍在逐段 `lstat` 阶段拒绝。正在被业务 Promise 等待的 timeout 保持 ref，只有后台轮询 timer 可以 `unref`，否则 Node 22 会在 timeout 完成前结束事件循环。
 
+Watcher 的运行时配置热重载使用文件内容 SHA-256 作为 revision，不依赖 Windows 文件时间戳。即使 runner 或目标机器在同一 `mtime` 粒度内覆盖配置，也会重新读取；无效 JSON 仍保留 last-known-good 并持续重试。
+
 ## 发布状态
 
 公开仓库可以保存受审源码和开发分支。Actions workflow 只产生 unsigned 审计 artifact。只有离线私钥签名、最终资产复验和 Fresh Windows 证据全部完成后，才能创建面向用户的 Private Beta Release。

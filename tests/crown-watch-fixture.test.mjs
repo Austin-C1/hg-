@@ -383,6 +383,33 @@ test('runtime config reload picks up monitored league file changes', async () =>
   assert.deepEqual(state.current.leagueConfig.include, ['欧洲冠军联赛外围赛'])
 })
 
+test('runtime config reload detects content changes when the filesystem mtime does not advance', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-watch-config-mtime-'))
+  const leagueConfigPath = path.join(dir, 'monitored-leagues.json')
+  const originalStatSync = fs.statSync
+  const fixedMtime = originalStatSync(leagueConfigPath, { throwIfNoEntry: false })?.mtimeMs ?? 123
+  fs.statSync = (target, ...args) => {
+    const metadata = originalStatSync(target, ...args)
+    if (path.resolve(String(target)) !== path.resolve(leagueConfigPath)) return metadata
+    return new Proxy(metadata, {
+      get(value, property) {
+        return property === 'mtimeMs' ? fixedMtime : Reflect.get(value, property, value)
+      },
+    })
+  }
+  try {
+    fs.writeFileSync(leagueConfigPath, JSON.stringify({ enabled: true, include: ['League A'], exclude: [] }), 'utf8')
+    const state = createRuntimeConfigState({ leagueConfigPath })
+    fs.writeFileSync(leagueConfigPath, JSON.stringify({ enabled: true, include: ['League B'], exclude: [] }), 'utf8')
+
+    const result = reloadRuntimeConfig(state)
+    assert.equal(result.changed, true)
+    assert.deepEqual(state.current.leagueConfig.include, ['League B'])
+  } finally {
+    fs.statSync = originalStatSync
+  }
+})
+
 test('safe runtime config reload keeps last-known-good state after malformed JSON and retries later', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-watch-safe-config-'))
   const leagueConfigPath = path.join(dir, 'monitored-leagues.json')
