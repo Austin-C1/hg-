@@ -87,6 +87,7 @@ export async function writeAtomicJson({ dataRoot, filePath, value } = {}) {
     })
     if (!sameFileIdentity(publishedIdentity, temporaryIdentity)) throw codedError('atomic-json-publish-failed')
     await syncDataDirectory({ dataRoot: target.dataRoot, directoryPath: parent })
+    return publishedIdentity
   } catch (error) {
     await temporary?.handle.close().catch(() => {})
     await rm(temporaryPath, { force: true }).catch(() => {})

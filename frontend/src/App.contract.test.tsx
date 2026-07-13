@@ -188,6 +188,10 @@ vi.mock('./services/api', () => ({
     updateAutoBettingRuleCard: vi.fn(),
     deleteAutoBettingRuleCard: vi.fn(),
     getRealBettingStatus: vi.fn(async () => ({ item: { requested: false, state: 'off', reasonCode: '', updatedAt: '', preflight: [], blockingReasons: [] } })),
+    getSystemUpdate: vi.fn(async () => ({ item: { state: 'idle', currentVersion: '0.1.0', availableVersion: '', progress: 0, errorCode: '', cancellable: false, releaseNotes: '', rollbackReason: '' } })),
+    checkSystemUpdate: vi.fn(),
+    installSystemUpdate: vi.fn(),
+    cancelSystemUpdate: vi.fn(),
     startRealBetting: vi.fn(),
     stopRealBetting: vi.fn(),
     getTelegramSettings: vi.fn(async () => ({
@@ -215,6 +219,15 @@ describe('Crown React app contract', () => {
     expect(screen.getByText('投注规则')).toBeInTheDocument()
     expect(screen.getByText('投注账号配置')).toBeInTheDocument()
     expect(screen.getByText('设置')).toBeInTheDocument()
+  })
+
+  test('keeps the system update page reachable from navigation', async () => {
+    render(<App />)
+    expect(await screen.findByText('系统更新')).toBeInTheDocument()
+
+    window.history.pushState({}, '', '/system-update')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    expect(await screen.findByText('只在此页面手动检查和安装经过签名验证的 Windows 版本。')).toBeInTheDocument()
   })
 
   test('offers an in-memory Dashboard login and refreshes authenticated bootstrap', async () => {

@@ -243,4 +243,61 @@ describe('Dashboard API session contract', () => {
     expect(authExpired).toHaveBeenCalledTimes(1)
     window.removeEventListener('crown:dashboard-auth-expired', authExpired)
   })
+
+  test('system update services use canonical paths, exact version body and in-memory CSRF only', async () => {
+    const requests: AxiosRequestConfig[] = []
+    const storageSet = vi.spyOn(Storage.prototype, 'setItem')
+    apiClient.defaults.adapter = async (config) => {
+      requests.push(config)
+      if (config.url === '/app/security-context') {
+        return response(config, {
+          csrfToken: 'csrf-update',
+          dashboardAccessMode: 'local-trust',
+          appContractVersion: 'dynamic-betting-cards-v1',
+          schemaVersion: 'dynamic-betting-cards-v1',
+        })
+      }
+      if (config.url?.endsWith('/cancel')) return response(config, { item: { cancelled: true, code: 'update-cancelled' } })
+      return response(config, { item: { state: 'idle', currentVersion: '0.1.0', availableVersion: '', progress: 0, errorCode: '', cancellable: false, releaseNotes: '', rollbackReason: '' } })
+    }
+
+    await api.sessionBootstrap()
+    await api.getSystemUpdate()
+    await api.checkSystemUpdate()
+    await api.installSystemUpdate('0.2.0')
+    await api.cancelSystemUpdate()
+
+    expect(requests.slice(1).map((request) => [request.method, request.url])).toEqual([
+      ['get', '/app/system-update'],
+      ['post', '/app/system-update/check'],
+      ['post', '/app/system-update/install'],
+      ['post', '/app/system-update/cancel'],
+    ])
+    expect(JSON.parse(String(requests[3].data))).toEqual({ expectedVersion: '0.2.0' })
+    expect(requests.slice(1).map((request) => request.timeout)).toEqual([10000, 0, 0, 10000])
+    expect(csrfHeader(requests[1])).toBeUndefined()
+    expect(requests.slice(2).map(csrfHeader)).toEqual(['csrf-update', 'csrf-update', 'csrf-update'])
+    expect(storageSet).not.toHaveBeenCalled()
+  })
+
+  test('preserves a stable update conflict code instead of rewriting it as a settings conflict', async () => {
+    apiClient.defaults.adapter = async (config) => {
+      if (config.url === '/app/security-context') {
+        return response(config, {
+          csrfToken: 'csrf-update-conflict',
+          dashboardAccessMode: 'local-trust',
+          appContractVersion: 'dynamic-betting-cards-v1',
+          schemaVersion: 'dynamic-betting-cards-v1',
+        })
+      }
+      return Promise.reject({
+        config,
+        response: { status: 409, data: { error: 'update-operation-in-progress' } },
+        message: 'conflict',
+      })
+    }
+
+    await api.sessionBootstrap()
+    await expect(api.checkSystemUpdate()).rejects.toThrow('update-operation-in-progress')
+  })
 })

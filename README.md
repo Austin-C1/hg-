@@ -4,6 +4,27 @@
 
 这个项目用于采集和监控皇冠足球赔率，并逐步还原投注协议。当前默认监控以 `POST /transform.php` `text/xml` 响应为真实赔率主源；默认 v2 缺少完整账号凭据时会 fail-closed，不会静默降级。DOM 只属于显式 schema-v1 回滚/cross-check，fixture 用于离线兼容验证。
 
+## Windows Portable Private Beta
+
+少量 Windows 用户使用时，请只从 [GitHub Releases](https://github.com/Austin-C1/hg-/releases) 下载明确标记为“已完成 Fresh Windows 验收”、并带有匹配签名 manifest 的 ZIP。GitHub Actions 生成的 `unsigned` artifact 仅供维护者审计，不是交付给用户的安装包。
+
+Portable ZIP 面向 Windows 10/11 x64，内置 Node.js 和 Chromium，不依赖系统 Node、Chrome、Edge 或 Docker，也不安装 Windows Service。使用方式：
+
+1. 把 ZIP 完整解压到普通文件夹，不要在压缩软件预览窗口里运行。
+2. 双击 `启动程序.cmd`，并保留打开的运行窗口；关闭窗口或按 `Ctrl+C` 会停止程序。
+3. 首次打开 Dashboard 后，在“皇冠监控账号”中填写自己的 exact public HTTPS 皇冠网址、账号和密码。网址只能是完整 HTTPS origin，不能带路径、参数或账号信息。
+4. 点击人工登录后，由本人在包内 Chromium 中处理验证码、滑块或 OTP，再回到 Dashboard 确认。程序不会绕过人机验证，登录成功也不会自动启动 Watcher。
+5. 需要监控时，只能在 Dashboard 中手动启动 Watcher。程序重启、更新或回滚后，Watcher 都保持停止。
+
+用户数据库、账号密文、session、浏览器 Profile、日志和本地配置位于 `%LOCALAPPDATA%\CrownMonitor`，不会写回解压目录。下载包内含 118 项默认联赛白名单，但只在目标文件不存在的首次运行时 seed；之后更新不会覆盖用户修改。
+
+Dashboard 的“系统更新”只支持用户手动检查和确认安装。更新包必须通过 Ed25519 签名、SHA-256、文件清单、SQLite 一致性备份和候选版本健康检查；失败会按持久 journal 回滚。更新不会自动启动 Watcher 或投注 worker。
+
+当前真实投注 capability 为 preview/submit/reconciliation `0/0/0`。Portable、人工登录和远程更新都不会开放真实投注，也不会发送 `FT_bet`。
+
+- 用户说明：[`docs/windows-private-beta-quick-start.md`](docs/windows-private-beta-quick-start.md)
+- 维护者发布手册：[`docs/github-release-runbook.md`](docs/github-release-runbook.md)
+
 ## 已完成
 
 - Playwright 只读 probe。

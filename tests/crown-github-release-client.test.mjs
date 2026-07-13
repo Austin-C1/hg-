@@ -25,6 +25,7 @@ test('release client locates only the exact manifest pair and follows each redir
     if (pathname === '/repos/Austin-C1/hg-/releases/latest') {
       return jsonResponse({
         tag_name: 'v0.1.1',
+        body: '<h1>Changes</h1>\n- safe text only',
         assets: [
           { name: 'CrownMonitor-v0.1.1-update.zip', size: 999, browser_download_url: 'https://github.test/download/update.zip' },
           { name: 'update-manifest.json', size: 123, browser_download_url: 'https://github.test/download/manifest' },
@@ -49,6 +50,7 @@ test('release client locates only the exact manifest pair and follows each redir
     })
 
     assert.equal(result.releaseTag, 'v0.1.1')
+    assert.equal(result.releaseNotes, '<h1>Changes</h1>\n- safe text only')
     assert.equal(new TextDecoder().decode(result.manifestBytes), '{"signed":true}')
     assert.deepEqual(result.signatureBytes, new Uint8Array([1, 2, 3]))
     assert.deepEqual(result.manifestAsset, { name: 'update-manifest.json', size: 123 })

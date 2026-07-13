@@ -63,6 +63,7 @@ function fixtureAllowlist() {
       'scripts/crown-dashboard.mjs',
       'scripts/crown-watch.mjs',
       'scripts/crown-betting-worker.mjs',
+      'scripts/crown-update-apply.mjs',
     ],
     appTrees: ['src', 'frontend/dist'],
     allowedSourceStorageModules: [
@@ -134,6 +135,7 @@ async function createSourceFixture() {
   await write(root, 'scripts/crown-dashboard.mjs', 'export const dashboard = true\n')
   await write(root, 'scripts/crown-watch.mjs', 'export const watcher = true\n')
   await write(root, 'scripts/crown-betting-worker.mjs', 'export const worker = true\n')
+  await write(root, 'scripts/crown-update-apply.mjs', 'export const updater = true\n')
   await write(root, 'src/crown/main.mjs', "export const loopback = '127.0.0.1'\n")
   await write(root, 'src/crown/storage/jsonl-store.mjs', 'export const storageModule = true\n')
   await write(root, 'src/crown/storage/jsonl-candidate-store.mjs', 'export const candidateStoreModule = true\n')
@@ -186,6 +188,7 @@ test('portable release stages only the explicit production allowlist and the 118
   const appRoot = join(result.root, 'versions', VERSION, 'app')
   assert.equal(existsSync(join(appRoot, 'scripts/crown-watch.mjs')), true)
   assert.equal(existsSync(join(appRoot, 'scripts/crown-betting-worker.mjs')), true)
+  assert.equal(existsSync(join(appRoot, 'scripts/crown-update-apply.mjs')), true)
   assert.equal(existsSync(join(appRoot, 'frontend/dist/index.html')), true)
   assert.equal(existsSync(join(appRoot, 'src/crown/storage/jsonl-store.mjs')), true)
   assert.equal(existsSync(join(appRoot, 'src/crown/telegram/index.mjs')), true)

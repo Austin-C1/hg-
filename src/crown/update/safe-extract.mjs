@@ -239,11 +239,63 @@ async function writeEntry(zipFile, archiveEntry, manifest, stagingRoot) {
   if (hash.digest('hex') !== manifest.sha256) throw codedError('update-zip-file-sha256-mismatch')
 }
 
+async function digestArchiveEntry(zipFile, archiveEntry) {
+  const stream = await zipFile.openReadStreamPromise(archiveEntry.entry)
+  const hash = createHash('sha256')
+  let size = 0
+  for await (const chunk of stream) {
+    const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk)
+    size += bytes.byteLength
+    if (size > archiveEntry.entry.uncompressedSize) throw codedError('update-zip-file-size-mismatch')
+    hash.update(bytes)
+  }
+  if (size !== archiveEntry.entry.uncompressedSize) throw codedError('update-zip-file-size-mismatch')
+  return Object.freeze({ path: archiveEntry.path, size, sha256: hash.digest('hex') })
+}
+
+export async function createUpdateFileListFromZip({ zipPath, limits: limitOverrides } = {}) {
+  let normalizedZipPath
+  try {
+    normalizedZipPath = normalizeFullyQualifiedWindowsPath(zipPath, 'update-zip-path-required')
+  } catch {
+    throw codedError('update-zip-path-required')
+  }
+  const limits = normalizeLimits(limitOverrides)
+  let zipFile
+  try {
+    zipFile = await openZip(normalizedZipPath, {
+      autoClose: false,
+      lazyEntries: true,
+      decodeStrings: true,
+      validateEntrySizes: true,
+      strictFileNames: true,
+    })
+    const rawEntries = await collectEntries(zipFile, limits.maxEntries)
+    const validated = validateZipEntries(rawEntries, limits)
+    const files = []
+    for (const archiveEntry of validated.entries) {
+      if (!archiveEntry.directory) files.push(await digestArchiveEntry(zipFile, archiveEntry))
+    }
+    files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
+    if (files.length === 0) throw codedError('update-zip-manifest-invalid')
+    return Object.freeze(files)
+  } catch (error) {
+    if (isKnownError(error)) throw error
+    throw codedError('update-zip-inspection-failed')
+  } finally {
+    zipFile?.close()
+  }
+}
+
 function sameFileIdentity(left, right) {
   return left.dev === right.dev
     && left.ino === right.ino
     && left.size === right.size
     && left.mtimeNs === right.mtimeNs
+}
+
+function identityOf(metadata) {
+  return Object.freeze({ dev: metadata.dev, ino: metadata.ino })
 }
 
 async function verifyManifestFile(filePath, manifest) {
@@ -315,12 +367,17 @@ async function verifyManifestTree(root, manifestFiles) {
     }
   }
   try {
+    const beforeRoot = await lstat(root, { bigint: true })
+    if (!beforeRoot.isDirectory() || beforeRoot.isSymbolicLink()) throw codedError('update-zip-published-mismatch')
     const actualRoot = await realpath(root)
     if (relative(root, actualRoot) !== '') {
       throw codedError('update-zip-published-mismatch')
     }
     await walk(root)
     if (seen.size !== manifestFiles.size) throw codedError('update-zip-published-mismatch')
+    const afterRoot = await lstat(root, { bigint: true })
+    if (!sameFileIdentity(beforeRoot, afterRoot)) throw codedError('update-zip-published-mismatch')
+    return identityOf(afterRoot)
   } catch (error) {
     if (error?.message === 'update-zip-published-mismatch') throw error
     throw codedError('update-zip-published-mismatch')
@@ -354,7 +411,6 @@ export async function stageVerifiedZip({ zipPath, versionsDir, version, files, l
   if (await pathExists(stagingPath)) throw codedError('update-version-staging-exists')
 
   let zipFile
-  let published = false
   try {
     zipFile = await openZip(normalizedZipPath, {
       autoClose: false,
@@ -393,12 +449,15 @@ export async function stageVerifiedZip({ zipPath, versionsDir, version, files, l
     await verifyManifestTree(stagingPath, manifestFiles)
     if (await pathExists(versionPath)) throw codedError('update-version-destination-exists')
     await rename(stagingPath, versionPath)
-    published = true
-    await verifyManifestTree(versionPath, manifestFiles)
-    return { versionDir: versionPath, fileCount: archiveFiles.length, totalSize: validated.totalSize }
+    const publishedIdentity = await verifyManifestTree(versionPath, manifestFiles)
+    return {
+      versionDir: versionPath,
+      fileCount: archiveFiles.length,
+      totalSize: validated.totalSize,
+      publishedIdentity,
+    }
   } catch (error) {
     await rm(stagingPath, { recursive: true, force: true }).catch(() => {})
-    if (published) await rm(versionPath, { recursive: true, force: true }).catch(() => {})
     if (isKnownError(error)) throw error
     throw codedError('update-zip-extract-failed')
   } finally {

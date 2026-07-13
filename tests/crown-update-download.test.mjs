@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -49,7 +49,13 @@ test('download streams through allowed redirects, verifies size and sha256, then
   })
 
   assert.deepEqual(await readFile(destinationPath), Buffer.from(bytes))
-  assert.deepEqual(result, { path: destinationPath, size: bytes.length, sha256: sha256(bytes) })
+  const published = await lstat(destinationPath, { bigint: true })
+  assert.deepEqual(result, {
+    path: destinationPath,
+    size: bytes.length,
+    sha256: sha256(bytes),
+    publishedIdentity: { dev: published.dev, ino: published.ino },
+  })
   assert.equal(requests.length, 2)
   for (const request of requests) {
     assert.equal(request.options.redirect, 'manual')
@@ -215,5 +221,6 @@ test('download reopens the published path and rejects a replaced partial pathnam
   releaseTail()
 
   await assert.rejects(downloading, /update-asset-published-mismatch/)
-  assert.deepEqual(await readdir(root), [])
+  assert.deepEqual(await readdir(root), ['update.zip'])
+  assert.equal(await readFile(destinationPath, 'utf8'), 'ATTACKER')
 })

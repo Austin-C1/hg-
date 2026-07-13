@@ -300,10 +300,12 @@ async function childResult(child) {
   let stderr = ''
   child.stdout?.on('data', (chunk) => { stdout += chunk })
   child.stderr?.on('data', (chunk) => { stderr += chunk })
-  const code = await new Promise((resolve, reject) => {
-    child.once('error', reject)
-    child.once('exit', resolve)
-  })
+  const code = child.exitCode !== null
+    ? child.exitCode
+    : await new Promise((resolve, reject) => {
+        child.once('error', reject)
+        child.once('exit', resolve)
+      })
   return { code, stdout, stderr }
 }
 
@@ -343,7 +345,10 @@ test('Windows package exposes only self-relative manual launch, stop, and update
   assert.match(startPs, /portable-instance\.mjs/)
   assert.match(startPs, /WaitForExit/)
   assert.match(startPs, /SIGHUP/)
-  assert.match(updater, /manual-update-bootstrap-not-configured/)
+  assert.match(updater, /runtime[\\/]node[\\/]node\.exe/)
+  assert.match(updater, /crown-update-apply\.mjs/)
+  assert.match(updater, /--request/)
+  assert.doesNotMatch(updater, /Invoke-WebRequest|Start-BitsTransfer|curl\.exe|https?:\/\//i)
   assert.doesNotMatch(all, /C:\\Users\\|Desktop\\|Program Files.*(?:node|chrome|edge)|msedge\.exe|chrome\.exe.*Program Files/i)
   assert.doesNotMatch(all, /\b(?:node|node\.exe)\b\s+["']?scripts[\\/]crown-dashboard/i)
   assert.doesNotMatch(stopPs, /Get-Process\s+(?:node|node\.exe)|taskkill[^\r\n]*\/IM|Stop-Process[^\r\n]*-Name/i)
@@ -418,18 +423,259 @@ test('launcher rejects a LOCALAPPDATA junction before portable initialization or
   }
 })
 
-test('update bootstrap fails closed without creating state or starting an automatic update', async () => {
-  const localAppData = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-update-bootstrap-'))
-  try {
-    const result = await runPowerShell(path.join(packagingRoot, 'launcher', 'update-bootstrap.ps1'), {
-      env: { SystemRoot: process.env.SystemRoot, LOCALAPPDATA: localAppData },
+test('update bootstrap uses only previous-version bundled Node and the contained exact request', async (t) => {
+  const fixture = makePortableFixture(t)
+  const updateDir = path.join(fixture.dataRoot, 'updates')
+  const requestPath = path.join(updateDir, 'active-request.json')
+  const markerPath = path.join(updateDir, 'bootstrap-marker.json')
+  fs.mkdirSync(path.join(fixture.dataRoot, 'storage'), { recursive: true })
+  fs.mkdirSync(path.join(fixture.dataRoot, 'backups'), { recursive: true })
+  fs.mkdirSync(updateDir, { recursive: true })
+  fs.writeFileSync(path.join(fixture.appDir, 'scripts', 'crown-update-apply.mjs'), `
+    import fs from 'node:fs'
+    fs.writeFileSync(${JSON.stringify(markerPath)}, JSON.stringify({
+      execPath: process.execPath,
+      argv: process.argv.slice(2),
+      dataRoot: process.env.CROWN_DATA_ROOT,
+      watcher: process.env.CROWN_WATCHER_AUTOSTART,
+      worker: process.env.CROWN_BETTING_WORKER_AUTOSTART,
+      realRequested: process.env.CROWN_REAL_BETTING_REQUESTED,
+      realEnabled: process.env.CROWN_REAL_BETTING_ENABLED,
+    }))
+  `)
+  fs.writeFileSync(requestPath, `${JSON.stringify({
+    schemaVersion: 1, operation: 'apply', installationId: 'install-fixture', updateId: 'update-A',
+    previousVersion: '0.1.0', candidateVersion: '0.2.0', expectedVersion: '0.2.0',
+    dataRoot: fixture.dataRoot, journalPath: path.join(updateDir, 'journal.json'),
+    dbPath: path.join(fixture.dataRoot, 'storage', 'crown.sqlite'),
+    backupPath: path.join(fixture.dataRoot, 'backups', 'update-A.sqlite'),
+    appRoot: fixture.root, currentPath: path.join(fixture.root, 'current.json'),
+    candidateIdentity: { dev: '0', ino: '0' },
+    oldProcess: {
+      pid: process.pid, processStartTime: '2026-07-13T08:00:00.000Z', installationId: 'install-fixture',
+      processInstanceId: 'N'.repeat(43), probeToken: 'P'.repeat(43),
+    },
+  })}\n`)
+  const result = await runPowerShell(path.join(fixture.root, 'launcher', 'update-bootstrap.ps1'), {
+    env: launcherEnv(fixture),
+    extra: ['-RequestPath', requestPath],
+  })
+  assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`)
+  const marker = readJson(markerPath)
+  assert.equal(path.resolve(marker.execPath), path.resolve(path.join(fixture.root, 'versions', '0.1.0', 'runtime', 'node', 'node.exe')))
+  assert.deepEqual(marker.argv, ['--request', requestPath])
+  assert.equal(marker.dataRoot, fixture.dataRoot)
+  assert.equal(marker.watcher, '0')
+  assert.equal(marker.worker, '0')
+  assert.equal(marker.realRequested, '0')
+  assert.equal(marker.realEnabled, '0')
+})
+
+test('update bootstrap rejects missing, outside, or mismatched requests before bundled Node runs', async (t) => {
+  const fixture = makePortableFixture(t)
+  const outside = path.join(fixture.root, 'outside-request.json')
+  fs.writeFileSync(outside, '{}\n')
+  for (const extra of [[], ['-RequestPath', outside]]) {
+    const result = await runPowerShell(path.join(fixture.root, 'launcher', 'update-bootstrap.ps1'), {
+      env: launcherEnv(fixture), extra,
     })
-    assert.equal(result.code, 64)
-    assert.match(`${result.stdout}\n${result.stderr}`, /manual-update-bootstrap-not-configured/)
-    assert.equal(fs.existsSync(path.join(localAppData, 'CrownMonitor')), false)
-  } finally {
-    fs.rmSync(localAppData, { recursive: true, force: true })
+    assert.notEqual(result.code, 0)
+    assert.match(`${result.stdout}\n${result.stderr}`.replace(/\s/g, ''), /update-bootstrap-(?:request-required|request-outside-data-root)/)
   }
+})
+
+test('candidate launcher publishes exact identity and waits for durable updater authorization before Dashboard import', async (t) => {
+  const fixture = makePortableFixture(t)
+  const operationDir = path.join(fixture.dataRoot, 'updates', 'operations', 'update-A')
+  fs.mkdirSync(operationDir, { recursive: true })
+  const probeToken = 'P'.repeat(43)
+  const authorizationNonce = 'A'.repeat(43)
+  const child = launchStart(fixture, [
+    '-CandidateVersion', fixture.version,
+    '-CandidateUpdateId', 'update-A',
+    '-CandidateProbeToken', probeToken,
+    '-CandidateAuthorizationNonce', authorizationNonce,
+    '-CandidateOperationDir', operationDir,
+  ])
+  const candidatePath = path.join(operationDir, 'candidate.json')
+  let candidate
+  try { candidate = await waitFor(() => fs.existsSync(candidatePath) && readJson(candidatePath)) } catch (error) {
+    child.kill()
+    const result = await childResult(child)
+    assert.fail(`candidate-not-published:${error.message}\n${result.stdout}\n${result.stderr}`)
+  }
+  assert.deepEqual(Object.keys(candidate), [
+    'schemaVersion', 'updateId', 'installationId', 'version', 'pid', 'processStartTime',
+    'processInstanceId', 'probeToken', 'port', 'authorizationNonce', 'stopToken',
+  ])
+  assert.equal(candidate.updateId, 'update-A')
+  assert.equal(candidate.installationId, 'install-fixture')
+  assert.equal(candidate.version, fixture.version)
+  assert.equal(candidate.probeToken, probeToken)
+  assert.equal(candidate.authorizationNonce, authorizationNonce)
+  assert.equal(fs.existsSync(path.join(fixture.dataRoot, 'runtime', 'fake-startup.json')), false)
+  await sleep(300)
+  assert.equal(fs.existsSync(path.join(fixture.dataRoot, 'runtime', 'fake-startup.json')), false)
+
+  fs.writeFileSync(path.join(operationDir, 'candidate-authorized.json'), `${JSON.stringify({ ...candidate, authorized: true })}\n`)
+  const statePath = path.join(fixture.dataRoot, 'runtime', 'launcher-state.json')
+  const state = await waitFor(() => fs.existsSync(statePath) && readJson(statePath))
+  assert.equal(state.pid, candidate.pid)
+  assert.equal(state.processStartTime, candidate.processStartTime)
+  assert.equal(state.launchNonce, candidate.processInstanceId)
+  assert.equal(fs.existsSync(path.join(fixture.dataRoot, 'runtime', 'fake-startup.json')), true)
+  const stop = await runPowerShell(path.join(fixture.root, 'launcher', 'stop.ps1'), {
+    env: launcherEnv(fixture), extra: ['-StopTimeoutSeconds', '5'],
+  })
+  assert.equal(stop.code, 0, `${stop.stdout}\n${stop.stderr}`)
+  const result = await Promise.race([
+    childResult(child),
+    sleep(8_000).then(() => { child.kill(); throw new Error('candidate-launcher-exit-timeout') }),
+  ])
+  assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`)
+})
+
+test('candidate launcher exact abort stops before Dashboard import and never publishes normal state', async (t) => {
+  const fixture = makePortableFixture(t)
+  const operationDir = path.join(fixture.dataRoot, 'updates', 'operations', 'update-abort')
+  fs.mkdirSync(operationDir, { recursive: true })
+  const child = launchStart(fixture, [
+    '-CandidateVersion', fixture.version,
+    '-CandidateUpdateId', 'update-abort',
+    '-CandidateProbeToken', 'P'.repeat(43),
+    '-CandidateAuthorizationNonce', 'A'.repeat(43),
+    '-CandidateOperationDir', operationDir,
+  ])
+  const candidatePath = path.join(operationDir, 'candidate.json')
+  let candidate
+  try { candidate = await waitFor(() => fs.existsSync(candidatePath) && readJson(candidatePath)) } catch (error) {
+    child.kill()
+    const result = await childResult(child)
+    assert.fail(`candidate-not-published:${error.message}\n${result.stdout}\n${result.stderr}`)
+  }
+  fs.writeFileSync(path.join(operationDir, 'candidate-abort.json'), `${JSON.stringify({ ...candidate, abort: true })}\n`)
+  const result = await childResult(child)
+  assert.notEqual(result.code, 0)
+  assert.equal(fs.existsSync(path.join(fixture.dataRoot, 'runtime', 'fake-startup.json')), false)
+  assert.equal(fs.existsSync(path.join(fixture.dataRoot, 'runtime', 'launcher-state.json')), false)
+})
+
+test('normal launcher resumes the exact pending apply when its journal was never created', async (t) => {
+  const fixture = makePortableFixture(t)
+  const updateDir = path.join(fixture.dataRoot, 'updates')
+  const requestPath = path.join(updateDir, 'active-request.json')
+  const markerPath = path.join(updateDir, 'recovery-marker.json')
+  fs.mkdirSync(path.join(fixture.dataRoot, 'storage'), { recursive: true })
+  fs.mkdirSync(path.join(fixture.dataRoot, 'backups'), { recursive: true })
+  fs.mkdirSync(updateDir, { recursive: true })
+  const oldOperationDir = path.join(updateDir, 'operations', 'update-old')
+  const newOperationDir = path.join(updateDir, 'operations', 'update-new')
+  fs.mkdirSync(oldOperationDir, { recursive: true })
+  fs.writeFileSync(path.join(oldOperationDir, 'journal.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    updateId: 'update-old',
+    previousVersion: '0.0.9',
+    candidateVersion: '0.1.0',
+    backupPath: '',
+    phase: 'committed',
+    currentSwitched: true,
+    candidatePid: null,
+    candidateInstanceId: '',
+    updatedAt: '2026-07-13T07:00:00.000Z',
+  })}\n`)
+  fs.writeFileSync(path.join(fixture.root, 'current.json'), '{broken-current\n')
+  fs.writeFileSync(path.join(fixture.appDir, 'scripts', 'crown-update-apply.mjs'), `
+    import fs from 'node:fs'
+    const requestPath = process.argv[process.argv.indexOf('--request') + 1]
+    const request = JSON.parse(fs.readFileSync(requestPath, 'utf8'))
+    if (request.operation !== 'apply') process.exit(91)
+    fs.writeFileSync(${JSON.stringify(path.join(fixture.root, 'current.json'))}, JSON.stringify({ schemaVersion: 1, version: '0.1.0' }) + '\\n')
+    fs.writeFileSync(${JSON.stringify(markerPath)}, JSON.stringify({ operation: request.operation, requestPath, candidateIdentity: request.candidateIdentity }))
+  `)
+  fs.writeFileSync(requestPath, `${JSON.stringify({
+    schemaVersion: 1, operation: 'apply', installationId: 'install-fixture', updateId: 'update-new',
+    previousVersion: '0.1.0', candidateVersion: '0.2.0', expectedVersion: '0.2.0',
+    dataRoot: fixture.dataRoot, journalPath: path.join(newOperationDir, 'journal.json'),
+    dbPath: path.join(fixture.dataRoot, 'storage', 'crown.sqlite'),
+    backupPath: path.join(fixture.dataRoot, 'backups', 'update-recover.sqlite'),
+    appRoot: fixture.root, currentPath: path.join(fixture.root, 'current.json'),
+    candidateIdentity: { dev: '0', ino: '0' },
+    oldProcess: {
+      pid: 999999, processStartTime: '2026-07-13T08:00:00.000Z', installationId: 'install-fixture',
+      processInstanceId: 'N'.repeat(43), probeToken: 'P'.repeat(43),
+    },
+  })}\n`)
+  const child = launchStart(fixture)
+  const statePath = path.join(fixture.dataRoot, 'runtime', 'launcher-state.json')
+  try { await waitFor(() => fs.existsSync(statePath) && readJson(statePath)) } catch (error) {
+    child.kill()
+    const result = await childResult(child)
+    assert.fail(`recovery-launch-failed:${error.message}\n${result.stdout}\n${result.stderr}`)
+  }
+  const marker = readJson(markerPath)
+  assert.equal(marker.operation, 'apply')
+  assert.equal(path.resolve(marker.requestPath), path.resolve(requestPath))
+  assert.deepEqual(marker.candidateIdentity, { dev: '0', ino: '0' })
+  const stop = await runPowerShell(path.join(fixture.root, 'launcher', 'stop.ps1'), {
+    env: launcherEnv(fixture), extra: ['-StopTimeoutSeconds', '5'],
+  })
+  assert.equal(stop.code, 0, `${stop.stdout}\n${stop.stderr}`)
+  const result = await Promise.race([
+    childResult(child),
+    sleep(8_000).then(() => { child.kill(); throw new Error('recovery-launcher-exit-timeout') }),
+  ])
+  assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`)
+})
+
+test('normal launcher constructs an exact recovery request when the durable journal exists', async (t) => {
+  const fixture = makePortableFixture(t)
+  const updateDir = path.join(fixture.dataRoot, 'updates')
+  const journalPath = path.join(updateDir, 'journal.json')
+  const requestPath = path.join(updateDir, 'active-request.json')
+  const markerPath = path.join(updateDir, 'recovery-marker.json')
+  fs.mkdirSync(path.join(fixture.dataRoot, 'storage'), { recursive: true })
+  fs.mkdirSync(path.join(fixture.dataRoot, 'backups'), { recursive: true })
+  fs.mkdirSync(updateDir, { recursive: true })
+  fs.writeFileSync(journalPath, '{}\n')
+  fs.writeFileSync(path.join(fixture.root, 'current.json'), '{broken-current\n')
+  fs.writeFileSync(path.join(fixture.appDir, 'scripts', 'crown-update-apply.mjs'), `
+    import fs from 'node:fs'
+    const requestPath = process.argv[process.argv.indexOf('--request') + 1]
+    const request = JSON.parse(fs.readFileSync(requestPath, 'utf8'))
+    if (request.operation !== 'recover') process.exit(91)
+    fs.writeFileSync(${JSON.stringify(path.join(fixture.root, 'current.json'))}, JSON.stringify({ schemaVersion: 1, version: '0.1.0' }) + '\\n')
+    fs.writeFileSync(${JSON.stringify(markerPath)}, JSON.stringify({ operation: request.operation, requestPath, candidateIdentity: request.candidateIdentity }))
+  `)
+  fs.writeFileSync(requestPath, `${JSON.stringify({
+    schemaVersion: 1, operation: 'apply', installationId: 'install-fixture', updateId: 'update-recover-journal',
+    previousVersion: '0.1.0', candidateVersion: '0.2.0', expectedVersion: '0.2.0',
+    dataRoot: fixture.dataRoot, journalPath,
+    dbPath: path.join(fixture.dataRoot, 'storage', 'crown.sqlite'),
+    backupPath: path.join(fixture.dataRoot, 'backups', 'update-recover-journal.sqlite'),
+    appRoot: fixture.root, currentPath: path.join(fixture.root, 'current.json'),
+    candidateIdentity: { dev: '0', ino: '0' },
+    oldProcess: {
+      pid: 999999, processStartTime: '2026-07-13T08:00:00.000Z', installationId: 'install-fixture',
+      processInstanceId: 'N'.repeat(43), probeToken: 'P'.repeat(43),
+    },
+  })}\n`)
+  const child = launchStart(fixture)
+  const statePath = path.join(fixture.dataRoot, 'runtime', 'launcher-state.json')
+  try { await waitFor(() => fs.existsSync(statePath) && readJson(statePath)) } catch (error) {
+    child.kill()
+    const result = await childResult(child)
+    assert.fail(`recovery-launch-failed:${error.message}\n${result.stdout}\n${result.stderr}`)
+  }
+  const marker = readJson(markerPath)
+  assert.equal(marker.operation, 'recover')
+  assert.match(path.basename(marker.requestPath), /^recovery-request-/)
+  assert.deepEqual(marker.candidateIdentity, { dev: '0', ino: '0' })
+  const stop = await runPowerShell(path.join(fixture.root, 'launcher', 'stop.ps1'), {
+    env: launcherEnv(fixture), extra: ['-StopTimeoutSeconds', '5'],
+  })
+  assert.equal(stop.code, 0, `${stop.stdout}\n${stop.stderr}`)
+  const result = await childResult(child)
+  assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`)
 })
 
 test('launcher fails closed on malformed canonical current metadata before starting bundled Node', async () => {
@@ -437,6 +683,7 @@ test('launcher fails closed on malformed canonical current metadata before start
   try {
     copyTree(packagingRoot, root)
     fs.writeFileSync(path.join(root, 'current.json'), '{"schemaVersion":1,"version":"..\\\\outside"}\n')
+    fs.mkdirSync(path.join(root, 'data'))
     const result = await runPowerShell(path.join(root, 'launcher', 'start.ps1'), {
       env: { SystemRoot: process.env.SystemRoot, LOCALAPPDATA: path.join(root, 'data') },
       extra: ['-NoBrowser'],
@@ -452,14 +699,15 @@ test('launcher fails closed on malformed canonical current metadata before start
 test('launcher starts from a foreign cwd and Chinese path, falls back from 8787, reuses the exact instance, and stops gracefully', async (t) => {
   const fixture = makePortableFixture(t)
   let blocker
+  let ownsPort8787 = false
   try {
     blocker = http.createServer((req, res) => {
       res.setHeader('content-type', 'application/json')
       res.end(JSON.stringify({ ok: true, app: 'not-crown-dashboard' }))
     })
-    await new Promise((resolve, reject) => {
-      blocker.once('error', (error) => error.code === 'EADDRINUSE' ? resolve() : reject(error))
-      blocker.listen(8787, '127.0.0.1', resolve)
+    ownsPort8787 = await new Promise((resolve, reject) => {
+      blocker.once('error', (error) => error.code === 'EADDRINUSE' ? resolve(false) : reject(error))
+      blocker.listen(8787, '127.0.0.1', () => resolve(true))
     })
 
     const first = launchStart(fixture)
@@ -473,7 +721,8 @@ test('launcher starts from a foreign cwd and Chinese path, falls back from 8787,
     assert.deepEqual(Object.keys(state).sort(), ['installationId', 'launchNonce', 'pid', 'port', 'processStartTime', 'schemaVersion', 'stopToken', 'version'])
     assert.equal(state.installationId, 'install-fixture')
     assert.equal(state.version, fixture.version)
-    assert.notEqual(state.port, 8787)
+    if (ownsPort8787) assert.notEqual(state.port, 8787)
+    else assert.equal(Number.isSafeInteger(state.port) && state.port > 0, true)
     assert.equal(Number.isSafeInteger(state.pid) && state.pid > 0, true)
     assert.equal(new Date(state.processStartTime).toISOString(), state.processStartTime)
     assert.match(state.launchNonce, /^[A-Za-z0-9_-]{43}$/)

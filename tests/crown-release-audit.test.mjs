@@ -49,14 +49,14 @@ test('release audit scans binary artifacts for embedded local machine paths', as
     'current.json': '{"schemaVersion":1,"version":"0.1.0"}\n',
     'versions/0.1.0/runtime/node/node.exe': Buffer.concat([
       Buffer.from([0, 1, 2, 3]),
-      Buffer.from('C:\\Users\\kesul\\Desktop\\private-build'),
+      Buffer.from('C:\\Users\\localdev\\Desktop\\private-build'),
       Buffer.from('-----BEGIN PRIVATE KEY-----\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----'),
       Buffer.from('github_pat_1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ'),
       Buffer.from([0, 4, 5]),
     ]),
   })
   t.after(() => rm(root, { recursive: true, force: true }))
-  const report = await scanReleaseArtifacts({ root, developerUsernames: ['kesul'] })
+  const report = await scanReleaseArtifacts({ root, developerUsernames: ['localdev'] })
   assert.equal(report.ok, false)
   assert.equal(report.findings.some((finding) => finding.code === 'local-user-path'), true)
   assert.equal(report.findings.some((finding) => finding.code === 'desktop-path'), true)
@@ -168,11 +168,11 @@ test('release audit detects local paths, proxies, system browsers, and secret ma
   const repositoryPath = join('D:\\work', 'private-crown')
   const cases = [
     ['windows-user-root', 'C:\\Users\\Somebody\\AppData\\Local\\secret.txt', 'local-user-path'],
-    ['developer-name', 'owner=kesul', 'developer-username'],
+    ['developer-name', 'owner=localdev', 'developer-username'],
     ['desktop', 'D:\\build\\Desktop\\capture.json', 'desktop-path'],
     ['repository', `${repositoryPath}\\src\\main.mjs`, 'repository-path'],
     ['drive-path', 'Q:\\private\\fixture.json', 'undeclared-drive-path'],
-    ['escaped-user-path', String.raw`const p = "C:\\Users\\kesul\\Desktop\\private.json"`, 'local-user-path'],
+    ['escaped-user-path', String.raw`const p = "C:\\Users\\localdev\\Desktop\\private.json"`, 'local-user-path'],
     ['escaped-drive-path', String.raw`{"path":"Q:\\private\\fixture.json"}`, 'undeclared-drive-path'],
     ['proxy', 'HTTPS_PROXY=http://127.0.0.1:7890', 'local-proxy'],
     ['edge', 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', 'system-browser'],
@@ -193,14 +193,14 @@ test('release audit detects local paths, proxies, system browsers, and secret ma
       const report = await scanReleaseArtifacts({
         root,
         sourceRoot: repositoryPath,
-        developerUsernames: ['kesul'],
+        developerUsernames: ['localdev'],
       })
       assert.equal(report.ok, false)
       assert.equal(report.findings.some((finding) => finding.code === expectedCode), true, JSON.stringify(report.findings))
       await assert.rejects(auditReleaseArtifacts({
         root,
         sourceRoot: repositoryPath,
-        developerUsernames: ['kesul'],
+        developerUsernames: ['localdev'],
       }), /release-audit-failed/)
     })
   }

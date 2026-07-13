@@ -30,6 +30,8 @@ import type {
   RuleCardMutation,
   RuleCardUpdate,
   RuntimeCleanupPreview,
+  SystemUpdateCancelResult,
+  SystemUpdateStatus,
   TelegramSettingsPayload,
   TrackedMatch,
   TodayBettingLeague,
@@ -115,9 +117,12 @@ apiClient.interceptors.response.use(
       await refreshSecurityContext()
       return apiClient.request(original)
     }
-    const message = error.response?.status === 409
+    const stableUpdateCode = typeof payload?.error === 'string' && /^update-[a-z0-9-]+$/.test(payload.error)
+      ? payload.error
+      : ''
+    const message = stableUpdateCode || (error.response?.status === 409
       ? '配置已被其他页面更新，请刷新后重试'
-      : (payload?.error || error.message || 'request-failed')
+      : (payload?.error || error.message || 'request-failed'))
     return Promise.reject(Object.assign(new Error(message), { payload, status: error.response?.status }))
   },
 )
@@ -309,6 +314,18 @@ export const api = {
   },
   async runRuntimeCleanup() {
     return (await apiClient.post<{ item: RuntimeCleanupPreview }>('/app/runtime-cache-cleanup', {})).data
+  },
+  async getSystemUpdate(signal?: AbortSignal) {
+    return (await apiClient.get<{ item: SystemUpdateStatus }>('/app/system-update', { signal })).data
+  },
+  async checkSystemUpdate() {
+    return (await apiClient.post<{ item: SystemUpdateStatus }>('/app/system-update/check', {}, { timeout: 0 })).data
+  },
+  async installSystemUpdate(expectedVersion: string) {
+    return (await apiClient.post<{ item: SystemUpdateStatus }>('/app/system-update/install', { expectedVersion }, { timeout: 0 })).data
+  },
+  async cancelSystemUpdate() {
+    return (await apiClient.post<{ item: SystemUpdateCancelResult }>('/app/system-update/cancel', {})).data
   },
   async startRealBetting() {
     return (await apiClient.post<{ item: RealBettingStatus }>('/app/real-betting/start', {})).data

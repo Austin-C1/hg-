@@ -15,6 +15,8 @@ import { realBettingDto } from './real-betting-dto.mjs'
 import { readDashboardData } from '../dashboard/dashboard-data.mjs'
 import { previewRuntimeCleanup, runRuntimeCleanup } from './runtime-cache-cleanup.mjs'
 import { readDefaultLeagues } from '../config/default-leagues.mjs'
+import { parseSemver } from '../update/semver.mjs'
+import { UpdateError, updateError } from '../update/update-error.mjs'
 import {
   authorizeExecution,
   revokeAuthorization,
@@ -237,6 +239,75 @@ function humanLoginController(options) {
   return options.humanLoginController
 }
 
+const UPDATE_STATES = new Set([
+  'unavailable', 'idle', 'checking', 'available', 'up-to-date', 'downloading', 'applying', 'error',
+])
+const UPDATE_ERROR_CODE = /^update-[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+function updateService(options) {
+  if (!options.updateService) throw updateError('update-unavailable')
+  return options.updateService
+}
+
+function safeUpdateText(value, maxLength) {
+  return typeof value === 'string' ? value.slice(0, maxLength) : ''
+}
+
+function systemUpdateDto(value) {
+  const state = String(value?.state || '')
+  const currentVersion = safeUpdateText(value?.currentVersion, 128)
+  const availableVersion = safeUpdateText(value?.availableVersion, 128)
+  const progress = Number(value?.progress)
+  const errorCode = safeUpdateText(value?.errorCode, 128)
+  const rollbackReason = safeUpdateText(value?.rollbackReason, 128)
+  if (
+    !UPDATE_STATES.has(state)
+    || !currentVersion
+    || (availableVersion && availableVersion.length > 128)
+    || !Number.isSafeInteger(progress)
+    || progress < 0
+    || progress > 100
+    || (errorCode && !UPDATE_ERROR_CODE.test(errorCode))
+    || (rollbackReason && !UPDATE_ERROR_CODE.test(rollbackReason))
+    || typeof value?.cancellable !== 'boolean'
+  ) throw updateError('update-status-invalid')
+  return {
+    state,
+    currentVersion,
+    availableVersion,
+    progress,
+    errorCode,
+    cancellable: value.cancellable,
+    releaseNotes: safeUpdateText(value?.releaseNotes, 16_384),
+    rollbackReason,
+  }
+}
+
+function updateCancelDto(value) {
+  const code = safeUpdateText(value?.code, 128)
+  if (typeof value?.cancelled !== 'boolean' || !UPDATE_ERROR_CODE.test(code)) {
+    throw updateError('update-cancel-result-invalid')
+  }
+  return { cancelled: value.cancelled, code }
+}
+
+function validateUpdateInstallBody(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'expectedVersion')
+    || typeof value.expectedVersion !== 'string' || value.expectedVersion.length > 128) {
+    throw updateError('update-expected-version-invalid')
+  }
+  try { parseSemver(value.expectedVersion) } catch { throw updateError('update-expected-version-invalid') }
+  return { expectedVersion: value.expectedVersion }
+}
+
+async function requireEmptyUpdateBody(req) {
+  const body = await readBody(req)
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 0) {
+    throw updateError('update-request-body-invalid')
+  }
+}
+
 async function dispatch(req, requestUrl, options = {}) {
   const parts = routeParts(requestUrl.pathname)
   const method = req.method || 'GET'
@@ -270,6 +341,30 @@ async function dispatch(req, requestUrl, options = {}) {
     if (method === 'GET') return { statusCode: 200, payload: { item: await cleanup.preview() } }
     if (method === 'POST') return { statusCode: 200, payload: { item: await cleanup.run() } }
     return { statusCode: 405, payload: { error: 'method-not-allowed' } }
+  }
+
+  if (parts[0] === 'system-update') {
+    const service = updateService(options)
+    if (parts.length === 1) {
+      if (method !== 'GET') return { statusCode: 405, payload: { error: 'method-not-allowed' } }
+      return { statusCode: 200, payload: { item: systemUpdateDto(await service.getStatus()) } }
+    }
+    if (parts.length === 2 && parts[1] === 'check') {
+      if (method !== 'POST') return { statusCode: 405, payload: { error: 'method-not-allowed' } }
+      await requireEmptyUpdateBody(req)
+      return { statusCode: 200, payload: { item: systemUpdateDto(await service.check()) } }
+    }
+    if (parts.length === 2 && parts[1] === 'install') {
+      if (method !== 'POST') return { statusCode: 405, payload: { error: 'method-not-allowed' } }
+      const body = validateUpdateInstallBody(await readBody(req))
+      return { statusCode: 200, payload: { item: systemUpdateDto(await service.install(body)) } }
+    }
+    if (parts.length === 2 && parts[1] === 'cancel') {
+      if (method !== 'POST') return { statusCode: 405, payload: { error: 'method-not-allowed' } }
+      await requireEmptyUpdateBody(req)
+      return { statusCode: 200, payload: { item: updateCancelDto(await service.cancel()) } }
+    }
+    return { statusCode: 404, payload: { error: 'not-found' } }
   }
 
   if (['betting-rules', 'auto-bet-rules'].includes(parts[0]) && method !== 'GET') {
@@ -681,6 +776,25 @@ export async function handleAppApi(req, res, requestUrl, options = {}) {
     const result = await dispatch(req, requestUrl, options)
     send(res, result.statusCode, result.payload)
   } catch (error) {
+    if (error instanceof UpdateError) {
+      const conflictCodes = new Set([
+        'update-operation-in-progress',
+        'update-apply-in-progress',
+        'update-release-not-checked',
+        'update-expected-version-mismatch',
+        'update-cancelled',
+      ])
+      const invalidCodes = new Set([
+        'update-expected-version-invalid',
+        'update-request-body-invalid',
+      ])
+      const statusCode = error.code === 'update-unavailable' ? 503
+        : conflictCodes.has(error.code) ? 409
+          : invalidCodes.has(error.code) ? 400
+            : 500
+      send(res, statusCode, { error: error.code })
+      return true
+    }
     if (error instanceof ValidationError) {
       const fields = requestUrl.pathname.startsWith('/api/app/monitor-alert-settings')
         ? safeMonitorAlertFields(error.fields)

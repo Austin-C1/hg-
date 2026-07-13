@@ -1,17 +1,18 @@
 # 项目记忆
 
-## 2026-07-13 Windows Portable 与远程更新设计
+## 2026-07-13 Windows Portable 与手动签名更新
 
-- 用户确认第一批只面向少量 Windows 用户，采用 Windows x64 Portable ZIP：内置 Node.js 与 Chromium，双击手动启动并保留运行窗口，不安装 Service、不设开机启动、不依赖系统 Chrome/Edge/Docker。
-- 启动只打开本机 Dashboard；Watcher 必须由用户在运维控制台手动启动，程序重启和更新后都保持停止。当前 canonical Crown preview/submit/reconciliation 继续为 `0/0/0`，Task 7、8、12 的真实投注硬停点不变。
-- 用户数据统一放在 `%LOCALAPPDATA%\CrownMonitor`，程序目录与数据目录分离；账号、密码、SQLite、本地密钥、session、Telegram、日志和浏览器 Profile 不进入 GitHub 发行包或更新包。
-- 普通登录继续走 Crown API + 只读 `get_game_list` 验证；Portable 版计划增加内置 Chromium 的显式人工登录窗口，验证码/滑块/二次验证只由用户本人处理，再将 exact-origin session 转换为 API session 并复核，不绕过人机验证。
-- 公开仓库固定为 `https://github.com/Austin-C1/hg-`，同时保存受审源码和 GitHub Releases；用户手动检查、手动确认。更新包使用 Ed25519 签名、SHA-256、文件 allowlist、版本化目录、更新前 SQLite 备份、健康检查、持久 journal 和失败自动回滚，不向下载版分发 GitHub token 或签名私钥。
-- 发行构建必须来自干净 checkout 或显式 allowlist staging，禁止直接压缩当前工作目录；本机绝对路径、用户名、秘密、数据库和 runtime 数据扫描必须为 0。当前 Docker 镜像和本地安装流程仍有发行缺口，尚只能称为私有 Alpha。
-- 用户确认现有 118 项默认联赛白名单应作为下载包 seed 一并发布；只在首次运行目标文件不存在时复制到 `%LOCALAPPDATA%\CrownMonitor`，更新不得覆盖下载者之后的本地修改。投注网址 allowlist 仍是每台电脑的安全配置，不进入公共默认值。
+- 第一批只面向少量 Windows 10/11 x64 用户，采用 Portable ZIP：内置受 runtime lock 约束的 Node.js 与 Chromium，双击 `启动程序.cmd` 并保留可见窗口；不安装 Service、不设开机启动、不依赖系统 Chrome/Edge/Node/Docker。
+- APP_ROOT 与用户 data root 已分离；账号密文、SQLite、session、浏览器 Profile、日志、运行身份、备份和 update journal 统一位于 `%LOCALAPPDATA%\CrownMonitor`，不进入 GitHub 发行包。launcher 不依赖调用者 cwd，并以 installation id/PID/start time/nonce/probe 精确管理进程，禁止按进程名 kill。
+- 启动只打开 loopback Dashboard；Watcher 必须由用户在 Dashboard 手动启动，程序重启、更新和回滚后都保持停止。canonical Crown preview/submit/reconciliation 继续为 `0/0/0`，Portable、登录和更新不得打开真实投注。
+- 下载包包含 118 项默认联赛 seed，只在用户目标文件不存在时首次复制；重启、更新和回滚不得覆盖用户修改。
+- 人工登录只启动包内 Chromium；账号网址复用 exact public HTTPS origin 校验，验证码、滑块和 OTP 只由用户本人处理。session bridge 不导出完整 storage state，只在 exact-origin session 通过只读 `get_game_list` 后原子保存；成功不自动启动 Watcher。
+- 发行构建使用显式 production allowlist、锁定的 Node/Chromium archive 与 tree digest、`release-files.json` 和秘密/路径审计；GitHub Actions 使用 pinned actions 与最小只读权限，只上传短期 unsigned artifact，不接触签名私钥或自动发布 Release。
+- 手动更新链包含从最终 ZIP 生成 canonical manifest、Ed25519、SHA-256、GitHub HTTPS host allowlist、安全 ZIP 解压、SQLite 一致性备份、preflight、候选健康检查、版本化目录、原子 `current.json` 和持久 journal。外部可见 updater 发生失败或强制终止时，下次 launcher 先恢复到唯一确定的 committed/rolled-back 状态。
+- 公开仓库固定为 `https://github.com/Austin-C1/hg-`。签名私钥永远不入仓库、GitHub Secret、Actions artifact 或下载包；生产 trusted public key 尚未配置时更新服务必须保持不可用，不能用关闭验签代替。
+- 发布状态仍有硬门槛：必须先完成全量验证、实际 unsigned 发行物审计、仓库外 cwd smoke、离线签名复验和 Fresh Windows 10/11 x64 矩阵。没有 Fresh Windows 证据时只发布源码/开发分支，不能把 ZIP 标记为可用下载版。
+- 用户入口：`docs/windows-private-beta-quick-start.md`；维护者入口：`docs/github-release-runbook.md`；模块入口：`docs/modules/windows-portable-release.md`；正式设计与实施计划仍分别位于 `docs/superpowers/specs/2026-07-13-crown-windows-portable-and-remote-update-design.md` 和 `docs/superpowers/plans/2026-07-13-crown-windows-portable-release-and-update.md`。
 - 公开仓库清理已删除 2026-07-09 的 bootstrap、单笔执行、顺序执行、candidate dry-run、旧 `CrownBetAdapter`、只被这些入口使用的 `src/betting` 通用契约及其专属测试。canonical Dashboard worker、Provider、mapper/parser、迁移兼容与 capability/authorization/lease 门禁保留；历史文档只作时间线证据，不是可运行入口。
-- 清理后验证：公开契约/安全/capability 聚焦 `26/26`，完整 backend `1063/1063`，syntax `202`，frontend `122/122`，production build 通过；未访问真实 Crown/TG、未修改正式 SQLite 或运行服务。
-- 正式设计入口：`docs/superpowers/specs/2026-07-13-crown-windows-portable-and-remote-update-design.md`。本阶段只固化设计，没有改运行代码、数据库或服务，也没有 Git commit。
 
 ## 2026-07-12 动态卡片正式迁移与 8787 重启
 
@@ -156,13 +157,6 @@
 - `replayFixture()` 支持 `outputDir`；replay 测试改用系统临时目录，不再重写项目 fixture；生成记录中的本地输入来源使用项目相对路径，不再泄露用户目录绝对路径。
 - 本次 TDD 验证：新增 2 项测试先按预期失败，最小实现后 2/2 通过。全量验证为 `npm test` 193/193、`npm run check` 100 个 `.mjs`、前端 32/32、production build 通过。
 - 首次公开 push 前仍需对 staged 清单做最终秘密扫描，并确认 fixture 业务样本允许公开；没有用户明确要求时不自动 commit/push。
-
-## 2026-07-10 PBBall 2 参考程序分析（历史快照）
-
-- 参考程序分析入口：`docs/pbball2-reference-analysis.md`。PBBall 2 是面向 PS3838 的 PyInstaller Windows 产品，采用 FastAPI Web 后台、独立监控进程和每账号独立下注进程，通过 WebSocket 分发信号和回写状态。
-- 可复用结论：皇冠适合借鉴策略 Registry、结构化 Trigger、账号级 Betting Worker、进程重发现、实时状态和按账号日志；不能复制 PS3838 的 `oddsId/altLineId/selectionId` 协议。
-- PBBall 2 自身存在忙碌信号丢弃、无持久幂等、pending 不占限额、无后续订单对账、API 认证可绕过和发布包混入运行数据等问题。这些实现不得照搬。
-- 当时的设计前置包含敏感诊断泄露、账号 session 错配、派生金额绕过 maxStake、JSONL 批次基线抖动和 Dashboard 无认证。到 2026-07-11，诊断、派生金额、批次基线和 Dashboard 安全项已修复；单账号旧 execute 的 session 归属及其他当前风险以上方状态和 `docs/crown-current-architecture.md` 为准。
 
 ## 2026-07-10 全项目架构审查与主文档重写（历史审查快照）
 

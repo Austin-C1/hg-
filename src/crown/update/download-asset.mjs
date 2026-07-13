@@ -40,6 +40,10 @@ function sameFileIdentity(left, right) {
     && left.mtimeNs === right.mtimeNs
 }
 
+function identityOf(metadata) {
+  return Object.freeze({ dev: metadata.dev, ino: metadata.ino })
+}
+
 async function verifyPublishedFile(path, expectedSize, expectedSha256) {
   let handle
   try {
@@ -71,6 +75,7 @@ async function verifyPublishedFile(path, expectedSize, expectedSha256) {
     ) {
       throw codedError('update-asset-published-mismatch')
     }
+    return identityOf(afterHandle)
   } catch (error) {
     if (handle) await handle.close().catch(() => {})
     if (error?.message === 'update-asset-published-mismatch') throw error
@@ -105,7 +110,6 @@ export async function downloadAsset({
   const temporaryPath = join(dirname(finalPath), `.${basename(finalPath)}.${randomUUID()}.partial`)
   let handle
   let request
-  let published = false
 
   try {
     request = await fetchHttpsWithRedirects({ url, allowedHosts, fetchImpl, timeoutMs, maxRedirects })
@@ -145,13 +149,11 @@ export async function downloadAsset({
     if (digest !== expectedSha256.toLowerCase()) throw codedError('update-asset-sha256-mismatch')
     if (await pathExists(finalPath)) throw codedError('update-asset-destination-exists')
     await rename(temporaryPath, finalPath)
-    published = true
-    await verifyPublishedFile(finalPath, expectedSize, expectedSha256.toLowerCase())
-    return { path: finalPath, size, sha256: digest }
+    const publishedIdentity = await verifyPublishedFile(finalPath, expectedSize, expectedSha256.toLowerCase())
+    return { path: finalPath, size, sha256: digest, publishedIdentity }
   } catch (error) {
     if (handle) await handle.close().catch(() => {})
     await rm(temporaryPath, { force: true }).catch(() => {})
-    if (published) await rm(finalPath, { force: true }).catch(() => {})
     if (isKnownError(error)) throw error
     throw codedError('update-asset-download-failed')
   } finally {

@@ -17,7 +17,8 @@
     "release/windows-production-allowlist.json",
     "scripts/crown-dashboard.mjs",
     "scripts/crown-watch.mjs",
-    "scripts/crown-betting-worker.mjs"
+    "scripts/crown-betting-worker.mjs",
+    "scripts/crown-update-apply.mjs"
   ],
   "appTrees": [
     "src",

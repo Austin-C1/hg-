@@ -259,6 +259,7 @@ export async function fetchReleaseManifestPair({
   ])
   return {
     releaseTag: release.tag_name,
+    releaseNotes: typeof release.body === 'string' ? release.body : '',
     manifestAsset: { name: manifest.name, size: manifest.size },
     signatureAsset: { name: signature.name, size: signature.size },
     manifestBytes,

@@ -647,3 +647,29 @@ export interface BootstrapPayload {
   events: { items: OddsEvent[]; warnings?: string[] }
   changes: { items: unknown[]; warnings?: string[] }
 }
+
+export type SystemUpdateState =
+  | 'unavailable'
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'up-to-date'
+  | 'downloading'
+  | 'applying'
+  | 'error'
+
+export interface SystemUpdateStatus {
+  state: SystemUpdateState
+  currentVersion: string
+  availableVersion: string
+  progress: number
+  errorCode: string
+  cancellable: boolean
+  releaseNotes: string
+  rollbackReason: string
+}
+
+export interface SystemUpdateCancelResult {
+  cancelled: boolean
+  code: string
+}

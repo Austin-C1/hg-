@@ -2,6 +2,7 @@ import {
   BankOutlined,
   ControlOutlined,
   BarChartOutlined,
+  CloudDownloadOutlined,
   MenuOutlined,
   ProfileOutlined,
   RobotOutlined,
@@ -26,6 +27,7 @@ const items = [
   { key: '/betting-rules', icon: <BarChartOutlined />, label: '投注规则' },
   { key: '/betting-accounts', icon: <BankOutlined />, label: '投注账号配置' },
   { key: '/settings', icon: <RobotOutlined />, label: '设置' },
+  { key: '/system-update', icon: <CloudDownloadOutlined />, label: '系统更新' },
 ]
 
 function Brand() {

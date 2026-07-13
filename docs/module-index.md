@@ -1,12 +1,14 @@
 # 模块汇总
 
-## 2026-07-13 Windows Portable 与远程更新（设计已确认，尚未实现）
+## 2026-07-13 Windows Portable 与手动签名更新
 
-- 设计入口：`docs/superpowers/specs/2026-07-13-crown-windows-portable-and-remote-update-design.md`。
-- 发行边界：Windows x64 Portable ZIP、内置 Node/Chromium、APP_ROOT 与 `%LOCALAPPDATA%\CrownMonitor` 数据根分离、可见 launcher、Watcher 手动启动、真实 capability `0/0/0`。
-- 计划模块：Portable launcher/path model、118 项默认联赛 seed、allowlist release builder、发行物秘密/路径审计、Chromium 人工登录 session bridge、Dashboard update API/UI、Ed25519 manifest verifier、安全解压、外部 updater、健康检查与 journal rollback。公开源码与 Releases 使用 `Austin-C1/hg-`。
-- 强绑定验证：launcher/路径模型/进程所有权/SQLite 备份必须一起验证；人工登录与 exact-origin session/API read-only 验证必须一起验证；manifest/signature/allowlist/extract/updater/rollback 必须端到端验证。
-- Fresh Windows 验收必须覆盖无 Node/Chrome/Edge/Docker、非项目 cwd、中文/空格路径、端口冲突、离线、篡改包、更新阶段强制终止和数据保持。当前只有设计文档，不代表已有可发布 ZIP。
+- 模块入口：`docs/modules/windows-portable-release.md`；设计和实施计划入口为 `docs/superpowers/specs/2026-07-13-crown-windows-portable-and-remote-update-design.md`、`docs/superpowers/plans/2026-07-13-crown-windows-portable-release-and-update.md`。
+- 发行边界：Windows 10/11 x64 Portable ZIP、内置 runtime-lock Node/Chromium、APP_ROOT 与 `%LOCALAPPDATA%\CrownMonitor` 分离、可见 launcher、Watcher 只能手动启动、真实 capability `0/0/0`。
+- 已实现模块：Portable path/first-run、118 项白名单 seed、精确进程身份 launcher、allowlist release builder/audit、包内 Chromium 人工登录与 exact-origin session bridge、最终 ZIP canonical manifest 生成、strict manifest/Ed25519/GitHub 下载/安全解压、SQLite backup/preflight/health/journal、外部 update handoff/recovery、Dashboard update API/UI、pinned unsigned CI workflow。
+- 强绑定验证：launcher/path/current/installation/process identity 一起验证；人工登录/origin/session/API read-only verification 一起验证；manifest/signature/download/extract/backup/preflight/health/applier/Windows handoff/recovery 端到端验证；release allowlist/runtime lock/workflow/audit 一起验证。
+- 可独立开发：用户 quick start、Release notes 和纯展示文案可单独修改，但不得改变运行契约；受信公钥轮换、manifest schema 和 production allowlist 不是独立修改项。
+- 发布状态：公开仓库和 unsigned Actions artifact 不等于用户 Release。生产 trusted public key、离线签名、最终资产复验及 Fresh Windows 证据全部完成前，不能把 ZIP 标记为可用下载版；签名私钥绝不进入仓库或 GitHub。
+- Fresh Windows 必须覆盖无系统 Node/Chrome/Edge/Docker、外部 cwd、中文/空格路径、端口冲突、离线、篡改包、更新各阶段强制终止、SQLite 保持及 Watcher/worker 始终 off。
 
 ## 2026-07-13 Dashboard 当前状态与页面性能
 
@@ -89,12 +91,6 @@
 - 待确认设计：`docs/superpowers/specs/2026-07-10-crown-monitor-core-redesign.md`。
 - 设计边界：SnapshotBatch 权威/增量语义、canonical event/market/selection identity、SQLite 当前状态、Crown 时间解析、纯事实 Change、StrategyEngine、确定性 Signal、异步 Dispatcher 和候选幂等。
 - 强绑定模块：XML normalizer、JSONL store、watcher、monitor settings、tracked matches、betting candidate builder、Dashboard 数据读取必须一起迁移和验证；真实下注 adapter 仍保持隔离。
-
-## 2026-07-10 PBBall 2 参考程序分析
-
-- 新增 `docs/pbball2-reference-analysis.md`，记录 PBBall 2 的产品形态、监控/策略/下注/多账号/Dashboard 架构，以及与当前皇冠平台协议和实现边界的逐项差异。
-- 该文档是只读逆向分析结果，不代表 PBBall 的接口或实现可以直接用于皇冠；后续设计必须以皇冠当前 XML、下单抓包证据和实际测试为准。
-- 可以独立借鉴的方向：策略 Registry、独立账号 worker、进程发现与控制、实时状态通道。强绑定且必须一起设计和验证的方向：候选版本、预览、提交、幂等、pending/unknown 对账、聚合风控和正式账本。
 
 ## 2026-07-10 完整架构文档
 

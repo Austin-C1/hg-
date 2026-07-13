@@ -3,7 +3,7 @@
 > 状态：待用户确认  
 > 日期：2026-07-10  
 > 阶段：A — 监控准确性  
-> 关联分析：`docs/crown-current-architecture.md`、`docs/pbball2-reference-analysis.md`
+> 关联分析：`docs/crown-current-architecture.md`
 
 ## 1. 目标
 

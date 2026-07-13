@@ -3,7 +3,12 @@
 param(
   [switch]$NoBrowser,
   [ValidateRange(1, 120)]
-  [int]$HealthTimeoutSeconds = 30
+  [int]$HealthTimeoutSeconds = 30,
+  [string]$CandidateVersion,
+  [string]$CandidateUpdateId,
+  [string]$CandidateProbeToken,
+  [string]$CandidateAuthorizationNonce,
+  [string]$CandidateOperationDir
 )
 
 Set-StrictMode -Version Latest
@@ -147,6 +152,93 @@ function Write-AtomicUtf8Json {
     if ($null -ne $stream) { $stream.Dispose() }
     if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
     if ($null -ne $backup -and [IO.File]::Exists($backup)) { [IO.File]::Delete($backup) }
+  }
+}
+
+function Invoke-PendingUpdateRecovery {
+  param(
+    [Parameter(Mandatory = $true)][string]$DataRoot,
+    [Parameter(Mandatory = $true)][string]$AppRoot
+  )
+  $updateRoot = Join-Path -Path $DataRoot -ChildPath 'updates'
+  $requestPath = Join-Path -Path $updateRoot -ChildPath 'active-request.json'
+  if (-not [IO.File]::Exists($requestPath)) { return }
+  Assert-NoReparsePath -Path $requestPath -RequireLeaf $true | Out-Null
+  try { $request = [IO.File]::ReadAllText($requestPath, [Text.Encoding]::UTF8) | ConvertFrom-Json } catch {
+    Throw-LauncherError 'launcher-recovery-request-invalid'
+  }
+  $keys = @($request.PSObject.Properties.Name | Sort-Object)
+  if (($keys -join ',') -ne 'appRoot,backupPath,candidateIdentity,candidateVersion,currentPath,dataRoot,dbPath,expectedVersion,installationId,journalPath,oldProcess,operation,previousVersion,schemaVersion,updateId' -or
+    $request.schemaVersion -ne 1 -or [string]$request.operation -ne 'apply' -or
+    [string]$request.installationId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' -or
+    [string]$request.updateId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' -or
+    [string]$request.previousVersion -notmatch $StrictSemVer -or [string]$request.candidateVersion -notmatch $StrictSemVer -or
+    [string]$request.expectedVersion -cne [string]$request.candidateVersion) {
+    Throw-LauncherError 'launcher-recovery-request-invalid'
+  }
+  $candidateIdentityKeys = @($request.candidateIdentity.PSObject.Properties.Name | Sort-Object)
+  if (($candidateIdentityKeys -join ',') -ne 'dev,ino' -or
+    [string]$request.candidateIdentity.dev -notmatch '^(0|[1-9][0-9]*)$' -or
+    [string]$request.candidateIdentity.ino -notmatch '^(0|[1-9][0-9]*)$') {
+    Throw-LauncherError 'launcher-recovery-request-invalid'
+  }
+  if ([IO.Path]::GetFullPath([string]$request.appRoot) -cne $AppRoot -or
+    [IO.Path]::GetFullPath([string]$request.dataRoot) -cne $DataRoot -or
+    [IO.Path]::GetFullPath([string]$request.currentPath) -cne $CurrentFile) {
+    Throw-LauncherError 'launcher-recovery-request-binding-invalid'
+  }
+  foreach ($dataPath in @([string]$request.journalPath, [string]$request.dbPath, [string]$request.backupPath)) {
+    Assert-PathWithin -Root $DataRoot -Candidate $dataPath -Code 'launcher-recovery-request-binding-invalid' | Out-Null
+    Assert-NoReparsePath -Path $dataPath -RequireLeaf $false | Out-Null
+  }
+  $previousRoot = Join-Path -Path (Join-Path -Path $AppRoot -ChildPath 'versions') -ChildPath ([string]$request.previousVersion)
+  $nodeExe = Join-Path -Path $previousRoot -ChildPath 'runtime\node\node.exe'
+  $updaterScript = Join-Path -Path $previousRoot -ChildPath 'app\scripts\crown-update-apply.mjs'
+  foreach ($packagePath in @($previousRoot, $nodeExe, $updaterScript)) {
+    Assert-PathWithin -Root $AppRoot -Candidate $packagePath -Code 'launcher-recovery-package-path-invalid' | Out-Null
+    Assert-NoReparsePath -Path $packagePath -RequireLeaf $true | Out-Null
+  }
+  [IO.Directory]::CreateDirectory($updateRoot) | Out-Null
+  $recoveryPath = $null
+  $runRequestPath = $requestPath
+  if ([IO.File]::Exists([string]$request.journalPath)) {
+    Assert-NoReparsePath -Path ([string]$request.journalPath) -RequireLeaf $true | Out-Null
+    $recoveryPath = Join-Path -Path $updateRoot -ChildPath ('recovery-request-' + [guid]::NewGuid().ToString('N') + '.json')
+    $recovery = [ordered]@{
+      schemaVersion = 1
+      operation = 'recover'
+      installationId = [string]$request.installationId
+      updateId = [string]$request.updateId
+      previousVersion = [string]$request.previousVersion
+      candidateVersion = [string]$request.candidateVersion
+      expectedVersion = [string]$request.expectedVersion
+      dataRoot = $DataRoot
+      journalPath = [IO.Path]::GetFullPath([string]$request.journalPath)
+      dbPath = [IO.Path]::GetFullPath([string]$request.dbPath)
+      backupPath = [IO.Path]::GetFullPath([string]$request.backupPath)
+      appRoot = $AppRoot
+      currentPath = $CurrentFile
+      candidateIdentity = $request.candidateIdentity
+      oldProcess = $request.oldProcess
+    }
+    Write-AtomicUtf8Json -Path $recoveryPath -Value $recovery
+    $runRequestPath = $recoveryPath
+  }
+  try {
+    Clear-UntrustedChildEnvironment
+    $env:CROWN_PORTABLE = '1'
+    $env:CROWN_APP_ROOT = $AppRoot
+    $env:CROWN_DATA_ROOT = $DataRoot
+    $env:CROWN_WATCHER_AUTOSTART = '0'
+    $env:CROWN_BETTING_WORKER_AUTOSTART = '0'
+    $env:CROWN_REAL_BETTING_REQUESTED = '0'
+    $env:CROWN_REAL_BETTING_ENABLED = '0'
+    $env:CROWN_BETTING_MODE = 'off'
+    & $nodeExe $updaterScript '--request' $runRequestPath
+    if ($LASTEXITCODE -ne 0) { Throw-LauncherError 'launcher-recovery-failed' }
+  }
+  finally {
+    if ($null -ne $recoveryPath -and [IO.File]::Exists($recoveryPath)) { [IO.File]::Delete($recoveryPath) }
   }
 }
 
@@ -563,18 +655,52 @@ $parentAckFile = $null
 $singleMutex = $null
 $mutexOwned = $false
 $ReusedUrl = $null
+$CandidateMode = -not [string]::IsNullOrWhiteSpace($CandidateVersion) -or
+  -not [string]::IsNullOrWhiteSpace($CandidateUpdateId) -or
+  -not [string]::IsNullOrWhiteSpace($CandidateProbeToken) -or
+  -not [string]::IsNullOrWhiteSpace($CandidateAuthorizationNonce) -or
+  -not [string]::IsNullOrWhiteSpace($CandidateOperationDir)
+$CandidateJsonFile = $null
+$CandidateAuthorizedFile = $null
+$CandidateAbortFile = $null
 
 try {
   Assert-NoReparsePath -Path $AppRoot -RequireLeaf $true | Out-Null
   Assert-PathWithin -Root $AppRoot -Candidate $CurrentFile -Code 'launcher-current-outside-app-root' | Out-Null
-  Assert-NoReparsePath -Path $CurrentFile -RequireLeaf $true | Out-Null
-  $Version = Read-CanonicalCurrent
   if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { Throw-LauncherError 'launcher-localappdata-required' }
   $LocalAppData = Assert-FullyQualifiedPath -Value $env:LOCALAPPDATA -Code 'launcher-localappdata-invalid'
   Assert-NoReparsePath -Path $LocalAppData -RequireLeaf $true | Out-Null
   $DataRoot = [IO.Path]::GetFullPath((Join-Path -Path $LocalAppData -ChildPath 'CrownMonitor'))
   $LogDir = Join-Path -Path $DataRoot -ChildPath 'logs'
   $LogFile = Join-Path -Path $LogDir -ChildPath 'launcher.log'
+
+  if ($CandidateMode) {
+    if ([string]::IsNullOrWhiteSpace($CandidateVersion) -or [string]$CandidateVersion -notmatch $StrictSemVer -or
+      [string]::IsNullOrWhiteSpace($CandidateUpdateId) -or [string]$CandidateUpdateId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' -or
+      [string]$CandidateProbeToken -notmatch $TokenPattern -or [string]$CandidateAuthorizationNonce -notmatch $TokenPattern -or
+      [string]$CandidateProbeToken -ceq [string]$CandidateAuthorizationNonce -or [string]::IsNullOrWhiteSpace($CandidateOperationDir)) {
+      Throw-LauncherError 'launcher-candidate-arguments-invalid'
+    }
+    $expectedOperationDir = Join-Path -Path (Join-Path -Path (Join-Path -Path $DataRoot -ChildPath 'updates') -ChildPath 'operations') -ChildPath $CandidateUpdateId
+    $CandidateOperationDir = Assert-FullyQualifiedPath -Value $CandidateOperationDir -Code 'launcher-candidate-operation-path-invalid'
+    if ([IO.Path]::GetFullPath($CandidateOperationDir) -cne [IO.Path]::GetFullPath($expectedOperationDir)) {
+      Throw-LauncherError 'launcher-candidate-operation-path-invalid'
+    }
+    Assert-NoReparsePath -Path $CandidateOperationDir -RequireLeaf $true | Out-Null
+    $CandidateJsonFile = Join-Path -Path $CandidateOperationDir -ChildPath 'candidate.json'
+    $CandidateAuthorizedFile = Join-Path -Path $CandidateOperationDir -ChildPath 'candidate-authorized.json'
+    $CandidateAbortFile = Join-Path -Path $CandidateOperationDir -ChildPath 'candidate-abort.json'
+    foreach ($candidateFile in @($CandidateJsonFile, $CandidateAuthorizedFile, $CandidateAbortFile)) {
+      Assert-PathWithin -Root $CandidateOperationDir -Candidate $candidateFile -Code 'launcher-candidate-operation-path-invalid' | Out-Null
+      Assert-NoReparsePath -Path $candidateFile -RequireLeaf $false | Out-Null
+    }
+    $Version = [string]$CandidateVersion
+  }
+  else {
+    Invoke-PendingUpdateRecovery -DataRoot $DataRoot -AppRoot $AppRoot
+    Assert-NoReparsePath -Path $CurrentFile -RequireLeaf $true | Out-Null
+    $Version = Read-CanonicalCurrent
+  }
 
   $VersionRoot = Join-Path -Path (Join-Path -Path $AppRoot -ChildPath 'versions') -ChildPath $Version
   $AppDir = Join-Path -Path $VersionRoot -ChildPath 'app'
@@ -625,6 +751,17 @@ try {
   $env:CROWN_BETTING_MODE = 'off'
   $env:CROWN_PORTABLE_INSTANCE_MODULE = $PortableInstanceModule
   $env:CROWN_APP_CONFIG_DIR = $AppConfigDir
+  if ($CandidateMode) {
+    $env:CROWN_UPDATE_CANDIDATE = '1'
+    $env:CROWN_UPDATE_PROBE_TOKEN = $CandidateProbeToken
+    $env:CROWN_UPDATE_CANDIDATE_MODE = '1'
+    $env:CROWN_UPDATE_ID = $CandidateUpdateId
+    $env:CROWN_UPDATE_CANDIDATE_PROBE_TOKEN = $CandidateProbeToken
+    $env:CROWN_UPDATE_AUTHORIZATION_NONCE = $CandidateAuthorizationNonce
+    $env:CROWN_UPDATE_CANDIDATE_PATH = $CandidateJsonFile
+    $env:CROWN_UPDATE_AUTHORIZED_PATH = $CandidateAuthorizedFile
+    $env:CROWN_UPDATE_ABORT_PATH = $CandidateAbortFile
+  }
 
   $initializer = @'
 import { pathToFileURL } from 'node:url'
@@ -654,7 +791,7 @@ process.stdout.write(result.installationId)
   $mutexDeadline = [DateTime]::UtcNow.AddSeconds($HealthTimeoutSeconds)
   while (-not $mutexOwned -and [DateTime]::UtcNow -lt $mutexDeadline) {
     $waitingState = Read-LauncherState $StateFile
-    if (Try-ReuseLauncherState -State $waitingState -InstallationId $InstallationId -Version $Version) {
+    if (-not $CandidateMode -and (Try-ReuseLauncherState -State $waitingState -InstallationId $InstallationId -Version $Version)) {
       Write-Output "launcher-reused $ReusedUrl"
       exit 0
     }
@@ -664,7 +801,10 @@ process.stdout.write(result.installationId)
 
   Assert-NoReparsePath -Path $StateFile -RequireLeaf $false | Out-Null
   $existingState = Read-LauncherState $StateFile
-  if (Try-ReuseLauncherState -State $existingState -InstallationId $InstallationId -Version $Version) {
+  if ($CandidateMode -and $null -ne $existingState -and (Test-ExactProcessIdentity $existingState)) {
+    Throw-LauncherError 'launcher-candidate-state-conflict'
+  }
+  if (-not $CandidateMode -and (Try-ReuseLauncherState -State $existingState -InstallationId $InstallationId -Version $Version)) {
     Write-Output "launcher-reused $ReusedUrl"
     exit 0
   }
@@ -688,7 +828,7 @@ process.stdout.write(result.installationId)
     $Port = if ($attempt -eq 1 -and (Test-LoopbackPortFree $PreferredPort)) { $PreferredPort } else { Get-FreeLoopbackPort }
     $launchNonce = New-CryptoToken
     $stopToken = New-CryptoToken
-    $healthProbe = New-CryptoToken
+    $healthProbe = if ($CandidateMode) { $CandidateProbeToken } else { New-CryptoToken }
     $env:CROWN_DASHBOARD_PORT = [string]$Port
     $env:CROWN_LAUNCHER_NONCE = $launchNonce
     $abortFile = Join-Path -Path $RuntimeDir -ChildPath ('.launcher-abort-' + [guid]::NewGuid().ToString('N') + '.json')
@@ -756,11 +896,47 @@ const parentProcessStartTime = process.env.CROWN_LAUNCHER_PARENT_PROCESS_START_T
 const parentLeasePath = process.env.CROWN_LAUNCHER_PARENT_LEASE_PATH
 const parentLeaseToken = process.env.CROWN_LAUNCHER_PARENT_LEASE_TOKEN
 const parentAckPath = process.env.CROWN_LAUNCHER_PARENT_ACK_PATH
+const candidateMode = process.env.CROWN_UPDATE_CANDIDATE_MODE === '1'
+const updateId = process.env.CROWN_UPDATE_ID
+const candidateProbeToken = process.env.CROWN_UPDATE_CANDIDATE_PROBE_TOKEN
+const authorizationNonce = process.env.CROWN_UPDATE_AUTHORIZATION_NONCE
+const candidatePath = process.env.CROWN_UPDATE_CANDIDATE_PATH
+const authorizedPath = process.env.CROWN_UPDATE_AUTHORIZED_PATH
+const candidateAbortPath = process.env.CROWN_UPDATE_ABORT_PATH
 const token = /^[A-Za-z0-9_-]{43}$/
+const updateIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const iso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+const candidateFields = [
+  'schemaVersion', 'updateId', 'installationId', 'version', 'pid', 'processStartTime',
+  'processInstanceId', 'probeToken', 'port', 'authorizationNonce', 'stopToken',
+]
 
 async function startupError(code) {
   await fs.writeFile(startupErrorPath, JSON.stringify({ schemaVersion: 1, code }) + '\n', { encoding: 'utf8', flag: 'wx' }).catch(() => {})
+}
+
+async function publishAtomicJson(filePath, value) {
+  const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.tmp`)
+  let handle
+  try {
+    handle = await fs.open(temporary, 'wx', 0o600)
+    await handle.writeFile(JSON.stringify(value) + '\n', 'utf8')
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    await fs.rename(temporary, filePath)
+  } finally {
+    await handle?.close().catch(() => {})
+    await fs.unlink(temporary).catch(() => {})
+  }
+}
+
+function exactCandidateEnvelope(value, terminalField) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const expectedFields = terminalField ? [...candidateFields, terminalField] : candidateFields
+  if (Object.keys(value).sort().join(',') !== [...expectedFields].sort().join(',')) return false
+  if (terminalField && value[terminalField] !== true) return false
+  return candidateFields.every((field) => value[field] === candidateRecord[field])
 }
 
 let identity
@@ -770,6 +946,7 @@ let timer
 let parentTimer
 let checkingParent = false
 let statePublished = false
+let candidateRecord = null
 
 function validParentBinding() {
   return Number.isSafeInteger(parentPid) && parentPid > 0 && parentPid !== process.pid &&
@@ -863,6 +1040,28 @@ async function exactAbortRequested() {
   }
 }
 
+async function exactCandidateAbortRequested() {
+  if (!candidateMode || !candidateRecord) return false
+  try {
+    const request = JSON.parse(await fs.readFile(candidateAbortPath, 'utf8'))
+    return exactCandidateEnvelope(request, 'abort')
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error instanceof SyntaxError) return false
+    throw error
+  }
+}
+
+async function exactCandidateAuthorized() {
+  if (!candidateMode || !candidateRecord) return false
+  try {
+    const request = JSON.parse(await fs.readFile(authorizedPath, 'utf8'))
+    return exactCandidateEnvelope(request, 'authorized')
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error instanceof SyntaxError) return false
+    throw error
+  }
+}
+
 async function checkParentBoundary() {
   if (checkingParent || stopping || statePublished) return
   checkingParent = true
@@ -932,6 +1131,59 @@ try {
 }
 
 process.env.CROWN_LAUNCHER_PROCESS_START_TIME = identity.processStartTime
+if (candidateMode) {
+  const port = Number(process.env.CROWN_DASHBOARD_PORT)
+  const candidatePathsValid = updateIdPattern.test(updateId || '') && token.test(candidateProbeToken || '') &&
+    token.test(authorizationNonce || '') && candidateProbeToken !== authorizationNonce && Number.isSafeInteger(port) && port >= 1 && port <= 65535 &&
+    [candidatePath, authorizedPath, candidateAbortPath].every((value) => path.isAbsolute(value || '')) &&
+    path.dirname(candidatePath) === path.dirname(authorizedPath) && path.dirname(candidatePath) === path.dirname(candidateAbortPath) &&
+    path.basename(candidatePath) === 'candidate.json' && path.basename(authorizedPath) === 'candidate-authorized.json' &&
+    path.basename(candidateAbortPath) === 'candidate-abort.json'
+  if (!candidatePathsValid) {
+    await startupError('CANDIDATE_BINDING_INVALID')
+    await removeOwnStartupClaim()
+    process.exit(77)
+  }
+  candidateRecord = {
+    schemaVersion: 1,
+    updateId,
+    installationId,
+    version,
+    pid: process.pid,
+    processStartTime: identity.processStartTime,
+    processInstanceId: identity.launchNonce,
+    probeToken: candidateProbeToken,
+    port,
+    authorizationNonce,
+    stopToken: identity.stopToken,
+  }
+  try { await publishAtomicJson(candidatePath, candidateRecord) } catch {
+    await startupError('CANDIDATE_PUBLISH_FAILED')
+    await removeOwnStartupClaim()
+    process.exit(77)
+  }
+  const authorizationDeadline = Date.now() + 30_000
+  let authorized = false
+  while (!authorized && Date.now() < authorizationDeadline) {
+    if (await exactCandidateAbortRequested()) {
+      await startupError('CANDIDATE_ABORTED')
+      await removeOwnStartupClaim()
+      process.exit(77)
+    }
+    authorized = await exactCandidateAuthorized()
+    if (!authorized) await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  if (!authorized) {
+    await startupError('CANDIDATE_AUTHORIZATION_TIMEOUT')
+    await removeOwnStartupClaim()
+    process.exit(78)
+  }
+  if (await exactCandidateAbortRequested()) {
+    await startupError('CANDIDATE_ABORTED')
+    await removeOwnStartupClaim()
+    process.exit(77)
+  }
+}
 try {
   const dashboard = await import(pathToFileURL(process.env.CROWN_DASHBOARD_MODULE).href)
   runtime = await dashboard.startCrownDashboard({ env: process.env, registerSignals: false })
@@ -959,6 +1211,7 @@ async function shutdown(reason) {
 }
 
 async function requested() {
+  if (await exactCandidateAbortRequested()) return true
   if (await exactAbortRequested()) return true
   let state
   let request
