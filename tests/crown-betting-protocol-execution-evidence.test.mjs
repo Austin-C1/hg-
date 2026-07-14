@@ -265,6 +265,29 @@ test('modern analyzer removes stale legacy public redacted JSONL on success and 
     }), /redaction-pair-mismatch/)
     assert.equal(fs.existsSync(stale), false)
   })
+
+  for (const [name, mutate, expected] of [[
+    'invalid private raw JSONL',
+    (store) => fs.writeFileSync(path.join(store.privateDir, 'raw-network.jsonl'), '{', 'utf8'),
+    /raw-capture-invalid/,
+  ], [
+    'invalid private redacted JSONL',
+    (store) => fs.writeFileSync(path.join(store.privateDir, 'redacted-network.jsonl'), '{', 'utf8'),
+    /redacted-capture-invalid/,
+  ], [
+    'invalid manifest',
+    (store) => fs.writeFileSync(path.join(store.publicDir, 'manifest.json'), '{', 'utf8'),
+    /manifest-invalid/,
+  ]]) {
+    await t.test(name, () => {
+      const { store, stale } = createModernRun(`modern-stale-${name.replaceAll(' ', '-')}`)
+      mutate(store)
+      assert.throws(() => analyzeCrownProtocolCapture(store.runDir, {
+        hmacKey: HMAC_KEY,
+      }), expected)
+      assert.equal(fs.existsSync(stale), false)
+    })
+  }
 })
 
 test('modern analyzer requires a complete private pair and never uses the legacy public fallback', async (t) => {

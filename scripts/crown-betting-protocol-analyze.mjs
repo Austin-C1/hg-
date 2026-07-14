@@ -2147,8 +2147,10 @@ export function analyzeCrownProtocolCapture(captureDir, options = {}) {
   const publicDir = path.join(captureDir, 'public')
   const captureId = path.basename(path.resolve(captureDir))
   const legacyPublicRedacted = path.join(publicDir, LEGACY_PUBLIC_REDACTED_OUTPUT)
-  let modernLayout = false
+  let modernLayout = fs.existsSync(path.join(captureDir, 'private', 'redacted-network.jsonl'))
+    || fs.existsSync(path.join(captureDir, 'private', 'manifest.json'))
   removePublicOutputs(publicDir, ANALYZER_PUBLIC_OUTPUTS)
+  if (modernLayout) fs.rmSync(legacyPublicRedacted, { force: true })
   try {
     const layout = crownProtocolCaptureLayout(captureDir, {
       legacyLayout: options.legacyLayout === true,
