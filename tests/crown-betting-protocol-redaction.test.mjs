@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   assertSafeCrownProtocolEvidence,
+  redactCapturedBody,
   redactHeaders,
   redactBody,
   redactUrl,
@@ -190,4 +191,108 @@ test('safe evidence rejects raw URL, origin, body, Buffer, and false HMAC bindin
     runBinding: `hmac-sha256:${'b'.repeat(64)}`,
     identityBinding: `hmac-sha256:${'c'.repeat(64)}`,
   }))
+})
+
+test('redaction removes URL userinfo, API keys, and malformed JSON-like secret fragments', () => {
+  const headers = redactHeaders({
+    'x-api-key': 'PrivateApiKeyAlpha',
+    apiKey: 'PrivateApiKeyBeta',
+    accept: 'application/json',
+  })
+  const url = redactUrl('https://PrivateUser:PrivatePassword@offline.invalid/transform.php?gid=1')
+
+  assert.equal(headers['x-api-key'].includes('PrivateApiKeyAlpha'), false)
+  assert.equal(headers.apiKey.includes('PrivateApiKeyBeta'), false)
+  assert.equal(headers.accept, 'application/json')
+  assert.equal(url.includes('PrivateUser'), false)
+  assert.equal(url.includes('PrivatePassword'), false)
+  assert.equal(new URL(url).username.startsWith('%5Bmasked%3A'), true)
+  assert.equal(new URL(url).password.startsWith('%5Bmasked%3A'), true)
+  assert.equal(
+    redactCapturedBody('prefix"token":"PrivateTokenAlpha"', { 'content-type': 'text/plain' }),
+    '[unparseable-json]',
+  )
+  assert.equal(
+    redactCapturedBody('prefix"\\u0074oken":"PrivateTokenBeta"', { 'content-type': 'text/plain' }),
+    '[unparseable-json]',
+  )
+  assert.deepEqual(
+    redactCapturedBody('{"\\u0061pi_key":"PrivateApiKeyGamma"}', 'application/json'),
+    { api_key: '[masked:18]' },
+  )
+
+  for (const fragmentUrl of [
+    'https://offline.invalid/transform.php#token=PrivateFragmentAlpha&gid=1',
+    'https://offline.invalid/transform.php#%74%6f%6b%65%6e=Private%46ragmentBeta',
+    'https://offline.invalid/transform.php#/route?api_key=PrivateFragmentGamma&gid=1',
+  ]) {
+    const redacted = redactUrl(fragmentUrl)
+    assert.equal(/Private(?:Fragment|%46ragment)/.test(redacted), false)
+    assert.match(redacted, /masked/i)
+  }
+
+  for (const nestedUrl of [
+    'https://offline.invalid/transform.php?payload=%7B%22api_key%22%3A%22PrivateNestedQuery%22%7D&gid=1',
+    'https://offline.invalid/transform.php#token=PrivateFragment&payload=%7B%22uid%22%3A%22PrivateNestedFragment%22%7D',
+  ]) {
+    const redacted = redactUrl(nestedUrl)
+    assert.equal(redacted.includes('PrivateNested'), false)
+  }
+})
+
+test('structural projection folds pure-alphabetic private aliases while retaining stable wire fields', () => {
+  const projected = projectCrownProtocolShape({
+    code: '0',
+    roster: {
+      CafeOwnerPrivateAlias: { odds: '0.96', suspended: false },
+      BobOwnerPrivateAlias: { odds: '0.97', suspended: true },
+      alice: { odds: '0.98', suspended: false },
+      bob: { odds: '0.99', suspended: true },
+      home: { odds: '1.00', suspended: false },
+      code: { odds: '1.01', suspended: true },
+      id: { odds: '1.02', suspended: false },
+      name: { odds: '1.03', suspended: true },
+    },
+  }, { hmacKey: Buffer.alloc(32, 9), domain: 'test/private-alias-map/v1' })
+  const serialized = JSON.stringify(projected)
+
+  assert.equal(serialized.includes('CafeOwnerPrivateAlias'), false)
+  assert.equal(serialized.includes('BobOwnerPrivateAlias'), false)
+  assert.equal(serialized.includes('alice'), false)
+  assert.equal(serialized.includes('bob'), false)
+  assert.equal(projected.fields.some((field) => /^roster\.(?:home|code|id|name)(?:\.|$)/.test(field.name)), false)
+  assert.ok(projected.fields.some((field) => field.name === 'code'))
+  assert.ok(projected.fields.some((field) => field.name === 'roster.[*].odds'))
+  assert.ok(projected.fields.some((field) => field.name === 'roster.[*].suspended'))
+  assert.equal(projected.dynamicFieldNameCount, 8)
+})
+
+test('homogeneous map folding preserves reviewed fixed-shape structural paths', () => {
+  const projected = projectCrownProtocolShape({
+    data: {
+      home: { odds: '0.96', suspended: false },
+      away: { odds: '0.97', suspended: true },
+    },
+    meta: { code: '0', id: 'schema-id', name: 'stable-name' },
+  }, { hmacKey: Buffer.alloc(32, 9), domain: 'test/fixed-structure/v1' })
+
+  assert.ok(projected.fields.some((field) => field.name === 'data.home.odds'))
+  assert.ok(projected.fields.some((field) => field.name === 'data.away.suspended'))
+  assert.ok(projected.fields.some((field) => field.name === 'meta.code'))
+  assert.ok(projected.fields.some((field) => field.name === 'meta.id'))
+  assert.ok(projected.fields.some((field) => field.name === 'meta.name'))
+})
+
+test('dynamic roster keys fold even for one member or heterogeneous child shapes', () => {
+  for (const roster of [
+    { home: { odds: '0.96' } },
+    { home: { odds: '0.96' }, id: { status: 'active', nested: true } },
+  ]) {
+    const projected = projectCrownProtocolShape(
+      { code: '0', roster },
+      { hmacKey: Buffer.alloc(32, 9), domain: 'test/path-aware-roster/v1' },
+    )
+    assert.equal(projected.fields.some((field) => /^roster\.(?:home|id)(?:\.|$)/.test(field.name)), false)
+    assert.ok(projected.fields.some((field) => field.name.startsWith('roster.[*].')))
+  }
 })

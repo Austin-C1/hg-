@@ -669,3 +669,65 @@ test('fails closed on unsafe pairing, duplicate fields, drift, truncation, and m
   }
   assert.throws(() => build(createCapture(), { hmacKey: Buffer.alloc(31) }), /hmac-key-too-short/)
 })
+
+test('legacy manifest and watcher evidence reject duplicate JSON keys', async (t) => {
+  await t.test('historical legacy manifest', () => {
+    const captureDir = createCapture()
+    fs.renameSync(
+      path.join(captureDir, 'private', 'redacted-network.jsonl'),
+      path.join(captureDir, 'public', 'redacted-network.jsonl'),
+    )
+    fs.writeFileSync(path.join(captureDir, 'public', 'manifest.json'), [
+      '{',
+      '"generatedAt":"2026-07-14T00:00:00.000Z",',
+      '"url":"https://offline.invalid",',
+      '"profile":"data/crown-profile",',
+      '"allowOddsClick":false,',
+      '"allowStakeFill":false,',
+      '"allowRealSubmit":false,',
+      '"\\u0061llowRealSubmit":true,',
+      '"maxStake":0',
+      '}',
+    ].join(''), 'utf8')
+
+    assert.throws(() => analyzeCrownProtocolCapture(captureDir, {
+      hmacKey: HMAC_KEY, legacyLayout: true,
+    }), /manifest-invalid/)
+    assertNoAnalyzerPublicOutputs(captureDir)
+  })
+
+  await t.test('watcher execution evidence', () => {
+    const captureDir = createCapture()
+    const evidence = watcherEvidence()
+    const serialized = JSON.stringify(evidence).replace(
+      '"suspended":false', '"suspended":false,"\\u0073uspended":true',
+    )
+    fs.writeFileSync(
+      path.join(captureDir, 'public', 'watcher-execution-evidence.json'), serialized, 'utf8',
+    )
+
+    assert.throws(() => build(captureDir), /watcher-evidence-unavailable/)
+  })
+})
+
+test('execution candidate writer clears stale output on every failed rebuild and publishes atomically', () => {
+  const captureDir = createCapture()
+  const target = path.join(captureDir, 'public', 'execution-evidence-candidate.json')
+  const options = { capabilityContext: CAPABILITY, hmacKey: HMAC_KEY }
+
+  writeCrownExecutionEvidenceCandidate(captureDir, options)
+  assert.equal(fs.existsSync(target), true)
+  assert.throws(() => writeCrownExecutionEvidenceCandidate(captureDir, {
+    ...options, hmacKey: Buffer.alloc(31),
+  }), /hmac-key-too-short/)
+  assert.equal(fs.existsSync(target), false)
+
+  writeCrownExecutionEvidenceCandidate(captureDir, options)
+  fs.rmSync(path.join(captureDir, 'public', 'watcher-execution-evidence.json'))
+  assert.throws(() => writeCrownExecutionEvidenceCandidate(captureDir, options), /watcher-evidence-unavailable/)
+  assert.equal(fs.existsSync(target), false)
+  assert.deepEqual(
+    fs.readdirSync(path.join(captureDir, 'public')).filter((name) => name.startsWith('.tmp-crown-protocol-')),
+    [],
+  )
+})

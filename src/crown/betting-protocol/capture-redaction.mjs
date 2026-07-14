@@ -1,16 +1,16 @@
-const SECRET_KEY_RE = /(cookie|authorization|auth|token|session|secret|password|passwd|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket|ticket_id|\btid\b|w_id|order_id)/i
-const PROJECTION_SENSITIVE_FIELD_RE = /(cookie|authorization|auth|token|session|secret|password|passwd|user(?:name)?|uid|mid|account|member|provider|reference|csrf|xsrf|jwt|signature|sign|set-cookie|ticket|ticket_id|\btid\b|w_id|order_id)/i
-const SECRET_TEXT_FIELD_RE = /(cookie|authorization|auth|token|session|secret|password|passwd|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket_id|ticket|\btid\b|w_id|order_id)/i
-const SECRET_TEXT_FIELD_SOURCE = '(?:cookie|authorization|auth|token|session|secret|password|passwd|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket_id|ticket|tid|w_id|order_id)'
-const SECRET_TEXT_TAG_SOURCE = '(?:cookie|authorization|auth|token|session|secret|password|passwd|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket_id|ticket|tid|w_id|order_id)'
+const SECRET_KEY_RE = /(cookie|authorization|auth|token|session|secret|password|passwd|api[-_]?key|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket|ticket_id|\btid\b|w_id|order_id)/i
+const PROJECTION_SENSITIVE_FIELD_RE = /(cookie|authorization|auth|token|session|secret|password|passwd|api[-_]?key|user(?:name)?|uid|mid|account|member|provider|reference|csrf|xsrf|jwt|signature|sign|set-cookie|ticket|ticket_id|\btid\b|w_id|order_id)/i
+const SECRET_TEXT_FIELD_RE = /(cookie|authorization|auth|token|session|secret|password|passwd|api[-_]?key|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket_id|ticket|\btid\b|w_id|order_id)/i
+const SECRET_TEXT_FIELD_SOURCE = '(?:cookie|authorization|auth|token|session|secret|password|passwd|api[-_]?key|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket_id|ticket|tid|w_id|order_id)'
+const SECRET_TEXT_TAG_SOURCE = '(?:cookie|authorization|auth|token|session|secret|password|passwd|api[-_]?key|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket_id|ticket|tid|w_id|order_id)'
 const JSON_LIKE_SECRET_FIELD_RE = new RegExp(
-  `(?:^|[,{\\s])["']?${SECRET_TEXT_FIELD_SOURCE}["']?\\s*:`, 'i',
+  `(?:^|[^A-Za-z0-9_])["']?${SECRET_TEXT_FIELD_SOURCE}["']?\\s*:`, 'i',
 )
-const EVIDENCE_FORBIDDEN_KEY_RE = /(?:^|_)(?:cookie|authorization|auth|token|session|secret|password|passwd|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket|ticket_id|tid|w_id|order_id)(?:$|_)/i
+const EVIDENCE_FORBIDDEN_KEY_RE = /(?:^|_)(?:cookie|authorization|auth|token|session|secret|password|passwd|api[-_]?key|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket|ticket_id|tid|w_id|order_id)(?:$|_)/i
 const ABSOLUTE_PATH_RE = /(?:[A-Za-z]:\\|\/(?:Users|home|tmp|var|private)\/)/
 const ORIGIN_RE = /https?:\/\//i
 const EVIDENCE_SENSITIVE_KEY_PARTS = [
-  'cookie', 'authorization', 'auth', 'token', 'session', 'secret', 'password', 'passwd',
+  'cookie', 'authorization', 'auth', 'token', 'session', 'secret', 'password', 'passwd', 'apikey',
   'uid', 'csrf', 'xsrf', 'jwt', 'signature', 'setcookie', 'ticket', 'ticketid', 'orderid',
 ]
 const EVIDENCE_HMAC_BINDING_KEYS = new Set([
@@ -18,6 +18,43 @@ const EVIDENCE_HMAC_BINDING_KEYS = new Set([
   'sourcebinding', 'runbinding', 'identitybinding', 'evidencebinding', 'fullfieldsetbinding',
 ])
 const EVIDENCE_HMAC_BINDING = /^hmac-sha256:[a-f0-9]{64}$/
+// Public artifacts expose only reviewed protocol/schema names. Unknown object
+// keys remain HMAC-bound in the full shape but are rendered as [*], because a
+// short map key such as roster.alice can itself identify an account or person.
+const PROJECTION_PUBLIC_FIELD_NAMES = new Set([
+  'action', 'aid', 'amount', 'app', 'attemptCount', 'auditId', 'auto', 'autoOdd',
+  'away', 'ball_act', 'batchId', 'bet_amount', 'betamount', 'blackbox', 'captureId',
+  'capturedAt', 'change', 'chose_team', 'cmd', 'code', 'command', 'con', 'concede',
+  'count', 'coupon', 'cupFantasy', 'currency', 'currency_value', 'data', 'date',
+  'dates', 'day', 'dg', 'dg_mode', 'ecid', 'entries', 'entry', 'event', 'eventStatus',
+  'f', 'fast_check', 'fields', 'filter', 'finalConfirmation', 'from', 'game_sc',
+  'game_so', 'gid', 'gold', 'gold_gmax', 'gold_gmin', 'golds', 'gtype', 'home',
+  'id', 'imp', 'important', 'ior', 'ioratio', 'isFantasy', 'isRB', 'isYesterday',
+  'isyesterday', 'items', 'langx', 'league', 'league_id', 'league_name', 'left',
+  'lid', 'line', 'list', 'ltype', 'map', 'market', 'marketConclusion', 'marketType',
+  'max_gold', 'maxcredit', 'mem_sc', 'mem_so', 'meta', 'mode', 'money', 'ms',
+  'mtype', 'name', 'nested', 'nowcredit', 'num_c', 'num_h', 'odd', 'odd_f_type',
+  'odds', 'oddsField', 'op', 'operation', 'over', 'p', 'p3type', 'pay_type',
+  'period', 'ptype', 'quantity', 'ratio', 'ratioField', 'records', 'restsinglecredit',
+  'result', 'right', 'roster', 'rows', 'rtype', 'schemaVersion', 'selection',
+  'showtype', 'side', 'sorttype', 'specialClick', 'spread', 'stake', 'status',
+  'strong', 'suspended', 'switchedMatch', 'systime', 'team', 'team_c', 'team_h',
+  'team_id_c', 'team_id_h', 'team_name_c', 'team_name_h', 'time', 'times',
+  'timestamp', 'timestamp2', 'ts', 'type', 'under', 'value', 'ver', 'wager',
+  'waited', 'wtype',
+])
+const PROJECTION_FIXED_OBJECT_PATH_NAMES = new Set([
+  'chronology', 'config', 'data', 'direct', 'limits', 'market', 'meta', 'nested',
+  'preview', 'request', 'response', 'score', 'settings', 'stakeQuantum', 'submit', 'teams',
+])
+const PROJECTION_DYNAMIC_MAP_PATH_NAMES = new Set(['roster'])
+const PROJECTION_FIXED_SIBLING_LAYOUTS = Object.freeze([
+  Object.freeze(['away', 'home']),
+  Object.freeze(['left', 'right']),
+  Object.freeze(['over', 'under']),
+  Object.freeze(['preview', 'submit']),
+  Object.freeze(['request', 'response']),
+])
 
 export const CROWN_PUBLIC_ENDPOINT_PATHS = Object.freeze([
   '/transform.php',
@@ -66,6 +103,27 @@ function dynamicProjectionFieldName(name) {
     || /^\d+$/.test(text)
     || /^[a-f0-9]{8}-[a-f0-9-]{27,}$/i.test(text)
     || /\d{4,}/.test(text)
+    || !PROJECTION_PUBLIC_FIELD_NAMES.has(text)
+}
+
+function projectionFieldShape(value) {
+  return JSON.stringify(Object.keys(value).sort().map((key) => [key, projectionType(value[key])]))
+}
+
+function homogeneousDynamicMap(value, rawPrefix) {
+  const entries = Object.entries(value)
+  const parentName = String(rawPrefix || '').split('.').at(-1)
+  if (entries.length > 0 && PROJECTION_DYNAMIC_MAP_PATH_NAMES.has(parentName)) return true
+  if (entries.length < 2 || !entries.every(([, child]) => (
+    child && typeof child === 'object' && !Array.isArray(child)
+      && !Buffer.isBuffer(child) && !(child instanceof Uint8Array)
+  ))) return false
+  if (PROJECTION_FIXED_OBJECT_PATH_NAMES.has(parentName)) return false
+  const names = entries.map(([name]) => name).sort()
+  if (PROJECTION_FIXED_SIBLING_LAYOUTS.some((layout) => (
+    layout.length === names.length && layout.every((name, index) => name === names[index])
+  ))) return false
+  return new Set(entries.map(([, child]) => projectionFieldShape(child))).size === 1
 }
 
 function projectionFields(
@@ -74,10 +132,11 @@ function projectionFields(
   rawPrefix = '',
   state = { all: [], safe: [], excluded: 0, dynamic: 0 },
 ) {
+  const dynamicMap = homogeneousDynamicMap(value, rawPrefix)
   for (const name of Object.keys(value).sort()) {
     const child = value[name]
     const rawField = rawPrefix ? `${rawPrefix}.${name}` : name
-    const dynamic = dynamicProjectionFieldName(name)
+    const dynamic = dynamicMap || dynamicProjectionFieldName(name)
     const safeName = dynamic ? '[*]' : name
     const safeField = safePrefix ? `${safePrefix}.${safeName}` : safeName
     state.all.push({ name: rawField, type: projectionType(child) })
@@ -261,7 +320,21 @@ function requiresStrictJsonRedaction(text, headersOrContentType) {
   if (/^(?:application|text)\/(?:[a-z0-9.+-]+\+)?json(?:\s*;|$)/i.test(contentType)) return true
   return /^\s*[\[{]/.test(text)
     || /^\s*"(?:[^"\\]|\\.)*"\s*:/.test(text)
-    || JSON_LIKE_SECRET_FIELD_RE.test(text)
+    || containsJsonLikeSecretField(text)
+}
+
+function containsJsonLikeSecretField(text) {
+  if (JSON_LIKE_SECRET_FIELD_RE.test(text)) return true
+  for (const match of String(text).matchAll(/("(?:\\.|[^"\\])*")\s*:/g)) {
+    try {
+      const field = parseJsonRejectDuplicateKeys(match[1])
+      if (typeof field === 'string' && SECRET_KEY_RE.test(field)) return true
+    } catch {
+      // Invalid quoted fragments are handled by the strict-JSON boundary only
+      // when another recognizable secret key is present.
+    }
+  }
+  return false
 }
 
 // Store and analyzer use this same transport-aware boundary. JSON transports and
@@ -284,8 +357,29 @@ export function redactCapturedBody(rawBody, headersOrContentType = {}) {
 export function redactUrl(rawUrl) {
   try {
     const url = new URL(rawUrl)
+    if (url.username) url.username = mask(url.username)
+    if (url.password) url.password = mask(url.password)
     for (const [key, value] of [...url.searchParams.entries()]) {
-      if (SECRET_KEY_RE.test(key)) url.searchParams.set(key, mask(value))
+      if (SECRET_KEY_RE.test(key) || containsJsonLikeSecretField(value)) {
+        url.searchParams.set(key, mask(value))
+      }
+    }
+    const rawFragment = url.hash.slice(1)
+    if (rawFragment) {
+      let fragment
+      try { fragment = decodeURIComponent(rawFragment) } catch { fragment = rawFragment }
+      const queryIndex = fragment.indexOf('?')
+      const prefix = queryIndex >= 0 ? fragment.slice(0, queryIndex + 1) : ''
+      const parameterText = queryIndex >= 0 ? fragment.slice(queryIndex + 1) : fragment
+      const params = new URLSearchParams(parameterText)
+      let changed = false
+      for (const [key, value] of [...params.entries()]) {
+        if (!SECRET_KEY_RE.test(key) && !containsJsonLikeSecretField(value)) continue
+        params.set(key, mask(value))
+        changed = true
+      }
+      if (changed) url.hash = `${prefix}${params.toString()}`
+      else if (containsJsonLikeSecretField(fragment)) url.hash = '[redacted-fragment]'
     }
     return url.toString()
   } catch {

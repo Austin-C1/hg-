@@ -19,7 +19,7 @@ const EXACT_MONITOR_REQUEST_FIELDS = Object.freeze({
 const ROUTE_OPERATION_FIELDS = new Set(['p', 'action', 'operation', 'op', 'command', 'cmd'])
 const SUBMIT_OPERATION_VALUES = new Set([
   'submit', 'confirm', 'buy', 'place', 'order_add', 'bet_add', 'wager_add', 'ticket_add', 'bet',
-  'ft_bet',
+  'checkout', 'ft_bet',
 ])
 const PREVIEW_OPERATION_VALUES = new Set([
   'preview', 'open', 'prepare', 'check', 'verify', 'order_view', 'bet_view', 'bet_slip',
@@ -74,20 +74,38 @@ function fieldSetFingerprint(fields) {
   return `sha256:${createHash('sha256').update(JSON.stringify(fields)).digest('hex')}`
 }
 
+function boundedPath(prefix, suffix) {
+  const path = prefix ? `${prefix}${suffix.startsWith('[') ? '' : '.'}${suffix}` : suffix
+  return path.length <= 256 ? path : `...${path.slice(-253)}`
+}
+
 function flatten(value, prefix = '', output = []) {
-  if (value == null) return output
-  if (Array.isArray(value)) {
-    output.push(`${prefix}[]`)
-    value.slice(0, 10).forEach((item) => flatten(item, `${prefix}[]`, output))
-    return output
-  }
-  if (typeof value === 'object') {
-    for (const [key, child] of Object.entries(value)) {
-      flatten(child, prefix ? `${prefix}.${key}` : key, output)
+  const stack = [{ value, prefix }]
+  const seen = new WeakSet()
+  while (stack.length) {
+    const current = stack.pop()
+    if (current.value == null) continue
+    if (typeof current.value !== 'object') {
+      output.push(`${current.prefix}=${String(current.value).slice(0, 80)}`)
+      continue
     }
-    return output
+    if (seen.has(current.value)) continue
+    seen.add(current.value)
+    if (Array.isArray(current.value)) {
+      const arrayPrefix = boundedPath(current.prefix, '[]')
+      output.push(arrayPrefix)
+      const items = current.value.slice(0, 10)
+      for (let index = items.length - 1; index >= 0; index -= 1) {
+        stack.push({ value: items[index], prefix: arrayPrefix })
+      }
+      continue
+    }
+    const entries = Object.entries(current.value)
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const [key, child] = entries[index]
+      stack.push({ value: child, prefix: boundedPath(current.prefix, key) })
+    }
   }
-  output.push(`${prefix}=${String(value).slice(0, 80)}`)
   return output
 }
 
@@ -113,26 +131,195 @@ function fieldValues(source, field) {
 }
 
 function routeFieldEntries(source, origin, output = [], inheritedName = '') {
-  if (!source || typeof source !== 'object') return output
-  if (Array.isArray(source)) {
-    for (const value of source) {
-      if (value && typeof value === 'object') routeFieldEntries(value, origin, output, inheritedName)
-      else if (inheritedName) {
+  const stack = [{ value: source, inheritedName }]
+  const seen = new WeakSet()
+  while (stack.length) {
+    const current = stack.pop()
+    if (current.value === null || typeof current.value !== 'object') {
+      if (current.inheritedName) {
         output.push({
-          name: inheritedName,
-          value: String(value ?? '').normalize('NFC').trim(),
+          name: current.inheritedName,
+          value: String(current.value ?? '').normalize('NFC').trim(),
           origin,
         })
       }
+      continue
     }
-    return output
-  }
-  for (const [rawName, rawValue] of Object.entries(source)) {
-    const name = String(rawName).normalize('NFC').toLowerCase()
-    if (rawValue && typeof rawValue === 'object') routeFieldEntries(rawValue, origin, output, name)
-    else output.push({ name, value: String(rawValue ?? '').normalize('NFC').trim(), origin })
+    if (seen.has(current.value)) continue
+    seen.add(current.value)
+    if (Array.isArray(current.value)) {
+      for (let index = current.value.length - 1; index >= 0; index -= 1) {
+        stack.push({ value: current.value[index], inheritedName: current.inheritedName })
+      }
+      continue
+    }
+    const entries = Object.entries(current.value)
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const [rawName, rawValue] = entries[index]
+      const name = String(rawName).normalize('NFC').toLowerCase()
+      stack.push({ value: rawValue, inheritedName: name })
+    }
   }
   return output
+}
+
+function capturedContentType(headers) {
+  for (const [field, value] of Object.entries(headers || {})) {
+    if (String(field).toLowerCase() === 'content-type') return String(value || '')
+  }
+  return ''
+}
+
+function multipartRouteEntries(rawText, headers) {
+  const text = String(rawText || '')
+  const contentType = capturedContentType(headers).trim()
+  const declaredMultipart = /^multipart\/form-data(?:\s*;|$)/i.test(contentType)
+  if (!declaredMultipart && !/content-disposition\s*:\s*form-data/i.test(text)) return []
+  const declaredBoundary = contentType.match(/(?:^|;)\s*boundary\s*=\s*(?:"([^"\r\n]+)"|([^;\s\r\n]+))/i)
+  const inferredBoundary = text.match(/^--([^\r\n]+)(?:\r?\n|$)/)
+  const boundary = declaredBoundary?.[1] || declaredBoundary?.[2] || inferredBoundary?.[1]
+  if (!boundary) return []
+
+  const entries = []
+  for (let part of text.split(`--${boundary}`).slice(1)) {
+    if (part.startsWith('--')) break
+    part = part.replace(/^\r?\n/, '')
+    const separator = part.match(/\r?\n\r?\n/)
+    if (!separator) continue
+    const headerBlock = part.slice(0, separator.index).replace(/\r?\n[ \t]+/g, ' ')
+    const body = part.slice(separator.index + separator[0].length).replace(/\r?\n$/, '')
+    const disposition = headerBlock.match(/(?:^|\r?\n)content-disposition\s*:\s*form-data([^\r\n]*)/i)?.[1]
+    if (!disposition) continue
+    const extended = disposition.match(/;\s*name\*\s*=\s*(?:"([^"\r\n]*)"|([^;\s\r\n]+))/i)
+    const regular = disposition.match(/;\s*name\s*=\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^;\s\r\n]+))/i)
+    let name = extended ? (extended[1] ?? extended[2]) : (regular?.[1] ?? regular?.[2] ?? regular?.[3])
+    if (name == null) continue
+    if (extended) {
+      const encoded = name.match(/^[^']*'[^']*'(.*)$/)?.[1] ?? name
+      try {
+        name = decodeURIComponent(encoded)
+      } catch {
+        continue
+      }
+    }
+    entries.push({
+      name: String(name).normalize('NFC').toLowerCase(),
+      value: String(body).normalize('NFC').trim(),
+      origin: 'multipart-body',
+    })
+  }
+  return entries
+}
+
+function readQuotedStringToken(text, start) {
+  const quote = text[start]
+  if (quote !== '"' && quote !== "'") return null
+  let decoded = ''
+  let index = start + 1
+  while (index < text.length) {
+    if (text[index] === '\\') {
+      const escaped = text[index + 1]
+      if (escaped == null) return null
+      if (escaped === 'u' && /^[a-f0-9]{4}$/i.test(text.slice(index + 2, index + 6))) {
+        decoded += String.fromCharCode(Number.parseInt(text.slice(index + 2, index + 6), 16))
+        index += 6
+        continue
+      }
+      const escapes = { b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' }
+      decoded += escapes[escaped] ?? escaped
+      index += 2
+      continue
+    }
+    if (text[index] === quote) {
+      const end = index + 1
+      return { value: decoded, end }
+    }
+    if (/[\r\n]/.test(text[index])) return null
+    decoded += text[index]
+    index += 1
+  }
+  return null
+}
+
+function isEscapedCharacter(text, index) {
+  let slashes = 0
+  for (let cursor = index - 1; cursor >= 0 && text[cursor] === '\\'; cursor -= 1) slashes += 1
+  return slashes % 2 === 1
+}
+
+function quotedJsonFragmentEntries(text) {
+  const entries = []
+  for (let index = 0; index < text.length;) {
+    if (!['"', "'"].includes(text[index]) || isEscapedCharacter(text, index)) {
+      index += 1
+      continue
+    }
+    const key = readQuotedStringToken(text, index)
+    if (!key) {
+      index += 1
+      continue
+    }
+    let cursor = key.end
+    while (/\s/.test(text[cursor] || '')) cursor += 1
+    if (text[cursor] !== ':') {
+      index = key.end
+      continue
+    }
+    cursor += 1
+    while (/\s/.test(text[cursor] || '')) cursor += 1
+    let value = ''
+    let end = cursor
+    if (['"', "'"].includes(text[cursor]) && !isEscapedCharacter(text, cursor)) {
+      const token = readQuotedStringToken(text, cursor)
+      if (!token) {
+        index = key.end
+        continue
+      }
+      value = token.value
+      end = token.end
+    } else {
+      while (end < text.length && !/[,\r\n]/.test(text[end])) end += 1
+      value = text.slice(cursor, end).trim()
+    }
+    entries.push({
+      name: String(key.value).normalize('NFC').toLowerCase(),
+      value: String(value).normalize('NFC').trim(),
+      origin: 'json-fragment',
+    })
+    index = Math.max(end, key.end)
+  }
+  return entries
+}
+
+function looseJsonFragmentEntries(rawText) {
+  const text = String(rawText || '').trim()
+  if (!text || /^\s*[\[{]/.test(text) || !text.includes(':')) return []
+  try {
+    const wrapped = parseJsonRejectDuplicateKeys(`{${text}}`)
+    return routeFieldEntries(wrapped, 'json-fragment')
+  } catch {
+    // Continue with a field-boundary scan for a prefixed or tailed fragment.
+  }
+  const quotedEntries = quotedJsonFragmentEntries(text)
+  if (quotedEntries.length) return quotedEntries
+  const firstPair = text.search(/(?:"[A-Za-z_][A-Za-z0-9_]*"|'[A-Za-z_][A-Za-z0-9_]*'|[A-Za-z_][A-Za-z0-9_]*)\s*:/)
+  if (firstPair < 0) return []
+  const fragment = text.slice(firstPair)
+  const entries = []
+  const pair = /(?:^|,)\s*(?:"([A-Za-z_][A-Za-z0-9_]*)"|'([A-Za-z_][A-Za-z0-9_]*)'|([A-Za-z_][A-Za-z0-9_]*))\s*:\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^,\r\n]+))/gy
+  let cursor = 0
+  while (cursor < fragment.length) {
+    pair.lastIndex = cursor
+    const match = pair.exec(fragment)
+    if (!match || match.index !== cursor) break
+    entries.push({
+      name: String(match[1] || match[2] || match[3]).normalize('NFC').toLowerCase(),
+      value: String(match[4] ?? match[5] ?? match[6] ?? '').normalize('NFC').trim(),
+      origin: 'json-fragment',
+    })
+    cursor = pair.lastIndex
+  }
+  return entries
 }
 
 function endpointTokens(rawUrl) {
@@ -145,10 +332,11 @@ function endpointTokens(rawUrl) {
   }
 }
 
-function routeSignals(rawUrl, query, body) {
+function routeSignals(rawUrl, query, body, extraEntries = []) {
   const entries = [
     ...routeFieldEntries(query, 'query'),
     ...routeFieldEntries(body, 'body'),
+    ...extraEntries,
   ]
   const criticalCounts = new Map()
   for (const entry of entries) {
@@ -158,6 +346,7 @@ function routeSignals(rawUrl, query, body) {
   const ambiguous = [...criticalCounts.values()].some((count) => count > 1)
   const operations = entries.filter((entry) => ROUTE_OPERATION_FIELDS.has(entry.name))
   const operationValues = operations.map(({ value }) => value.toLowerCase())
+  const hasSubmitOperationField = entries.some(({ name }) => SUBMIT_OPERATION_VALUES.has(name))
   const tokens = endpointTokens(rawUrl)
   const hasMoney = entries.some(({ name }) => MONEY_FIELD_NAMES.has(name))
   const hasOrderField = entries.some(({ name }) => ORDER_FIELD_NAMES.has(name))
@@ -166,7 +355,7 @@ function routeSignals(rawUrl, query, body) {
   const hasPreviewEndpoint = [...tokens].some((token) => PREVIEW_ENDPOINT_TOKENS.has(token))
   const explicitSubmit = operationValues.some((value) => (
     SUBMIT_OPERATION_VALUES.has(value) || /^[a-z]{2,5}_bet$/.test(value)
-  ))
+  )) || hasSubmitOperationField
   const explicitPreview = operationValues.some((value) => PREVIEW_OPERATION_VALUES.has(value))
   return {
     ambiguous,
@@ -175,7 +364,8 @@ function routeSignals(rawUrl, query, body) {
     explicitPreview,
     submitLike: (explicitSubmit || hasSubmitEndpoint) && (hasMoney || hasOrderField || hasOrderEndpoint),
     previewLike: (explicitPreview || hasPreviewEndpoint) && (hasMoney || hasOrderField || hasOrderEndpoint),
-    orderLike: (hasMoney && hasOrderField)
+    orderLike: hasOrderEndpoint || hasSubmitEndpoint
+      || (hasMoney && hasOrderField)
       || (hasOrderEndpoint && (hasMoney || hasOrderField))
       || (explicitSubmit && (hasMoney || hasOrderField)),
   }
@@ -218,7 +408,11 @@ export function classifyProtocolRecord(record) {
   const body = parseBody(rawPostData)
   const query = queryFields(url)
   const operations = [...fieldValues(query, 'p'), ...fieldValues(body, 'p')]
-  const signals = routeSignals(url, query, body)
+  const rawRouteEntries = [
+    ...multipartRouteEntries(rawPostText, record.headers),
+    ...looseJsonFragmentEntries(rawPostText),
+  ]
+  const signals = routeSignals(url, query, body, rawRouteEntries)
   const bodyText = flatten(body).join('\n')
   const queryText = flatten(query).join('\n')
   const blob = `${method}\n${url}\n${queryText}\n${bodyText}`
@@ -227,7 +421,9 @@ export function classifyProtocolRecord(record) {
     stage: 'candidate',
     confidence: 'low',
     reasons: [reason],
-    ...(method === 'POST' && signals.orderLike ? { routeRisk: 'order-like-post' } : {}),
+    ...(signals.orderLike ? {
+      routeRisk: method === 'POST' ? 'order-like-post' : 'order-like-route',
+    } : {}),
   })
 
   if (/^websocket-(?:open|send|receive|error|close)$/.test(String(record.type || ''))) {
@@ -292,8 +488,8 @@ export function classifyProtocolRecord(record) {
     return { stage: 'preview', confidence: 'medium', reasons }
   }
 
-  if (method === 'POST' && signals.orderLike) {
-    return candidate('order-like post parameter')
+  if (signals.orderLike) {
+    return candidate(method === 'POST' ? 'order-like post parameter' : 'order-like route parameter')
   }
 
   return { stage: 'unknown', confidence: 'low', reasons: [] }
@@ -304,7 +500,7 @@ export function classifyProtocolWebSocketFrame({ url, payload } = {}) {
     return { stage: 'unknown', confidence: 'low', reasons: ['uninspectable websocket frame'] }
   }
   const parsed = parseBody(payload)
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+  if (!parsed || typeof parsed !== 'object') {
     return { stage: 'unknown', confidence: 'low', reasons: ['uninspectable websocket frame'] }
   }
   let frameUrl
@@ -335,6 +531,13 @@ export function shouldBlockProtocolRequest(record, { allowRealSubmit = false } =
     return {
       block: true,
       reason: 'unverified-post-candidate',
+      classification,
+    }
+  }
+  if (classification.stage === 'candidate' && classification.routeRisk === 'order-like-route') {
+    return {
+      block: true,
+      reason: 'unverified-order-route',
       classification,
     }
   }

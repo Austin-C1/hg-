@@ -19,6 +19,15 @@ import {
   runSequentialCaptureContexts,
 } from '../scripts/crown-betting-protocol-capture.mjs'
 
+function canonicalFtBetWire(golds = '1', extra = '') {
+  return [
+    'p=FT_bet', 'uid=uid-offline', 'ver=v1', 'langx=zh-cn', 'gid=event-offline',
+    'gtype=FT', 'wtype=RE', 'rtype=REH', 'chose_team=H', `golds=${golds}`,
+    'ioratio=0.96', 'con=1', 'ratio=50', 'autoOdd=Y', 'timestamp=1783987204990',
+    'timestamp2=', 'isRB=Y', 'imp=N', 'ptype=', 'isYesterday=N', 'f=', 'odd_f_type=H',
+  ].join('&') + extra
+}
+
 test('classifies likely bet slip preview request', () => {
   const result = classifyProtocolRecord({
     type: 'request',
@@ -106,7 +115,7 @@ test('context capture covers new tabs and permits only one bounded real submit',
         request: () => ({
           method: () => 'POST', url: () => '/transform.php', resourceType: () => 'xhr',
           headers: () => ({ 'content-type': 'application/x-www-form-urlencoded' }),
-          postData: () => `p=FT_bet&golds=${stake}&gid=8878933&gtype=FT${extra}`,
+          postData: () => canonicalFtBetWire(stake, extra),
         }),
         async continue() { calls.push('continue') },
         async abort(reason) { calls.push(`abort:${reason}`) },
@@ -165,6 +174,9 @@ test('bounded real submit accepts only one canonical form wire and rejects non-f
   }
 
   for (const url of [
+    'https://evil.invalid/transform.php',
+    'https://m407.mos077.com/not-transform.php',
+    'http://m407.mos077.com/transform.php',
     '/transform.php?golds=999999',
     '/transform.php?golds=1&golds=999999',
     '/transform.php?%67olds=999999',
@@ -175,7 +187,7 @@ test('bounded real submit accepts only one canonical form wire and rejects non-f
     '/transform.php?golds%2500=999999',
     '/transform.php?GOLDS=999999',
   ]) {
-    const result = await dispatch({ url, body: 'p=FT_bet&golds=1&gid=8878933&gtype=FT' })
+    const result = await dispatch({ url, body: canonicalFtBetWire() })
     assert.deepEqual(result.calls, ['abort:blockedbyclient'])
     assert.equal(result.decision.blockReason, 'real-submit-stake-invalid')
     assert.equal(result.decision.dispatchCount, 0)
@@ -207,6 +219,18 @@ test('bounded real submit accepts only one canonical form wire and rejects non-f
     assert.match(result.decision.blockReason, /^real-submit-(?:not-exact|stake-invalid)$/)
   }
 
+  for (const field of ['unknownAmount', 'cash', 'total', 'price', 'qty']) {
+    const result = await dispatch({ body: canonicalFtBetWire('1', `&${field}=999999`) })
+    assert.deepEqual(result.calls, ['abort:blockedbyclient'], field)
+    assert.equal(result.decision.blockReason, 'real-submit-stake-invalid', field)
+    assert.equal(result.decision.dispatchCount, 0, field)
+  }
+  const missingField = await dispatch({
+    body: canonicalFtBetWire().replace('&ratio=50', ''),
+  })
+  assert.deepEqual(missingField.calls, ['abort:blockedbyclient'])
+  assert.equal(missingField.decision.blockReason, 'real-submit-stake-invalid')
+
   for (const probe of [{
     body: '{"p":"FT_bet","golds":"1","gid":"8878933","gtype":"FT"}',
     contentType: 'application/json',
@@ -228,7 +252,7 @@ test('bounded real submit accepts only one canonical form wire and rejects non-f
     assert.equal(result.decision.dispatchCount, 0)
   }
 
-  const valid = await dispatch({ body: 'p=FT_bet&golds=1&gid=8878933&gtype=FT' })
+  const valid = await dispatch({ body: canonicalFtBetWire() })
   assert.deepEqual(valid.calls, ['continue'])
   assert.equal(valid.decision.dispatchCount, 1)
 
@@ -238,7 +262,7 @@ test('bounded real submit accepts only one canonical form wire and rejects non-f
     'application/x-www-form-urlencoded; charset=UTF8',
   ]) {
     const result = await dispatch({
-      body: 'p=FT_bet&golds=1&gid=8878933&gtype=FT', contentType,
+      body: canonicalFtBetWire(), contentType,
     })
     assert.deepEqual(result.calls, ['continue'])
   }
@@ -249,14 +273,14 @@ test('bounded real submit accepts only one canonical form wire and rejects non-f
     'application/x-www-form-urlencoded; boundary=x',
   ]) {
     const result = await dispatch({
-      body: 'p=FT_bet&golds=1&gid=8878933&gtype=FT', contentType,
+      body: canonicalFtBetWire(), contentType,
     })
     assert.deepEqual(result.calls, ['abort:blockedbyclient'])
     assert.equal(result.decision.blockReason, 'real-submit-stake-invalid')
   }
 
   const capturedWire = await dispatch({
-    body: 'p=FT_bet&uid=uid-offline&ver=v1&langx=zh-cn&gid=event-offline&gtype=FT&wtype=RE&rtype=REH&chose_team=H&golds=50&ioratio=0.96&con=1&ratio=50&autoOdd=Y&timestamp=1783987204990&timestamp2=&isRB=Y&imp=N&ptype=&isYesterday=N&f=&odd_f_type=H',
+    body: canonicalFtBetWire('50'),
   })
   assert.deepEqual(capturedWire.calls, ['continue'])
   assert.equal(capturedWire.decision.dispatchCount, 1)

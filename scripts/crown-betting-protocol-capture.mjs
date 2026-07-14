@@ -10,6 +10,7 @@ import { chromium } from 'playwright'
 
 import { readOrCreateLocalSecretKey } from '../src/crown/app/app-secret.mjs'
 import { createProtocolStore } from '../src/crown/betting-protocol/protocol-store.mjs'
+import { normalizePublicHttpsExactOrigin } from '../src/crown/login/crown-origin.mjs'
 import {
   CROWN_BROWSER_TARGETS,
   classifyProtocolRecord,
@@ -23,6 +24,11 @@ import {
 
 const DEFAULT_URL = 'https://m407.mos077.com'
 const CAPTURE_SCENARIOS = new Set(['discover', 'eight-direction'])
+const EXACT_CAPTURED_FT_BET_FORM_FIELDS = new Set([
+  'p', 'uid', 'ver', 'langx', 'gid', 'gtype', 'wtype', 'rtype', 'chose_team', 'golds',
+  'ioratio', 'con', 'ratio', 'autoOdd', 'timestamp', 'timestamp2', 'isRB', 'imp', 'ptype',
+  'isYesterday', 'f', 'odd_f_type',
+])
 
 function captureError(code, message) {
   const error = new Error(message)
@@ -144,7 +150,7 @@ function canonicalFormBody(rawBody, headers) {
     const rawField = segment.slice(0, separator)
     const rawValue = segment.slice(separator + 1)
     if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(rawField)) return null
-    if (rawField !== 'golds' && /gold|stake|amount|wager/i.test(rawField)) return null
+    if (!EXACT_CAPTURED_FT_BET_FORM_FIELDS.has(rawField)) return null
     const normalizedField = rawField.toLowerCase()
     if (fields.has(normalizedField)) return null
     fields.add(normalizedField)
@@ -162,20 +168,25 @@ function canonicalFormBody(rawBody, headers) {
     if (/^\s*[\[{]/.test(decodedValue)) return null
     output[rawField] = decodedValue
   }
-  if (output.p !== 'FT_bet' || typeof output.golds !== 'string' || !/^[1-9]\d*$/.test(output.golds)) {
+  if (fields.size !== EXACT_CAPTURED_FT_BET_FORM_FIELDS.size
+    || output.p !== 'FT_bet' || typeof output.golds !== 'string'
+    || !/^[1-9]\d*$/.test(output.golds)) {
     return null
   }
   return output
 }
 
-function boundedRealSubmitStake(rawUrl, headers, rawBody) {
+function boundedRealSubmitStake(rawUrl, expectedBaseUrl, headers, rawBody) {
+  let expectedOrigin
   let url
   try {
-    url = new URL(String(rawUrl || ''), DEFAULT_URL)
+    expectedOrigin = normalizePublicHttpsExactOrigin(expectedBaseUrl || DEFAULT_URL)
+    url = new URL(String(rawUrl || ''), `${expectedOrigin}/`)
   } catch {
     return null
   }
-  if (url.search) return null
+  if (url.origin !== expectedOrigin || url.pathname !== '/transform.php'
+    || url.search || url.hash || url.username || url.password) return null
   const body = canonicalFormBody(rawBody, headers)
   return body ? BigInt(body.golds) : null
 }
@@ -351,7 +362,7 @@ async function installSubmitBlocker(target, controller, args) {
       blockReason = 'real-submit-not-exact'
     }
     if (!blockReason && exactFtBet && args.allowRealSubmit) {
-      const stake = boundedRealSubmitStake(raw.url, raw.headers, raw.postData)
+      const stake = boundedRealSubmitStake(raw.url, args.url, raw.headers, raw.postData)
       if (stake === null || stake > BigInt(args.maxStake)) blockReason = 'real-submit-stake-invalid'
       else if (realSubmitCount >= 1) blockReason = 'real-submit-limit-exceeded'
       else realSubmitCount += 1
@@ -381,13 +392,14 @@ export async function installWebSocketSubmitBlocker(target, controller, args) {
   await target.routeWebSocket('**/*', async (socketRoute) => {
     const url = socketRoute.url()
     const urlRecord = { method: 'GET', url, postData: '' }
-    const urlClassification = classifyProtocolRecord(urlRecord)
-    if (urlClassification.stage === 'submit') {
+    const urlDecision = shouldBlockProtocolRequest(urlRecord)
+    const urlClassification = urlDecision.classification
+    if (urlDecision.block) {
       controller.recordWebSocketRouteDecision(socketRoute, {
         url,
         source: 'url',
         decision: 'blocked',
-        blockReason: 'real-submit-disabled',
+        blockReason: urlDecision.reason,
         dispatchCount: 0,
         classification: urlClassification,
       })

@@ -9,7 +9,10 @@ import {
   buildCrownProtocolArtifact,
   buildCrownProtocolCatalogCandidate,
   buildCrownStaticWireEvidence,
+  writeCrownEightDirectionCandidates,
+  writeCrownProtocolCatalogCandidate,
   writeCrownProtocolCatalogArtifacts,
+  writeCrownStaticWireEvidence,
 } from '../scripts/crown-betting-protocol-analyze.mjs'
 import { CROWN_BROWSER_TARGETS } from '../src/crown/betting-protocol/protocol-classifier.mjs'
 import { assertSafeCrownProtocolEvidence } from '../src/crown/betting-protocol/capture-redaction.mjs'
@@ -809,4 +812,210 @@ test('writer creates the three public safe artifacts and no dynamic public fixtu
     assert.equal(output.includes('"type": "Buffer"'), false)
     assert.doesNotThrow(() => assertSafeCrownProtocolEvidence(JSON.parse(output)))
   }
+})
+
+test('catalog and static-wire artifacts never publish pure-alphabetic private map keys', () => {
+  const records = [{
+    seq: 1, eventOrdinal: 1, type: 'request', method: 'POST', resourceType: 'xhr',
+    url: 'https://offline.invalid/transform.php', postData: 'p=get_game_list&gtype=ft',
+  }, {
+    seq: 1, eventOrdinal: 2, type: 'response', method: 'POST', status: 200,
+    url: 'https://offline.invalid/transform.php',
+    responseBody: JSON.stringify({
+      code: '0',
+      roster: {
+        CafeOwnerPrivateAlias: { odds: '0.96' },
+        BobOwnerPrivateAlias: { odds: '0.97' },
+        alice: { odds: '0.98' },
+        bob: { odds: '0.99' },
+        home: { odds: '1.00' },
+        code: { odds: '1.01' },
+        id: { odds: '1.02' },
+        name: { odds: '1.03' },
+      },
+    }),
+  }]
+  const options = { captureId: 'capture', hmacKey: HMAC_KEY }
+  const artifacts = [
+    buildCrownProtocolCatalogCandidate(records, options),
+    buildCrownStaticWireEvidence(records, options),
+  ]
+
+  for (const artifact of artifacts) {
+    const serialized = JSON.stringify(artifact)
+    assert.equal(serialized.includes('CafeOwnerPrivateAlias'), false)
+    assert.equal(serialized.includes('BobOwnerPrivateAlias'), false)
+    assert.equal(serialized.includes('alice'), false)
+    assert.equal(serialized.includes('bob'), false)
+    assert.equal(/roster\.(?:home|code|id|name)(?:\.|\")/.test(serialized), false)
+    assert.match(serialized, /roster\.\[\*\]\.odds/)
+  }
+})
+
+test('catalog and eight-direction gates recompute multipart and JSON-fragment order traffic', async (t) => {
+  const [target] = CROWN_BROWSER_TARGETS
+  const bodies = [
+    [
+      '--boundary',
+      'Content-Disposition: form-data; name="action"', '', 'submit',
+      '--boundary',
+      'Content-Disposition: form-data; name="amount"', '', '50',
+      '--boundary',
+      'Content-Disposition: form-data; name="selection"', '', 'home',
+      '--boundary--', '',
+    ].join('\r\n'),
+    'prefix"action":"submit","amount":50,"selection":"home"',
+  ]
+
+  for (const [index, postData] of bodies.entries()) {
+    await t.test(index === 0 ? 'multipart' : 'JSON fragment', () => {
+      const common = {
+        captureRunId: 'private-run-extra', direction: target.id,
+        sessionGeneration: 'private-generation-extra',
+      }
+      const extra = [{
+        ...common, seq: 3, eventOrdinal: 6, type: 'request', method: 'POST', resourceType: 'xhr',
+        url: 'https://offline.invalid/transform.php', postData,
+      }, {
+        ...common, seq: 3, eventOrdinal: 7, type: 'route-decision', method: 'POST',
+        url: 'https://offline.invalid/transform.php', postData,
+        decision: 'continued', dispatchCount: 1,
+      }]
+      const catalog = buildCrownProtocolCatalogCandidate(extra, {
+        captureId: 'capture', hmacKey: HMAC_KEY,
+      })
+      assert.equal(catalog.entries[0].stage, 'submit')
+      assert.equal(catalog.entries[0].routeOutcome, 'continued')
+      assert.equal(catalog.entries[0].dispatchCount, 1)
+
+      assert.throws(() => buildCrownEightDirectionCandidates([
+        ...directionRecords(target, 1, {
+          captureRunId: common.captureRunId,
+          sessionGeneration: common.sessionGeneration,
+        }),
+        ...extra,
+      ], {
+        expectedDirections: [target], captureId: 'capture', hmacKey: HMAC_KEY,
+      }), /eight-direction:betting-traffic-count/)
+    })
+  }
+})
+
+test('blocked WebSocket JSON arrays cannot disguise Submit traffic as unknown', () => {
+  const [target] = CROWN_BROWSER_TARGETS
+  const common = {
+    captureRunId: 'private-run-ws-array', direction: target.id,
+    sessionGeneration: 'private-generation-ws-array',
+  }
+  const records = [...directionRecords(target, 1, {
+    captureRunId: common.captureRunId,
+    sessionGeneration: common.sessionGeneration,
+  }), {
+    ...common, seq: 3, eventOrdinal: 6, type: 'websocket-open',
+    url: 'wss://offline.invalid/socket',
+  }, {
+    ...common, seq: 4, eventOrdinal: 7, type: 'websocket-route-decision', method: 'WEBSOCKET',
+    url: 'wss://offline.invalid/socket', source: 'frame', payloadKind: 'text',
+    postData: '[{"action":"submit","amount":50,"selection":"home"}]',
+    decision: 'blocked', dispatchCount: 0,
+    classification: { stage: 'unknown', confidence: 'low', reasons: ['forged unknown'] },
+  }]
+
+  assert.throws(() => buildCrownProtocolCatalogCandidate(records, {
+    captureId: 'capture', hmacKey: HMAC_KEY,
+  }), /websocket-route-decision-invalid/)
+  assert.throws(() => buildCrownEightDirectionCandidates(records, {
+    expectedDirections: [target], captureId: 'capture', hmacKey: HMAC_KEY,
+  }), /eight-direction:(?:websocket-submit-attempt|websocket-route-decision-invalid)/)
+})
+
+test('catalog and eight-direction gates count non-POST order-like routes', () => {
+  const [target] = CROWN_BROWSER_TARGETS
+  const common = {
+    captureRunId: 'private-run-order-route', direction: target.id,
+    sessionGeneration: 'private-generation-order-route',
+  }
+  const url = 'https://offline.invalid/bet.php?stake=50&selection=home'
+  const extra = [{
+    ...common, seq: 3, eventOrdinal: 6, type: 'request', method: 'GET', resourceType: 'fetch',
+    url, postData: '',
+  }, {
+    ...common, seq: 3, eventOrdinal: 7, type: 'route-decision', method: 'GET',
+    url, postData: '', decision: 'blocked', dispatchCount: 0,
+  }]
+  const catalog = buildCrownProtocolCatalogCandidate(extra, {
+    captureId: 'capture', hmacKey: HMAC_KEY,
+  })
+
+  assert.equal(catalog.entries[0].stage, 'candidate')
+  assert.equal(catalog.entries[0].routeRisk, 'order-like-route')
+  assert.equal(catalog.entries[0].routeOutcome, 'blocked')
+  assert.throws(() => buildCrownEightDirectionCandidates([
+    ...directionRecords(target, 1, {
+      captureRunId: common.captureRunId,
+      sessionGeneration: common.sessionGeneration,
+    }),
+    ...extra,
+  ], {
+    expectedDirections: [target], captureId: 'capture', hmacKey: HMAC_KEY,
+  }), /eight-direction:betting-traffic-count/)
+})
+
+test('single safe-artifact writers clear stale outputs before build failure and publish without temp residue', () => {
+  const captureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-single-artifact-writers-'))
+  const publicDir = path.join(captureDir, 'public')
+  fs.mkdirSync(publicDir, { recursive: true })
+  const cases = [{
+    name: 'protocol-catalog.safe.json',
+    write: () => writeCrownProtocolCatalogCandidate(captureDir, ordinaryRecords(), {
+      captureId: 'capture', hmacKey: Buffer.alloc(31),
+    }),
+    error: /hmac-key-too-short/,
+  }, {
+    name: 'static-wire-evidence.safe.json',
+    write: () => writeCrownStaticWireEvidence(captureDir, ordinaryRecords(), {
+      captureId: 'capture', hmacKey: Buffer.alloc(31),
+    }),
+    error: /hmac-key-too-short/,
+  }, {
+    name: 'eight-direction-candidates.safe.json',
+    write: () => writeCrownEightDirectionCandidates(captureDir, [], {
+      expectedDirections: [CROWN_BROWSER_TARGETS[0]], captureId: 'capture', hmacKey: HMAC_KEY,
+    }),
+    error: /eight-direction:missing-run/,
+  }]
+
+  for (const scenario of cases) {
+    const target = path.join(publicDir, scenario.name)
+    fs.writeFileSync(target, '{"stale":true}\n', 'utf8')
+    assert.throws(scenario.write, scenario.error)
+    assert.equal(fs.existsSync(target), false, scenario.name)
+  }
+
+  writeCrownProtocolCatalogCandidate(captureDir, ordinaryRecords(), {
+    captureId: 'capture', hmacKey: HMAC_KEY,
+  })
+  assert.equal(fs.existsSync(path.join(publicDir, 'protocol-catalog.safe.json')), true)
+  assert.deepEqual(
+    fs.readdirSync(publicDir).filter((name) => name.startsWith('.tmp-crown-protocol-')),
+    [],
+  )
+})
+
+test('catalog rejects very deep legal JSON with a stable error instead of RangeError', () => {
+  const depth = 10_000
+  const postData = `${'{"node":'.repeat(depth)}0${'}'.repeat(depth)}`
+  let error
+  try {
+    buildCrownProtocolCatalogCandidate([{
+      seq: 1, eventOrdinal: 1, type: 'request', method: 'POST', resourceType: 'fetch',
+      url: 'https://offline.invalid/telemetry.php', postData,
+    }], { captureId: 'capture', hmacKey: HMAC_KEY })
+  } catch (caught) {
+    error = caught
+  }
+
+  assert.ok(error)
+  assert.equal(error instanceof RangeError, false)
+  assert.match(String(error.message), /^crown-protocol-catalog:structure-too-deep$/)
 })
