@@ -6,6 +6,7 @@ import { stdin as input, stdout as output } from 'node:process'
 import { fileURLToPath } from 'node:url'
 
 import { createProtocolStore } from '../src/crown/betting-protocol/protocol-store.mjs'
+import { parseBody } from '../src/crown/betting-protocol/capture-redaction.mjs'
 import { classifyProtocolRecord, shouldBlockProtocolRequest } from '../src/crown/betting-protocol/protocol-classifier.mjs'
 
 const DEFAULT_URL = 'https://m407.mos077.com'
@@ -46,7 +47,7 @@ function parseArgs(argv) {
 function assertSafety(args) {
   if (args.allowRealSubmit) {
     if (args.confirm !== 'REAL_BET') throw new Error('--allow-real-submit requires --confirm REAL_BET')
-    if (!Number.isFinite(args.maxStake) || args.maxStake <= 0) throw new Error('--allow-real-submit requires --max-stake > 0')
+    if (!Number.isSafeInteger(args.maxStake) || args.maxStake <= 0) throw new Error('--allow-real-submit requires an integer --max-stake > 0')
     if (args.maxStake > 50) throw new Error('First protocol submit max stake must be <= 50')
     if (args.headless) throw new Error('Real submit capture must run with visible browser')
   }
@@ -100,8 +101,9 @@ export function installRecorder(page, store) {
   })
 }
 
-async function installSubmitBlocker(page, store, args) {
-  await page.route('**/*', async (route) => {
+async function installSubmitBlocker(target, store, args) {
+  let realSubmitCount = 0
+  await target.route('**/*', async (route) => {
     const request = route.request()
     const record = {
       type: 'request-blocked',
@@ -112,19 +114,56 @@ async function installSubmitBlocker(page, store, args) {
       headers: request.headers(),
       postData: request.postData() || '',
     }
+    const body = parseBody(record.postData)
+    const exactFtBet = record.method === 'POST' && typeof body?.p === 'string' && body.p === 'FT_bet'
     const decision = shouldBlockProtocolRequest(record, { allowRealSubmit: args.allowRealSubmit })
-    if (!decision.block) {
+    const classification = exactFtBet
+      ? { stage: 'submit', confidence: 'high', reasons: ['exact p=FT_bet'] }
+      : decision.classification
+    let blockReason = exactFtBet && !args.allowRealSubmit
+      ? 'real-submit-disabled'
+      : (decision.block ? decision.reason : '')
+    if (!blockReason && classification.stage === 'submit' && args.allowRealSubmit && !exactFtBet) {
+      blockReason = 'real-submit-not-exact'
+    }
+    if (!blockReason && exactFtBet && args.allowRealSubmit) {
+      const rawStake = body.golds
+      const stakeValid = typeof rawStake === 'string' && /^[1-9]\d*$/.test(rawStake)
+      const stake = stakeValid ? BigInt(rawStake) : 0n
+      if (!stakeValid || stake > BigInt(args.maxStake)) {
+        blockReason = 'real-submit-stake-invalid'
+      } else if (realSubmitCount >= 1) {
+        blockReason = 'real-submit-limit-exceeded'
+      } else {
+        realSubmitCount += 1
+      }
+    }
+    if (!blockReason) {
       await route.continue()
       return
     }
 
     store.append({
       ...record,
-      blockReason: decision.reason,
-      classification: decision.classification,
+      blockReason,
+      classification,
     })
     await route.abort('blockedbyclient')
   })
+}
+
+export async function installContextCapture(context, store, args) {
+  await installSubmitBlocker(context, store, args)
+  installRecorder(context, store)
+}
+
+export function captureContextOptions(args) {
+  return {
+    channel: args.channel,
+    headless: args.headless,
+    viewport: { width: 1440, height: 950 },
+    serviceWorkers: 'block',
+  }
 }
 
 async function main() {
@@ -132,14 +171,9 @@ async function main() {
   assertSafety(args)
 
   const store = createProtocolStore({ rootDir: args.out })
-  const context = await chromium.launchPersistentContext(args.profile, {
-    channel: args.channel,
-    headless: args.headless,
-    viewport: { width: 1440, height: 950 },
-  })
+  const context = await chromium.launchPersistentContext(args.profile, captureContextOptions(args))
+  await installContextCapture(context, store, args)
   const page = context.pages()[0] || await context.newPage()
-  await installSubmitBlocker(page, store, args)
-  installRecorder(page, store)
 
   await page.goto(args.url, { waitUntil: 'domcontentloaded', timeout: 60_000 })
 

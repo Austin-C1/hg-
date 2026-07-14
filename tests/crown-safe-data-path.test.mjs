@@ -7,7 +7,7 @@ import test from 'node:test'
 import {
   openVerifiedDataFile,
   validateDataPath,
-} from '../src/crown/update/safe-data-path.mjs'
+} from '../src/crown/runtime/safe-data-path.mjs'
 
 test('safe data paths require explicit fully-qualified containment', async (t) => {
   const sandbox = await mkdtemp(join(tmpdir(), 'crown-safe-data-path-'))

@@ -388,6 +388,20 @@ test('direct app API retires betting-rule CRUD and real-eligibility before handl
   assert.equal(listed.payload.items.some((item) => item.id === rule.id), true)
 })
 
+test('direct app API retires execution-authorization mutations before handler execution', async () => {
+  const dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'crown-app-api-authorization-retired-')), 'crown.sqlite')
+
+  for (const [method, pathname] of [
+    ['POST', '/api/app/execution-authorizations'],
+    ['POST', '/api/app/execution-authorizations/legacy-authorization/revoke'],
+    ['PUT', '/api/app/execution-authorizations/legacy-authorization'],
+    ['DELETE', '/api/app/execution-authorizations/legacy-authorization'],
+  ]) {
+    const result = await directAppApi({ dbPath, method, pathname, body: { forged: 'payload' } })
+    assert.deepEqual(result, { status: 410, payload: { error: 'execution-authorization-retired' } })
+  }
+})
+
 test('app API bootstraps odds and persisted configuration', async (t) => {
   await withAppServer(t, async (baseUrl) => {
     const tracked = await jsonFetch(`${baseUrl}/api/app/tracked-matches`, {
@@ -457,6 +471,26 @@ test('app API creates, updates, and deletes monitor accounts and rules', async (
     const deletedAccount = await jsonFetch(`${baseUrl}/api/app/monitor-accounts/${account.payload.item.id}`, { method: 'DELETE' })
     assert.deepEqual(deletedAccount.payload, { ok: true })
   }, { CROWN_SECRET_KEY: 'api-secret-key-with-more-than-32-characters' })
+})
+
+test('authenticated app API keeps every retired system update endpoint as a 404 tombstone', async (t) => {
+  await withAppServer(t, async (baseUrl) => {
+    for (const [method, pathname] of [
+      ['GET', '/api/app/system-update'],
+      ['POST', '/api/app/system-update/check'],
+      ['POST', '/api/app/system-update/download'],
+      ['POST', '/api/app/system-update/install'],
+      ['POST', '/api/app/system-update/apply'],
+      ['POST', '/api/app/system-update/cancel'],
+    ]) {
+      const result = await jsonFetch(`${baseUrl}${pathname}`, {
+        method,
+        ...(method === 'POST' ? { body: '{}' } : {}),
+      })
+      assert.equal(result.response.status, 404, `${method} ${pathname}`)
+      assert.deepEqual(result.payload, { error: 'not-found' })
+    }
+  }, {}, { lightweightSecurityContext: true })
 })
 
 test('manual-login API routes inherit security guards, reject payload fields, stay watcher-off, and return safe status only', async (t) => {
@@ -1468,9 +1502,8 @@ test('real betting status/start/stop API delegates to the fenced runtime and exp
 test('real betting restart arms and stops the old worker before collecting fresh preflight evidence', async (t) => {
   const events = []
   const ready = Object.fromEntries([
-    'watcherFresh', 'watcherLeaseUnique', 'monitorLoginFresh', 'bettingAccountFresh', 'balanceFresh',
-    'capabilityExact', 'authorizationActive', 'schemaCurrent', 'environmentExact', 'fenceFresh',
-    'executorLeaseFresh', 'reconcilerLeaseFresh', 'executorReconcilerDistinct',
+    'ruleCardsEnabled', 'bettingAccountAvailable', 'capabilityExact',
+    'schemaCurrent', 'fenceFresh', 'executorLeaseFresh',
   ].map((field) => [field, true]))
   await withAppServer(t, async (baseUrl) => {
     const result = await jsonFetch(`${baseUrl}/api/app/real-betting/start`, { method: 'POST', body: '{}' })
@@ -1480,7 +1513,102 @@ test('real betting restart arms and stops the old worker before collecting fresh
     realBettingPreflight() { events.push('preflight'); return ready },
     bettingProcess: {
       stop() { events.push('stop'); return { stopped: true } },
-      start() { events.push('start'); return { running: true, activate() { events.push('go') } } },
+      start() {
+        events.push('start')
+        return { running: true, readyTicket: { type: 'ready', leases: {} }, activate() { events.push('go') } }
+      },
+    },
+  })
+})
+
+test('real betting start spawns after static preflight and commits only after ready-ticket fence preflight', async (t) => {
+  const events = []
+  const staticReady = {
+    ruleCardsEnabled: true,
+    bettingAccountAvailable: true,
+    capabilityExact: true,
+    schemaCurrent: true,
+  }
+  await withAppServer(t, async (baseUrl) => {
+    const result = await jsonFetch(`${baseUrl}/api/app/real-betting/start`, { method: 'POST', body: '{}' })
+    assert.equal(result.payload.item.state, 'running')
+    assert.deepEqual(events, ['stop', 'preflight:pre-ready', 'start', 'preflight:post-ready', 'go'])
+  }, {}, {
+    realBettingPreflight({ readyTicket }) {
+      events.push(`preflight:${readyTicket ? 'post-ready' : 'pre-ready'}`)
+      return {
+        ...staticReady,
+        fenceFresh: Boolean(readyTicket),
+        executorLeaseFresh: Boolean(readyTicket),
+      }
+    },
+    bettingProcess: {
+      stop() { events.push('stop'); return { stopped: true } },
+      start() {
+        events.push('start')
+        return {
+          running: true,
+          readyTicket: { type: 'ready', leases: {} },
+          activate() { events.push('go') },
+        }
+      },
+    },
+  })
+})
+
+test('real betting start stops a ready worker when post-ready full preflight still fails', async (t) => {
+  let starts = 0
+  let stops = 0
+  let activations = 0
+  await withAppServer(t, async (baseUrl) => {
+    const result = await jsonFetch(`${baseUrl}/api/app/real-betting/start`, { method: 'POST', body: '{}' })
+    assert.equal(result.payload.item.state, 'armed_waiting')
+    assert.equal(result.payload.item.reasonCode, 'fence-not-fresh')
+    assert.equal(starts, 1)
+    assert.equal(stops, 2)
+    assert.equal(activations, 0)
+  }, {}, {
+    realBettingPreflight() {
+      return {
+        ruleCardsEnabled: true,
+        bettingAccountAvailable: true,
+        capabilityExact: true,
+        schemaCurrent: true,
+        fenceFresh: false,
+        executorLeaseFresh: false,
+      }
+    },
+    bettingProcess: {
+      stop() { stops += 1; return { stopped: true } },
+      start() {
+        starts += 1
+        return {
+          running: true,
+          readyTicket: { type: 'ready', leases: {} },
+          activate() { activations += 1 },
+        }
+      },
+    },
+  })
+})
+
+test('real betting start never commits running when the worker returns no ready ticket', async (t) => {
+  let stops = 0
+  let activations = 0
+  const ready = Object.fromEntries([
+    'ruleCardsEnabled', 'bettingAccountAvailable', 'capabilityExact',
+    'schemaCurrent', 'fenceFresh', 'executorLeaseFresh',
+  ].map((field) => [field, true]))
+  await withAppServer(t, async (baseUrl) => {
+    const result = await jsonFetch(`${baseUrl}/api/app/real-betting/start`, { method: 'POST', body: '{}' })
+    assert.equal(result.payload.item.state, 'armed_waiting')
+    assert.equal(stops, 2)
+    assert.equal(activations, 0)
+  }, {}, {
+    realBettingPreflight: () => ready,
+    bettingProcess: {
+      stop() { stops += 1; return { stopped: true } },
+      start() { return { running: true, activate() { activations += 1 } } },
     },
   })
 })
@@ -1489,9 +1617,8 @@ test('concurrent stop cancels an in-flight ready handshake before runtime can co
   let rejectStart
   let stopCalls = 0
   const ready = Object.fromEntries([
-    'watcherFresh', 'watcherLeaseUnique', 'monitorLoginFresh', 'bettingAccountFresh', 'balanceFresh',
-    'capabilityExact', 'authorizationActive', 'schemaCurrent', 'environmentExact', 'fenceFresh',
-    'executorLeaseFresh', 'reconcilerLeaseFresh', 'executorReconcilerDistinct',
+    'ruleCardsEnabled', 'bettingAccountAvailable', 'capabilityExact',
+    'schemaCurrent', 'fenceFresh', 'executorLeaseFresh',
   ].map((field) => [field, true]))
   await withAppServer(t, async (baseUrl) => {
     const starting = jsonFetch(`${baseUrl}/api/app/real-betting/start`, { method: 'POST', body: '{}' })
@@ -1536,9 +1663,8 @@ test('production status refresh blocks stale persisted running and stops its wor
     CROWN_REAL_CURRENCY: 'CNY', CROWN_REAL_AMOUNT_SCALE: '0', CROWN_REAL_MAX_TOTAL_MINOR: '100',
   }, {
     prepareDatabase(db) { requestRealBettingStart(db, Object.fromEntries([
-      'watcherFresh', 'watcherLeaseUnique', 'monitorLoginFresh', 'bettingAccountFresh', 'balanceFresh',
-      'capabilityExact', 'authorizationActive', 'schemaCurrent', 'environmentExact', 'fenceFresh',
-      'executorLeaseFresh', 'reconcilerLeaseFresh', 'executorReconcilerDistinct',
+      'ruleCardsEnabled', 'bettingAccountAvailable', 'capabilityExact',
+      'schemaCurrent', 'fenceFresh', 'executorLeaseFresh',
     ].map((field) => [field, true]))) },
     bettingProcess: { async stop() { stops += 1; return { stopped: true } } },
   })

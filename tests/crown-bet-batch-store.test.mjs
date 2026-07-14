@@ -169,6 +169,162 @@ test('authorized batch allocation atomically creates child budget bindings while
   handle.close()
 })
 
+test('local recovery converts legacy authorized attempts and budgets to unknown without remote reconciliation', () => {
+  const handle = openAppDatabase({ dbPath: ':memory:' })
+  seed(handle.db, { signals: ['signal-a'], accounts: ['account-a'] })
+  handle.db.prepare(`UPDATE betting_rules SET enabled=1,execution_mode='real_eligible' WHERE id='rule-a'`).run()
+  const current = clock(NOW)
+  const env = {
+    CROWN_REAL_CURRENCY: 'CNY',
+    CROWN_REAL_AMOUNT_SCALE: '0',
+    CROWN_REAL_MAX_TOTAL_MINOR: '1000',
+  }
+  const lease = new RuntimeLease({
+    db: handle.db,
+    leaseKey: 'betting-executor:legacy-recovery',
+    ownerId: 'legacy-recovery-owner',
+    pid: 1,
+    ttlMs: 60_000,
+    now: current.now,
+  })
+  lease.acquire()
+  const authorization = authorizeExecution(handle.db, {
+    authorizationId: 'authorization-legacy-recovery',
+    currency: 'CNY',
+    amountScale: 0,
+    ruleIds: ['rule-a'],
+    maxTotalAmountMinor: 20,
+    confirmation: 'OFFLINE LEGACY RECOVERY TEST',
+  }, { env, now: current.now })
+  const store = new BetBatchStore(handle.db, {
+    fencingToken: lease.fencingToken,
+    leaseKey: lease.leaseKey,
+    now: () => NOW,
+  })
+  try {
+    const created = store.createAuthorizedBatchWithReservations({
+      ...batchInput('signal-a', 20),
+      authorizationId: authorization.authorizationId,
+    }, [allocation('account-a', 20)], {
+      fencingToken: lease.fencingToken,
+      authorizationId: authorization.authorizationId,
+      executorOwnerId: lease.ownerId,
+      authorizationOptions: { env, now: current.now },
+    })
+    const child = created.children[0]
+    store.prepareSubmit(child.childOrderId, {
+      submitAttemptId: 'legacy-recovery-attempt',
+      fencingToken: lease.fencingToken,
+      at: NOW,
+    })
+    handle.db.prepare(`INSERT INTO bet_submit_attempts (
+      submit_attempt_id,child_order_id,authorization_id,attempt_ordinal,amount_minor,fencing_token,
+      capability_version,capability_evidence_id,preview_odds,locked_identity_json,preview_snapshot_json,
+      status,prepared_at,created_at,updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,'submit_prepared',?,?,?)`).run(
+      'legacy-recovery-attempt', child.childOrderId, authorization.authorizationId, 1, 20, lease.fencingToken,
+      'v1', 'e1', '0.88', '{}', '{}', NOW, NOW, NOW,
+    )
+
+    const recovered = store.recover({ fencingToken: lease.fencingToken, at: NOW })
+    assert.equal(recovered.unknownCount, 1)
+    assert.deepEqual({ ...handle.db.prepare(`SELECT child.status AS child_status,attempt.status AS attempt_status,
+      budget.status AS budget_status,lock.status AS lock_status
+      FROM bet_child_orders AS child
+      JOIN bet_submit_attempts AS attempt ON attempt.child_order_id=child.child_order_id
+      JOIN execution_authorization_child_budgets AS budget ON budget.child_order_id=child.child_order_id
+      JOIN betting_account_locks AS lock ON lock.child_order_id=child.child_order_id`).get() }, {
+      child_status: 'unknown', attempt_status: 'unknown', budget_status: 'unknown', lock_status: 'unknown',
+    })
+    assert.deepEqual({ ...handle.db.prepare(`SELECT reserved_amount_minor,unknown_amount_minor
+      FROM execution_authorizations WHERE authorization_id=?`).get(authorization.authorizationId) }, {
+      reserved_amount_minor: 0,
+      unknown_amount_minor: 20,
+    })
+  } finally {
+    lease.release()
+    handle.close()
+  }
+})
+
+test('recovery keeps duplicate migrated in-flight attempts unknown behind one conservative account lock', () => {
+  const dbPath = temporaryDbPath()
+  const seeded = openAppDatabase({ dbPath })
+  seed(seeded.db, { signals: ['signal-a'], accounts: ['account-a'] })
+  try {
+    seeded.db.prepare(`
+      INSERT INTO bet_batches (
+        batch_id,signal_id,rule_id,event_key,locked_selection_identity,currency,amount_scale,
+        target_amount_minor,reserved_amount_minor,unfilled_amount_minor,status,created_at
+      ) VALUES ('legacy-duplicate-batch','signal-a','rule-a','event','selection','CNY',0,
+        20,20,0,'submitting',?)
+    `).run(NOW)
+    seeded.db.prepare(`
+      INSERT INTO bet_child_orders (
+        child_order_id,batch_id,account_id,attempt,requested_amount_minor,submit_attempt_id,
+        submit_prepared_at,submit_dispatched_at,submitted_at,status,created_at
+      ) VALUES
+        ('legacy-prepared','legacy-duplicate-batch','account-a',1,10,'legacy-attempt-prepared',
+          ?,'','','submit_prepared',?),
+        ('legacy-dispatched','legacy-duplicate-batch','account-a',2,10,'legacy-attempt-dispatched',
+          ?,?,?,'submit_dispatched',?)
+    `).run(NOW, NOW, NOW, NOW, NOW, NOW)
+    seeded.db.prepare(`
+      INSERT INTO bet_submit_attempts (
+        submit_attempt_id,child_order_id,authorization_id,attempt_ordinal,amount_minor,fencing_token,
+        capability_version,capability_evidence_id,preview_odds,locked_identity_json,preview_snapshot_json,
+        status,prepared_at,dispatched_at,created_at,updated_at
+      ) VALUES
+        ('legacy-attempt-prepared','legacy-prepared',NULL,1,10,1,
+          'v1','e1','0.88','{}','{}','submit_prepared',?,'',?,?),
+        ('legacy-attempt-dispatched','legacy-dispatched',NULL,2,10,1,
+          'v1','e1','0.88','{}','{}','submit_prepared',?,'',?,?)
+    `).run(NOW, NOW, NOW, NOW, NOW, NOW)
+    seeded.db.prepare(`
+      UPDATE bet_submit_attempts
+      SET status='submit_dispatched',dispatched_at=?,updated_at=?
+      WHERE submit_attempt_id='legacy-attempt-dispatched'
+    `).run(NOW, NOW)
+    seeded.db.prepare(`
+      INSERT INTO betting_account_locks (
+        account_id,child_order_id,batch_id,status,fencing_token,acquired_at,updated_at
+      ) VALUES ('account-a','legacy-dispatched','legacy-duplicate-batch','submitting',1,?,?)
+    `).run(NOW, NOW)
+  } finally {
+    seeded.close()
+  }
+
+  const handle = openAppDatabase({ dbPath })
+  const store = new BetBatchStore(handle.db, { fencingToken: 2, now: () => NOW })
+  try {
+    const recovered = store.recover({ fencingToken: 2, at: NOW })
+
+    assert.equal(recovered.unknownCount, 2)
+    assert.equal(recovered.activeLockCount, 1)
+    assert.deepEqual(handle.db.prepare(`
+      SELECT child_order_id,status,error_code FROM bet_child_orders
+      WHERE batch_id='legacy-duplicate-batch' ORDER BY attempt
+    `).all().map((row) => ({ ...row })), [
+      { child_order_id: 'legacy-prepared', status: 'unknown', error_code: 'recovery-uncertain' },
+      { child_order_id: 'legacy-dispatched', status: 'unknown', error_code: 'recovery-uncertain' },
+    ])
+    assert.deepEqual(handle.db.prepare(`
+      SELECT submit_attempt_id,status,error_code FROM bet_submit_attempts ORDER BY attempt_ordinal
+    `).all().map((row) => ({ ...row })), [
+      { submit_attempt_id: 'legacy-attempt-prepared', status: 'unknown', error_code: 'recovery-uncertain' },
+      { submit_attempt_id: 'legacy-attempt-dispatched', status: 'unknown', error_code: 'recovery-uncertain' },
+    ])
+    const locks = handle.db.prepare(`
+      SELECT lock.account_id,lock.status,child.status AS child_status
+      FROM betting_account_locks AS lock
+      JOIN bet_child_orders AS child ON child.child_order_id=lock.child_order_id
+    `).all().map((row) => ({ ...row }))
+    assert.deepEqual(locks, [{ account_id: 'account-a', status: 'unknown', child_status: 'unknown' }])
+  } finally {
+    handle.close()
+  }
+})
+
 test('createBatch is deterministic and idempotent for signalId + ruleId', () => {
   const handle = openAppDatabase({ dbPath: ':memory:' })
   const signalId = 'a'.repeat(64)
@@ -309,6 +465,7 @@ test('reserveRound rolls back child rows, locks, and cached amounts after an inj
 
   assert.throws(() => failingStore.reserveRound(batch.batchId, [allocation('account-a', 60)]), /injected-reserve-failure/)
   assert.equal(handle.db.prepare('SELECT COUNT(*) AS count FROM bet_child_orders').get().count, 0)
+  assert.equal(handle.db.prepare('SELECT COUNT(*) AS count FROM bet_batch_account_usage').get().count, 0)
   assert.equal(handle.db.prepare('SELECT COUNT(*) AS count FROM betting_account_locks').get().count, 0)
   assert.deepEqual(
     { ...handle.db.prepare('SELECT reserved_amount_minor, accepted_amount_minor, unknown_amount_minor, unfilled_amount_minor FROM bet_batches').get() },
@@ -396,7 +553,7 @@ test('reconcileAggregates repairs cached totals from child rows and applies wait
   store.reconcileAggregates(waiting.batchId, { hasFutureCapacity: true })
   assert.deepEqual(
     { ...handle.db.prepare('SELECT reserved_amount_minor, unfilled_amount_minor, status FROM bet_batches WHERE batch_id = ?').get(waiting.batchId) },
-    { reserved_amount_minor: 0, unfilled_amount_minor: 100, status: 'failed' },
+    { reserved_amount_minor: 0, unfilled_amount_minor: 100, status: 'waiting_capacity' },
   )
 
   const partial = store.createBatch(batchInput('signal-b', 100))
@@ -412,6 +569,28 @@ test('reconcileAggregates repairs cached totals from child rows and applies wait
   store.markDispatched(failedChild.childOrderId, { at: NOW })
   store.resolveChildOrder(failedChild.childOrderId, { status: 'rejected', at: NOW, hasFutureCapacity: false })
   assert.equal(batchRow(handle.db, failed.batchId).status, 'failed')
+  handle.close()
+})
+
+test('reserveRound never reuses an account in the same batch after a rejection releases its lock', () => {
+  const handle = openAppDatabase({ dbPath: ':memory:' })
+  seed(handle.db)
+  const store = new BetBatchStore(handle.db, { fencingToken: 1 })
+  const batch = store.createBatch(batchInput('signal-a', 100))
+  const [child] = store.reserveRound(batch.batchId, [allocation('account-a', 40)])
+  store.prepareSubmit(child.childOrderId, { submitAttemptId: 'rejected-submit', at: NOW })
+  store.markDispatched(child.childOrderId, { at: NOW })
+  store.resolveChildOrder(child.childOrderId, { status: 'rejected', at: NOW, hasFutureCapacity: true })
+
+  assert.throws(
+    () => store.reserveRound(batch.batchId, [allocation('account-a', 40)]),
+    /account-already-used:account-a/,
+  )
+  assert.equal(handle.db.prepare('SELECT COUNT(*) AS count FROM bet_child_orders WHERE batch_id = ?').get(batch.batchId).count, 1)
+  assert.deepEqual({ ...handle.db.prepare(`SELECT batch_id,account_id,child_order_id
+    FROM bet_batch_account_usage WHERE batch_id=?`).get(batch.batchId) }, {
+    batch_id: batch.batchId, account_id: 'account-a', child_order_id: child.childOrderId,
+  })
   handle.close()
 })
 

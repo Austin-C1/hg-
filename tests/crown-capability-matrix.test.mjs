@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
+import { pathToFileURL } from 'node:url'
 
 import {
   CROWN_CAPABILITY_MATRIX_VERSION,
@@ -16,6 +17,7 @@ import {
   fingerprintCrownProtocolArtifact,
   getCrownCapability,
   listCrownCapabilities,
+  validateCrownExecutionEvidence,
   verifyCrownCapabilityMatrix,
 } from '../src/crown/betting/crown-capability-matrix.mjs'
 import { buildStrictCrownPreviewFields, buildStrictCrownPreviewWireFields } from '../src/crown/betting/crown-order-field-mapper.mjs'
@@ -23,12 +25,243 @@ import { parseCrownPreviewResponseStrict } from '../src/crown/betting/crown-bet-
 import { buildCrownProtocolArtifact, summarizeCrownProtocol } from '../scripts/crown-betting-protocol-analyze.mjs'
 
 const FIXTURES_ROOT = path.resolve('data/fixtures/crown/betting-protocol')
+const EVIDENCE_CAPABILITY = Object.freeze({
+  mode: 'live',
+  period: 'full_time',
+  marketType: 'asian_handicap',
+  lineVariant: 'main',
+})
+const EXECUTION_RECORD_BINDING_FIELDS = Object.freeze([
+  'sequence', 'capturedAt', 'captureId', 'accountBinding', 'sessionBinding', 'executionIdentityDigest',
+  'operation', 'truncated', 'inferredFromLaterState', 'stakeLimits', 'stake', 'outcome', 'orderCreated',
+  'persistentOrderIdDigest', 'rejectionCode',
+])
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex')
 }
 
-test('matrix has two evidence-bound preview rows and keeps submit and reconciliation closed', () => {
+function evidenceDigest(character) {
+  return `sha256:${character.repeat(64)}`
+}
+
+function completeExecutionEvidence(capability = EVIDENCE_CAPABILITY) {
+  const capture = {
+    id: 'capture-20260713-120000',
+    source: 'production-capture',
+    synthetic: false,
+    truncated: false,
+    inferredFromLaterState: false,
+    accountBinding: evidenceDigest('a'),
+    sessionBinding: evidenceDigest('b'),
+  }
+  const record = (sequence, executionIdentityDigest) => ({
+    sequence,
+    capturedAt: new Date(Date.UTC(2026, 6, 13, 4, 0, sequence)).toISOString(),
+    recordEvidenceId: evidenceDigest(String(sequence)),
+    captureId: capture.id,
+    accountBinding: capture.accountBinding,
+    sessionBinding: capture.sessionBinding,
+    executionIdentityDigest,
+  })
+  const attempt = ({ outcome, startSequence, amountMinor, identityCharacter }) => {
+    const executionIdentityDigest = evidenceDigest(identityCharacter)
+    const money = {
+      currency: 'CNY',
+      amountMinor,
+      serverMinMinor: 50,
+      serverMaxMinor: 500,
+      localStakeQuantumMinor: 50,
+      localStakeQuantumProvenance: 'local-conservative-policy',
+      sources: {
+        currency: { stage: 'account-summary', field: 'currency' },
+        amountMinor: { stage: 'submit-request', field: 'gold' },
+        serverMinMinor: { stage: 'preview-response', field: 'gold_gmin' },
+        serverMaxMinor: { stage: 'preview-response', field: 'gold_gmax' },
+        localStakeQuantumMinor: { stage: 'local-policy', field: 'local-conservative-policy' },
+      },
+    }
+    return {
+      outcome,
+      capability: { ...capability },
+      executionIdentityDigest,
+      money,
+      preview: {
+        request: { ...record(startSequence, executionIdentityDigest), operation: 'FT_order_view' },
+        response: {
+          ...record(startSequence + 1, executionIdentityDigest),
+          operation: 'FT_order_view',
+          truncated: false,
+          inferredFromLaterState: false,
+          stakeLimits: {
+            minMinor: money.serverMinMinor,
+            maxMinor: money.serverMaxMinor,
+          },
+        },
+      },
+      submit: {
+        request: {
+          ...record(startSequence + 2, executionIdentityDigest),
+          operation: 'FT_bet',
+          stake: { currency: money.currency, amountMinor: money.amountMinor },
+        },
+        response: {
+          ...record(startSequence + 3, executionIdentityDigest),
+          operation: 'FT_bet',
+          truncated: false,
+          inferredFromLaterState: false,
+          outcome,
+          orderCreated: outcome === 'accepted',
+          ...(outcome === 'accepted'
+            ? { persistentOrderIdDigest: evidenceDigest('f') }
+            : { rejectionCode: 'stake-below-current-minimum' }),
+        },
+      },
+    }
+  }
+  return {
+    capability: { ...capability },
+    capture,
+    attempts: [
+      attempt({ outcome: 'accepted', startSequence: 1, amountMinor: 100, identityCharacter: 'c' }),
+      attempt({ outcome: 'rejected', startSequence: 5, amountMinor: 150, identityCharacter: 'd' }),
+    ],
+  }
+}
+
+function stableEvidenceValue(value) {
+  if (Array.isArray(value)) return value.map(stableEvidenceValue)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableEvidenceValue(value[key])]))
+  }
+  return value
+}
+
+function executionRecordBinding(record = {}) {
+  return Object.fromEntries(EXECUTION_RECORD_BINDING_FIELDS.map((field) => [field, record[field]]))
+}
+
+function signArtifactRecord(record) {
+  const structure = {
+    endpointKind: record.endpointKind,
+    method: record.method,
+    status: record.status,
+    recordType: record.recordType,
+    stage: record.stage,
+    blocked: record.blocked,
+    responseCode: record.responseCode,
+    request: record.request,
+    response: record.response,
+    execution: executionRecordBinding(record),
+  }
+  const structuralFingerprint = `sha256:${sha256(JSON.stringify(stableEvidenceValue(structure)))}`
+  const recordEvidenceId = `sha256:${sha256(JSON.stringify(stableEvidenceValue({
+    endpointKind: record.endpointKind,
+    method: record.method,
+    status: record.status,
+    structuralFingerprint,
+    occurrence: record.occurrence,
+  })))}`
+  return { ...record, structuralFingerprint, recordEvidenceId }
+}
+
+function executionEvidenceRecordEntries(evidence) {
+  return evidence.attempts.flatMap((attempt) => [
+    { evidence: attempt.preview.request, stage: 'preview', recordType: 'request' },
+    { evidence: attempt.preview.response, stage: 'preview', recordType: 'response' },
+    { evidence: attempt.submit.request, stage: 'submit', recordType: 'request' },
+    { evidence: attempt.submit.response, stage: 'submit', recordType: 'response' },
+  ])
+}
+
+function writeLinkedExecutionArtifact({ fixturesRoot, row, fixture }) {
+  const emptyFields = { fieldSet: [], fieldSetFingerprint: null }
+  const records = executionEvidenceRecordEntries(fixture).map((entry, index) => {
+    const fields = entry.recordType === 'request'
+      ? (entry.stage === 'preview' ? row.requestFieldSet : ['gold', 'p'])
+      : (entry.stage === 'preview'
+          ? row.responseFieldSet
+          : (entry.evidence.outcome === 'accepted' ? ['bet_id', 'code'] : ['code', 'error']))
+    const fieldEvidence = { fieldSet: [...fields].sort(), fieldSetFingerprint: fingerprintCrownFieldSet(fields) }
+    const record = signArtifactRecord({
+      occurrence: index + 1,
+      endpointKind: 'transform',
+      method: 'POST',
+      status: entry.recordType === 'response' ? 200 : null,
+      recordType: entry.recordType,
+      stage: entry.stage,
+      blocked: false,
+      responseCode: entry.recordType === 'response'
+        ? (entry.stage === 'preview' ? '501' : entry.evidence.outcome)
+        : null,
+      request: entry.recordType === 'request' ? fieldEvidence : emptyFields,
+      response: entry.recordType === 'response' ? fieldEvidence : emptyFields,
+      ...executionRecordBinding(entry.evidence),
+    })
+    entry.evidence.recordEvidenceId = record.recordEvidenceId
+    return record
+  })
+  const artifact = { schemaVersion: 2, captureId: fixture.capture.id, records }
+  artifact.artifactSafeDigest = fingerprintCrownProtocolArtifact(artifact)
+  row.artifactSafeDigest = artifact.artifactSafeDigest
+  fixture.artifactSafeDigest = artifact.artifactSafeDigest
+  row.requestRecordEvidenceId = records[0].recordEvidenceId
+  fixture.requestRecordEvidenceId = records[0].recordEvidenceId
+  row.responseRecordEvidenceId = records[1].recordEvidenceId
+  fixture.responseRecordEvidenceId = records[1].recordEvidenceId
+  fs.writeFileSync(path.join(fixturesRoot, row.artifactPath), `${JSON.stringify(artifact, null, 2)}\n`)
+}
+
+async function importEnabledRuntimeMatrix(fixtureState) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), `crown-runtime-authority-${fixtureState}-`))
+  const fixturesRoot = path.join(root, 'fixtures')
+  fs.mkdirSync(path.join(fixturesRoot, 'artifacts'), { recursive: true })
+  const rows = listCrownCapabilities()
+  for (const row of rows) {
+    fs.copyFileSync(path.join(FIXTURES_ROOT, row.fixturePath), path.join(fixturesRoot, row.fixturePath))
+    fs.copyFileSync(path.join(FIXTURES_ROOT, row.artifactPath), path.join(fixturesRoot, row.artifactPath))
+  }
+
+  const row = rows[0]
+  const originalProvenance = {
+    fixtureSha256: row.fixtureSha256,
+    artifactSafeDigest: row.artifactSafeDigest,
+    requestRecordEvidenceId: row.requestRecordEvidenceId,
+    responseRecordEvidenceId: row.responseRecordEvidenceId,
+  }
+  const fixtureFile = path.join(fixturesRoot, row.fixturePath)
+  const fixture = JSON.parse(fs.readFileSync(fixtureFile, 'utf8'))
+  fixture.previewAllowed = true
+  fixture.submitAllowed = true
+  if (fixtureState !== 'incomplete') {
+    Object.assign(fixture, completeExecutionEvidence(fixture.capability))
+    fixture.capture.id = fixture.captureId
+    for (const entry of executionEvidenceRecordEntries(fixture)) entry.evidence.captureId = fixture.captureId
+    writeLinkedExecutionArtifact({ fixturesRoot, row, fixture })
+  }
+  fs.writeFileSync(fixtureFile, `${JSON.stringify(fixture, null, 2)}\n`)
+  const pinnedSha256 = sha256(fs.readFileSync(fixtureFile))
+  if (fixtureState === 'hash-drift') fs.appendFileSync(fixtureFile, ' ')
+  if (fixtureState === 'missing') fs.rmSync(fixtureFile)
+
+  const sourceFile = path.resolve('src/crown/betting/crown-capability-matrix.mjs')
+  let source = fs.readFileSync(sourceFile, 'utf8')
+  source = source.replace(
+    /const DEFAULT_FIXTURES_ROOT = .*\r?\n/,
+    `const DEFAULT_FIXTURES_ROOT = ${JSON.stringify(fixturesRoot)}\n`,
+  )
+  source = source.replace('previewAllowed: false', 'previewAllowed: true')
+  source = source.replace('submitAllowed: false', 'submitAllowed: true')
+  source = source.replace(originalProvenance.fixtureSha256, pinnedSha256)
+  source = source.replace(originalProvenance.artifactSafeDigest, row.artifactSafeDigest)
+  source = source.replace(originalProvenance.requestRecordEvidenceId, row.requestRecordEvidenceId)
+  source = source.replace(originalProvenance.responseRecordEvidenceId, row.responseRecordEvidenceId)
+  const moduleFile = path.join(root, `crown-capability-matrix-${fixtureState}.mjs`)
+  fs.writeFileSync(moduleFile, source)
+  return import(`${pathToFileURL(moduleFile).href}?fixtureState=${fixtureState}`)
+}
+
+test('matrix enables only the accepted prematch full-time main asian-handicap row', () => {
   const rows = listCrownCapabilities()
 
   assert.match(CROWN_CAPABILITY_MATRIX_VERSION, /^crown-protocol-capabilities-v2:[a-f0-9]{16}$/)
@@ -36,16 +269,18 @@ test('matrix has two evidence-bound preview rows and keeps submit and reconcilia
   assert.deepEqual(rows.map((row) => row.key), [
     'live|first_half|total|main',
     'live|full_time|asian_handicap|main',
+    'prematch|full_time|asian_handicap|main',
   ])
 
   for (const row of rows) {
     assert.equal(row.key, capabilityKey(row))
     assert.equal(row.evidenceStatus, 'verified')
-    assert.equal(row.previewAllowed, false)
-    assert.equal(row.submitAllowed, false)
+    const enabled = row.key === 'prematch|full_time|asian_handicap|main'
+    assert.equal(row.previewAllowed, enabled)
+    assert.equal(row.submitAllowed, enabled)
     assert.equal(row.reconciliationAllowed, false)
-    assert.equal(row.blockedReason, 'crown-preview-field-source-unproven')
-    assert.equal(row.submitBlockedReason, 'crown-submit-evidence-missing')
+    assert.equal(row.blockedReason, enabled ? '' : 'crown-preview-field-source-unproven')
+    assert.equal(row.submitBlockedReason, enabled ? '' : 'crown-submit-evidence-missing')
     assert.match(row.evidenceId, /^crown-capture-/)
     assert.equal(path.isAbsolute(row.fixturePath), false)
     assert.equal(typeof row.mapperEvidence, 'object')
@@ -61,6 +296,117 @@ test('matrix has two evidence-bound preview rows and keeps submit and reconcilia
   }
 })
 
+test('legacy preview-only fixtures stay incomplete while the accepted candidate is enabled', () => {
+  assert.equal(typeof validateCrownExecutionEvidence, 'function')
+
+  for (const row of listCrownCapabilities()) {
+    const fixture = JSON.parse(fs.readFileSync(path.join(FIXTURES_ROOT, row.fixturePath), 'utf8'))
+    if (row.executionEvidenceSchema === 'crown-execution-evidence-candidate-v3') {
+      assert.equal(row.previewAllowed, true)
+      assert.equal(row.submitAllowed, true)
+      continue
+    }
+    const result = validateCrownExecutionEvidence(fixture)
+    assert.equal(result.status, 'evidenceIncomplete')
+    assert.equal(result.evidenceIncomplete, true)
+    assert.equal(result.previewEvidenceComplete, false)
+    assert.equal(result.submitEvidenceComplete, false)
+    assert.ok(result.errors.length > 0)
+    assert.equal(row.previewAllowed, false)
+    assert.equal(row.submitAllowed, false)
+  }
+})
+
+test('accepted-only structurally complete evidence is valid while canonical enablement stays exact', () => {
+  const result = validateCrownExecutionEvidence(completeExecutionEvidence())
+  assert.deepEqual(result, {
+    status: 'structureComplete',
+    evidenceIncomplete: false,
+    previewEvidenceComplete: true,
+    submitEvidenceComplete: true,
+    errors: [],
+  })
+
+  const matrix = verifyCrownCapabilityMatrix()
+  assert.deepEqual([matrix.allowedPreviewCount, matrix.allowedSubmitCount], [1, 1])
+  assert.deepEqual(listCrownCapabilities().filter((row) => row.previewAllowed || row.submitAllowed).map((row) => row.key), [
+    'prematch|full_time|asian_handicap|main',
+  ])
+})
+
+test('synthetic, inferred, truncated, or partial execution records stay evidenceIncomplete', () => {
+  const cases = [
+    ['synthetic capture', (value) => { value.capture.synthetic = true }, 'synthetic-evidence'],
+    ['later state capture', (value) => { value.capture.inferredFromLaterState = true }, 'later-state-inference'],
+    ['truncated preview response', (value) => { value.attempts[0].preview.response.truncated = true }, 'response-truncated'],
+    ['later state submit response', (value) => { value.attempts[0].submit.response.inferredFromLaterState = true }, 'response-inferred-from-later-state'],
+    ['missing submit request', (value) => { delete value.attempts[0].submit.request }, 'preview-submit-records-required'],
+    ['missing record provenance', (value) => { delete value.attempts[0].submit.request.recordEvidenceId }, 'record-provenance-required'],
+    ['invalid persistent order id', (value) => { value.attempts[0].submit.response.persistentOrderIdDigest = 'redacted' }, 'accepted-order-id-required'],
+  ]
+
+  for (const [label, mutate, expectedError] of cases) {
+    const evidence = completeExecutionEvidence()
+    mutate(evidence)
+    const result = validateCrownExecutionEvidence(evidence)
+    assert.equal(result.status, 'evidenceIncomplete', label)
+    assert.equal(result.previewEvidenceComplete, false, label)
+    assert.equal(result.submitEvidenceComplete, false, label)
+    assert.ok(result.errors.includes(expectedError), `${label}: ${result.errors.join(', ')}`)
+  }
+})
+
+test('capture, account, session, identity, and timeline drift stay evidenceIncomplete', () => {
+  const cases = [
+    ['capability drift', (value) => { value.attempts[1].capability.marketType = 'total' }, 'capability-drift'],
+    ['capture drift', (value) => { value.attempts[0].submit.request.captureId = 'other-capture' }, 'capture-binding-drift'],
+    ['account drift', (value) => { value.attempts[0].preview.response.accountBinding = evidenceDigest('e') }, 'account-binding-drift'],
+    ['session drift', (value) => { value.attempts[1].submit.response.sessionBinding = evidenceDigest('e') }, 'session-binding-drift'],
+    ['identity drift', (value) => { value.attempts[0].submit.request.executionIdentityDigest = evidenceDigest('e') }, 'execution-identity-drift'],
+    ['sequence drift', (value) => { value.attempts[0].submit.request.sequence = 2 }, 'timeline-order'],
+    ['timestamp drift', (value) => { value.attempts[1].preview.request.capturedAt = '2026-07-13T04:00:01.000Z' }, 'timeline-order'],
+    ['preview operation drift', (value) => { value.attempts[0].preview.request.operation = 'FT_bet' }, 'preview-operation'],
+    ['submit operation drift', (value) => { value.attempts[0].submit.request.operation = 'FT_order_view' }, 'submit-operation'],
+  ]
+
+  for (const [label, mutate, expectedError] of cases) {
+    const evidence = completeExecutionEvidence()
+    mutate(evidence)
+    const result = validateCrownExecutionEvidence(evidence)
+    assert.equal(result.status, 'evidenceIncomplete', label)
+    assert.ok(result.errors.includes(expectedError), `${label}: ${result.errors.join(', ')}`)
+  }
+})
+
+test('execution evidence must match the capability row being considered', () => {
+  const result = validateCrownExecutionEvidence(completeExecutionEvidence(), {
+    expectedCapability: { ...EVIDENCE_CAPABILITY, period: 'first_half' },
+  })
+  assert.equal(result.status, 'evidenceIncomplete')
+  assert.ok(result.errors.includes('capability-mismatch'))
+})
+
+test('CNY integer stake, server bounds, local quantum, and exact field sources cannot drift', () => {
+  const cases = [
+    ['currency', (value) => { value.attempts[0].money.currency = 'USD' }, 'cny-money-required'],
+    ['integer amount', (value) => { value.attempts[0].money.amountMinor = 100.5 }, 'integer-money-required'],
+    ['submit amount drift', (value) => { value.attempts[0].submit.request.stake.amountMinor = 150 }, 'money-drift'],
+    ['preview minimum drift', (value) => { value.attempts[0].preview.response.stakeLimits.minMinor = 100 }, 'money-drift'],
+    ['outside server range', (value) => { value.attempts[0].money.amountMinor = 550; value.attempts[0].submit.request.stake.amountMinor = 550 }, 'money-range'],
+    ['off local quantum', (value) => { value.attempts[0].money.amountMinor = 125; value.attempts[0].submit.request.stake.amountMinor = 125 }, 'money-step'],
+    ['missing quantum source', (value) => { delete value.attempts[0].money.sources.localStakeQuantumMinor }, 'money-source-required'],
+    ['wrong minimum source', (value) => { value.attempts[0].money.sources.serverMinMinor.stage = 'later-order-history' }, 'money-source-required'],
+  ]
+
+  for (const [label, mutate, expectedError] of cases) {
+    const evidence = completeExecutionEvidence()
+    mutate(evidence)
+    const result = validateCrownExecutionEvidence(evidence)
+    assert.equal(result.status, 'evidenceIncomplete', label)
+    assert.ok(result.errors.includes(expectedError), `${label}: ${result.errors.join(', ')}`)
+  }
+})
+
 test('provenance-evidenced row still blocks preview when a wire value source is unproven', () => {
   const candidate = getCrownCapability({
     mode: 'live', period: 'full_time', marketType: 'asian_handicap', lineVariant: 'main',
@@ -71,7 +417,6 @@ test('provenance-evidenced row still blocks preview when a wire value source is 
   assert.throws(() => assertCrownCapability(candidate, { operation: 'reconciliation' }), /crown-capability-reconciliation-blocked/)
 
   for (const input of [
-    { mode: 'prematch', period: 'full_time', marketType: 'asian_handicap', lineVariant: 'main' },
     { mode: 'live', period: 'full_time', marketType: 'asian_handicap', lineVariant: 'alternate_a' },
     { mode: 'live', period: 'first_half', marketType: 'asian_handicap', lineVariant: 'main' },
     { mode: 'live', period: 'full_time', marketType: 'total', lineVariant: 'main' },
@@ -80,6 +425,12 @@ test('provenance-evidenced row still blocks preview when a wire value source is 
     assert.equal(getCrownCapability(input), null)
     assert.throws(() => assertCrownCapability(input, { operation: 'preview' }), /crown-capability-blocked/)
   }
+  const enabled = getCrownCapability({
+    mode: 'prematch', period: 'full_time', marketType: 'asian_handicap', lineVariant: 'main',
+  })
+  assert.equal(assertCrownCapability(enabled, { operation: 'preview' }).key, enabled.key)
+  assert.equal(assertCrownCapability(enabled, { operation: 'submit' }).key, enabled.key)
+  assert.throws(() => assertCrownCapability(enabled, { operation: 'reconciliation' }), /reconciliation-blocked/)
 })
 
 test('public assertions reject forged row metadata and always trust the canonical matrix', () => {
@@ -106,10 +457,10 @@ test('matrix verifies fixture hashes, evidence metadata, and field-set fingerpri
   assert.deepEqual(result, {
     ok: true,
     matrixVersion: CROWN_CAPABILITY_MATRIX_VERSION,
-    rowCount: 2,
+    rowCount: 3,
     provisionalCount: 0,
-    allowedPreviewCount: 0,
-    allowedSubmitCount: 0,
+    allowedPreviewCount: 1,
+    allowedSubmitCount: 1,
     allowedReconciliationCount: 0,
     errors: [],
   })
@@ -130,12 +481,88 @@ test('matrix verifies fixture hashes, evidence metadata, and field-set fingerpri
     assert.deepEqual(fixture.responseFieldSet, row.responseFieldSet)
     assert.equal(fixture.requestFieldSetFingerprint, row.requestFieldSetFingerprint)
     assert.equal(fixture.responseFieldSetFingerprint, row.responseFieldSetFingerprint)
-    assert.match(fixture.requestRecordEvidenceId, /^sha256:[a-f0-9]{64}$/)
-    assert.match(fixture.responseRecordEvidenceId, /^sha256:[a-f0-9]{64}$/)
+    assert.match(fixture.requestRecordEvidenceId, /^(?:sha256|hmac-sha256):[a-f0-9]{64}$/)
+    assert.match(fixture.responseRecordEvidenceId, /^(?:sha256|hmac-sha256):[a-f0-9]{64}$/)
     assert.match(fixture.artifactSafeDigest, /^sha256:[a-f0-9]{64}$/)
     assert.equal(typeof fixture.artifactPath, 'string')
   }
 })
+
+test('matrix authority requires complete execution evidence before any row can enable preview or submit', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-capability-execution-gate-'))
+  fs.mkdirSync(path.join(tempRoot, 'artifacts'))
+  const rows = listCrownCapabilities()
+  for (const row of rows) {
+    fs.copyFileSync(path.join(FIXTURES_ROOT, row.fixturePath), path.join(tempRoot, row.fixturePath))
+    fs.copyFileSync(path.join(FIXTURES_ROOT, row.artifactPath), path.join(tempRoot, row.artifactPath))
+    if (row.watcherEvidencePath) {
+      fs.copyFileSync(path.join(FIXTURES_ROOT, row.watcherEvidencePath), path.join(tempRoot, row.watcherEvidencePath))
+    }
+  }
+
+  const row = rows[0]
+  const fixtureFile = path.join(tempRoot, row.fixturePath)
+  const fixture = JSON.parse(fs.readFileSync(fixtureFile, 'utf8'))
+  row.previewAllowed = true
+  row.submitAllowed = true
+  fixture.previewAllowed = true
+  fixture.submitAllowed = true
+  fs.writeFileSync(fixtureFile, `${JSON.stringify(fixture, null, 2)}\n`)
+  row.fixtureSha256 = sha256(fs.readFileSync(fixtureFile))
+
+  const incomplete = verifyCrownCapabilityMatrix({ fixturesRoot: tempRoot, rows })
+  assert.equal(incomplete.ok, false)
+  assert.match(incomplete.errors.join('\n'), /execution-evidence-incomplete/)
+
+  Object.assign(fixture, completeExecutionEvidence(fixture.capability))
+  fs.writeFileSync(fixtureFile, `${JSON.stringify(fixture, null, 2)}\n`)
+  row.fixtureSha256 = sha256(fs.readFileSync(fixtureFile))
+  const mismatchedCapture = verifyCrownCapabilityMatrix({ fixturesRoot: tempRoot, rows })
+  assert.equal(mismatchedCapture.ok, false)
+  assert.match(mismatchedCapture.errors.join('\n'), /execution-capture-id/)
+
+  fixture.capture.id = fixture.captureId
+  for (const attempt of fixture.attempts) {
+    for (const record of [attempt.preview.request, attempt.preview.response, attempt.submit.request, attempt.submit.response]) {
+      record.captureId = fixture.captureId
+    }
+  }
+  fs.writeFileSync(fixtureFile, `${JSON.stringify(fixture, null, 2)}\n`)
+  row.fixtureSha256 = sha256(fs.readFileSync(fixtureFile))
+  const previewOnlyArtifact = verifyCrownCapabilityMatrix({ fixturesRoot: tempRoot, rows })
+  assert.equal(previewOnlyArtifact.ok, false)
+  assert.match(previewOnlyArtifact.errors.join('\n'), /execution-artifact-record/)
+
+  writeLinkedExecutionArtifact({ fixturesRoot: tempRoot, row, fixture })
+  fs.writeFileSync(fixtureFile, `${JSON.stringify(fixture, null, 2)}\n`)
+  row.fixtureSha256 = sha256(fs.readFileSync(fixtureFile))
+  const linkedArtifact = verifyCrownCapabilityMatrix({ fixturesRoot: tempRoot, rows })
+  assert.equal(linkedArtifact.ok, true, linkedArtifact.errors.join('\n'))
+  assert.deepEqual([linkedArtifact.allowedPreviewCount, linkedArtifact.allowedSubmitCount], [2, 2])
+
+  assert.deepEqual(listCrownCapabilities().filter((candidate) => candidate.previewAllowed || candidate.submitAllowed)
+    .map((candidate) => candidate.key), ['prematch|full_time|asian_handicap|main'])
+})
+
+for (const fixtureState of ['incomplete', 'hash-drift', 'missing']) {
+  test(`runtime authority fails closed for an enabled canonical row with ${fixtureState} fixture evidence`, async () => {
+    const runtimeMatrix = await importEnabledRuntimeMatrix(fixtureState)
+    const capability = { mode: 'live', period: 'first_half', marketType: 'total', lineVariant: 'main' }
+    const verification = runtimeMatrix.verifyCrownCapabilityMatrix()
+    assert.equal(verification.ok, false)
+    assert.match(verification.errors.join('\n'), {
+      incomplete: /execution-evidence-incomplete/,
+      'hash-drift': /fixture-sha256/,
+      missing: /fixture-missing/,
+    }[fixtureState])
+    assert.throws(() => runtimeMatrix.listCrownCapabilities(), /crown-capability-matrix-unverified/)
+    assert.throws(() => runtimeMatrix.getCrownCapability(capability), /crown-capability-matrix-unverified/)
+    assert.throws(
+      () => runtimeMatrix.assertCrownCapability(capability, { operation: 'preview' }),
+      /crown-capability-matrix-unverified/,
+    )
+  })
+}
 
 test('fixture byte drift and field-set drift invalidate verification', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-capability-fixtures-'))
@@ -168,6 +595,9 @@ test('artifact provenance drift invalidates an otherwise unchanged fixture', () 
   for (const candidate of listCrownCapabilities()) {
     fs.copyFileSync(path.join(FIXTURES_ROOT, candidate.fixturePath), path.join(tempRoot, candidate.fixturePath))
     fs.copyFileSync(path.join(FIXTURES_ROOT, candidate.artifactPath), path.join(tempRoot, candidate.artifactPath))
+    if (candidate.watcherEvidencePath) {
+      fs.copyFileSync(path.join(FIXTURES_ROOT, candidate.watcherEvidencePath), path.join(tempRoot, candidate.watcherEvidencePath))
+    }
   }
   const row = listCrownCapabilities()[0]
   const fixture = JSON.parse(fs.readFileSync(path.join(tempRoot, row.fixturePath), 'utf8'))
@@ -189,6 +619,11 @@ test('matrix digest accepts a matching embedded artifact digest and rejects a fo
     const source = path.join(FIXTURES_ROOT, candidate.artifactPath)
     const target = path.join(tempRoot, candidate.artifactPath)
     const artifact = JSON.parse(fs.readFileSync(source, 'utf8'))
+    if (candidate.executionEvidenceSchema === 'crown-execution-evidence-candidate-v3') {
+      fs.writeFileSync(target, `${JSON.stringify(artifact, null, 2)}\n`)
+      fs.copyFileSync(path.join(FIXTURES_ROOT, candidate.watcherEvidencePath), path.join(tempRoot, candidate.watcherEvidencePath))
+      continue
+    }
     artifact.artifactSafeDigest = fingerprintCrownProtocolArtifact(artifact)
     fs.writeFileSync(target, `${JSON.stringify(artifact, null, 2)}\n`)
   }
@@ -202,6 +637,44 @@ test('matrix digest accepts a matching embedded artifact digest and rejects a fo
   const result = verifyCrownCapabilityMatrix({ fixturesRoot: tempRoot })
   assert.equal(result.ok, false)
   assert.match(result.errors.join('\n'), /artifact-embedded-digest/)
+})
+
+test('matrix rejects re-digested Submit wire and chronology tampering', async (t) => {
+  for (const [name, mutate, expected] of [
+    ['wire', (candidate) => { candidate.submitWireEvidence.con = '2' }, /execution-submit-wire/],
+    ['chronology', (candidate) => { candidate.chronology.watcherCapturedAt = '2026-07-13T23:58:55.980Z' }, /execution-chronology/],
+  ]) {
+    await t.test(name, () => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `crown-capability-${name}-`))
+      fs.mkdirSync(path.join(tempRoot, 'artifacts'))
+      const rows = listCrownCapabilities()
+      for (const candidate of rows) {
+        fs.copyFileSync(path.join(FIXTURES_ROOT, candidate.fixturePath), path.join(tempRoot, candidate.fixturePath))
+        fs.copyFileSync(path.join(FIXTURES_ROOT, candidate.artifactPath), path.join(tempRoot, candidate.artifactPath))
+        if (candidate.watcherEvidencePath) {
+          fs.copyFileSync(path.join(FIXTURES_ROOT, candidate.watcherEvidencePath), path.join(tempRoot, candidate.watcherEvidencePath))
+        }
+      }
+      const row = rows.find((candidate) => candidate.submitAllowed)
+      const fixtureFile = path.join(tempRoot, row.fixturePath)
+      const fixture = JSON.parse(fs.readFileSync(fixtureFile, 'utf8'))
+      const artifactFile = path.join(tempRoot, row.artifactPath)
+      const artifact = JSON.parse(fs.readFileSync(artifactFile, 'utf8'))
+      mutate(artifact)
+      const { candidateDigest: _oldDigest, ...content } = artifact
+      artifact.candidateDigest = `sha256:${sha256(JSON.stringify(stableEvidenceValue(content)))}`
+      row.artifactSafeDigest = artifact.candidateDigest
+      fixture.executionCandidateDigest = artifact.candidateDigest
+      fixture.artifactSafeDigest = artifact.candidateDigest
+      fs.writeFileSync(artifactFile, `${JSON.stringify(artifact, null, 2)}\n`)
+      fs.writeFileSync(fixtureFile, `${JSON.stringify(fixture, null, 2)}\n`)
+      row.fixtureSha256 = sha256(fs.readFileSync(fixtureFile))
+
+      const result = verifyCrownCapabilityMatrix({ fixturesRoot: tempRoot, rows })
+      assert.equal(result.ok, false)
+      assert.match(result.errors.join('\n'), expected)
+    })
+  }
 })
 
 test('missing fixture field-set metadata is reported as verification failure', () => {
@@ -248,6 +721,11 @@ test('each verified fixture drives its exact mapper fields and parser output', (
       market: { marketType: 'total', period: 'first_half', lineVariant: 'main', lineKey: 'total:1h:main', ratioField: 'RATIO_HROUO', handicapRaw: '4 / 4.5' },
       selection: { side: 'under', oddsField: 'IOR_HROUH' },
     },
+    'prematch|full_time|asian_handicap|main': {
+      mode: 'prematch', event: { ids: { gid: 'fixture-prematch-ah' } },
+      market: { marketType: 'asian_handicap', period: 'full_time', lineVariant: 'main', lineKey: 'RATIO_R', ratioField: 'RATIO_R', handicapRaw: '0.5 / 1' },
+      selection: { side: 'home', oddsField: 'IOR_RH' },
+    },
   }
 
   for (const row of listCrownCapabilities()) {
@@ -262,6 +740,10 @@ test('each verified fixture drives its exact mapper fields and parser output', (
     assert.deepEqual(Object.keys(wire).sort(), fixture.requestFieldSet)
     assert.equal(mapped.capabilityEvidenceId, fixture.evidenceId)
 
+    if (!fixture.redactedResponseBody) {
+      assert.equal(fixture.executionEvidenceSchema, 'crown-execution-evidence-candidate-v3')
+      continue
+    }
     const parsed = parseCrownPreviewResponseStrict(fixture.redactedResponseBody)
     assert.deepEqual(parsed.responseFieldSet, fixture.responseFieldSet)
     assert.equal(parsed.responseFieldSetFingerprint, fixture.responseFieldSetFingerprint)
@@ -289,10 +771,10 @@ test('wire mapping rejects capability defaults and parser rejects response field
   ), /duplicate-preview-(?:response-field|field:code)/)
   assert.throws(() => parseCrownPreviewResponseStrict(
     fixture.redactedResponseBody.replace('</serverresponse>', '<con>duplicate</con></serverresponse>'),
-  ), /duplicate-preview-response-field/)
+  ), /duplicate-preview-(?:response-field|field:con)/)
 })
 
-test('safe analyzer links event line side and stake irreversibly while capability stays 0/0/0', () => {
+test('safe analyzer links event line side and stake irreversibly without broadening the 1/1/0 matrix', () => {
   const records = summarizeCrownProtocol([{
     seq: 1, type: 'request', method: 'POST', url: '/transform.php', classification: { stage: 'preview' },
     postData: { p: 'FT_order_view', gid: 'event-secret', gtype: 'FT', wtype: 'RE', chose_team: 'H', langx: 'zh-cn', odd_f_type: 'H', ver: 'v1', uid: 'secret' },
@@ -357,7 +839,7 @@ test('safe analyzer links event line side and stake irreversibly while capabilit
   const matrix = verifyCrownCapabilityMatrix()
   assert.deepEqual([
     matrix.allowedPreviewCount, matrix.allowedSubmitCount, matrix.allowedReconciliationCount,
-  ], [0, 0, 0])
+  ], [1, 1, 0])
 })
 
 test('sanitized fixtures contain no credential, session, ticket, or absolute-path material', () => {
@@ -415,7 +897,7 @@ test('analyzer evidence hashes only sanitized structure and drops generic secret
 })
 
 test('analyzer field set matches strict parser for nested opening tags', () => {
-  const xml = '<serverresponse><code>501</code><gold_gmin>10</gold_gmin><gold_gmax>500</gold_gmax><ioratio>0.75</ioratio><spread>0 / 0.5</spread><strong>H</strong><extra><leaf>x</leaf></extra></serverresponse>'
+  const xml = '<serverresponse><code>501</code><gold_gmin>10</gold_gmin><gold_gmax>500</gold_gmax><ioratio>0.75</ioratio><spread>0 / 0.5</spread><strong>H</strong><con>1</con><ratio>50</ratio><extra><leaf>x</leaf></extra></serverresponse>'
   const analyzed = summarizeCrownProtocol([{
     type: 'response', method: 'POST', url: '/transform.php', status: 200,
     classification: { stage: 'preview' }, responseBody: xml,

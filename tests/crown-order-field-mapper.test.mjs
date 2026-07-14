@@ -159,7 +159,8 @@ test('strict mapper constructs only evidenced FT_order_view fields and preserves
     mode: 'live',
     period: 'full_time',
     market: 'asian_handicap',
-    line: 'ah:ft:-0.25',
+    lineVariant: 'main',
+    line: '-0 / 0.5',
     side: 'home',
   })
   assert.equal(fields.capabilityEvidenceId, 'fixture:live-full-time-asian-handicap-main:v1')
@@ -182,12 +183,12 @@ test('strict mapper requires explicit verified preview capability evidence', () 
   )
 })
 
-test('strict mapper rejects prematch, alternate, and capability mismatches', () => {
+test('strict mapper rejects unsupported prematch evidence, alternate, and capability mismatches', () => {
   assert.throws(
     () => buildStrictCrownPreviewFields(liveRecord({ mode: 'prematch' }), {
       capability: liveCapability({ mode: 'prematch' }),
     }),
-    /unsupported-crown-preview-mode/,
+    /crown-preview-capability-mismatch:wtype/,
   )
   assert.throws(
     () => buildStrictCrownPreviewFields(liveRecord({

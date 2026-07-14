@@ -316,8 +316,8 @@ async function completedFixture(t, label) {
     now: clock.date,
     script: [
       { operation: 'preview', result: previewResult({ max: 60 }) },
-      { operation: 'preview', result: previewResult({ max: 60 }) },
       { operation: 'submit', result: { status: 'accepted' } },
+      { operation: 'preview', result: previewResult({ max: 60 }) },
       { operation: 'submit', result: { status: 'accepted' } },
     ],
   })
@@ -332,10 +332,10 @@ async function completedFixture(t, label) {
     assert.equal(provider.calls.length, callsAfterFirstRun)
     assert.deepEqual(ledgerSnapshot(handle.db), snapshotAfterFirstRun)
     assert.equal(provider.networkCallCount, 0)
-    assert.deepEqual(provider.calls.map((call) => call.operation), ['preview', 'preview', 'submit', 'submit'])
+    assert.deepEqual(provider.calls.map((call) => call.operation), ['preview', 'submit', 'preview', 'submit'])
     assert.equal(provider.calls.some((call) => call.operation === 'FT_bet'), false)
-    assert.equal(provider.maximum.preview, 2)
-    assert.equal(provider.maximum.submit, 2)
+    assert.equal(provider.maximum.preview, 1)
+    assert.equal(provider.maximum.submit, 1)
     assertMoneyInvariants(handle.db)
     const batch = handle.db.prepare('SELECT * FROM bet_batches').get()
     assert.equal(batch.batch_id, deterministicBatchId(input.signalId, RULE_ID))
@@ -349,7 +349,7 @@ async function completedFixture(t, label) {
   }
 }
 
-test('two fresh databases produce identical deterministic ledgers, replay stably, and submit different accounts concurrently', async (t) => {
+test('two fresh databases produce identical deterministic ledgers, replay stably, and submit different accounts sequentially', async (t) => {
   const first = await completedFixture(t, 'deterministic-a')
   const second = await completedFixture(t, 'deterministic-b')
   assert.deepEqual(second, first)
@@ -358,7 +358,7 @@ test('two fresh databases produce identical deterministic ledgers, replay stably
   assert.equal(new Set(first.children.map((child) => child.child_order_id)).size, 2)
 })
 
-test('one account is reused only serially across deterministic attempts', async (t) => {
+test('one account is used at most once per batch and leaves the remainder unfilled', async (t) => {
   const dbPath = temporaryDatabase(t, 'single-account')
   const handle = openAppDatabase({ dbPath })
   const input = signal({ signalId: 'b'.repeat(64), gid: 'single-account' })
@@ -373,8 +373,6 @@ test('one account is reused only serially across deterministic attempts', async 
     script: [
       { operation: 'preview', result: previewResult({ max: 60 }) },
       { operation: 'submit', result: { status: 'accepted' } },
-      { operation: 'preview', result: previewResult({ max: 60 }) },
-      { operation: 'submit', result: { status: 'accepted' } },
     ],
   })
   const context = executor(handle, { ownerId: 'single-owner', clock, provider })
@@ -387,8 +385,13 @@ test('one account is reused only serially across deterministic attempts', async 
     `).all())
     assert.deepEqual(children, [
       { account_id: 'account-only', attempt: 1, requested_amount_minor: 60, status: 'accepted' },
-      { account_id: 'account-only', attempt: 2, requested_amount_minor: 60, status: 'accepted' },
     ])
+    const batch = handle.db.prepare('SELECT * FROM bet_batches').get()
+    assert.equal(batch.status, 'partial')
+    assert.equal(batch.finish_reason, 'partial_fulfillment')
+    assert.equal(batch.accepted_amount_minor, 60)
+    assert.equal(batch.unfilled_amount_minor, 60)
+    assert.deepEqual(provider.calls.map((call) => call.operation), ['preview', 'submit'])
     assert.equal(provider.maximumByAccount.get('account-only').submit, 1)
     assert.equal(provider.networkCallCount, 0)
     assert.equal(provider.calls.some((call) => call.operation === 'FT_bet'), false)
@@ -531,7 +534,8 @@ async function partialFixture(t, label) {
   try {
     await processLegacySignals(context, input)
     let batch = handle.db.prepare('SELECT * FROM bet_batches').get()
-    assert.equal(batch.status, 'waiting_capacity')
+    assert.equal(batch.status, 'partial')
+    assert.equal(batch.finish_reason, 'partial_fulfillment')
     assert.equal(batch.accepted_amount_minor, 50)
     assert.equal(batch.unfilled_amount_minor, 50)
     assert.equal(provider.calls.length, 2)
@@ -540,7 +544,7 @@ async function partialFixture(t, label) {
     await context.worker.runOnce()
     batch = handle.db.prepare('SELECT * FROM bet_batches').get()
     assert.equal(batch.status, 'partial')
-    assert.equal(batch.finish_reason, 'expired')
+    assert.equal(batch.finish_reason, 'partial_fulfillment')
     assert.equal(batch.accepted_amount_minor, 50)
     assert.equal(batch.unknown_amount_minor, 0)
     assert.equal(batch.unfilled_amount_minor, 50)
@@ -555,12 +559,12 @@ async function partialFixture(t, label) {
   }
 }
 
-test('accepted money becomes a deterministic partial result after expiry without another submit', async (t) => {
+test('accepted money becomes a deterministic partial result after the only account is used and expiry never resubmits', async (t) => {
   const first = await partialFixture(t, 'partial-a')
   const second = await partialFixture(t, 'partial-b')
   assert.deepEqual(second, first)
   assert.equal(first.batches[0].status, 'partial')
-  assert.equal(first.batches[0].finish_reason, 'expired')
+  assert.equal(first.batches[0].finish_reason, 'partial_fulfillment')
   assert.equal(first.children.length, 1)
   assert.equal(first.children[0].status, 'accepted')
 })

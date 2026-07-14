@@ -12,9 +12,9 @@ describe('AppLayout mobile accessibility', () => {
     expect(screen.getByRole('button', { name: '打开导航菜单' })).toBeInTheDocument()
   })
 
-  test('keeps system update reachable in the mobile drawer', async () => {
+  test('does not expose the retired system update page in the mobile drawer', () => {
     render(<MemoryRouter><Routes><Route element={<AppLayout />}><Route index element={<div>content</div>} /></Route></Routes></MemoryRouter>)
     fireEvent.click(screen.getByRole('button', { name: '打开导航菜单' }))
-    expect((await screen.findAllByText('系统更新')).length).toBeGreaterThan(1)
+    expect(screen.queryByText('系统更新')).not.toBeInTheDocument()
   })
 })

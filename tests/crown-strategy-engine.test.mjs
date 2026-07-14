@@ -591,6 +591,28 @@ test('matched decision contains complete Signal evidence and preserves explicit 
   assert.equal(decision.dataQuality.complete, true)
 })
 
+test('live odds change without handicapRaw stays a monitor fact and produces no Signal', () => {
+  const change = liveChange({ market: { handicapRaw: null, handicap: null } })
+  const rule = liveRule()
+
+  const decision = evaluateOddsDelta(change, {
+    rule,
+    defaultLeagues: DEFAULT_LEAGUES_CONFIG,
+  })
+
+  assert.equal(decision.matched, false)
+  assert.equal(decision.skipReason, 'data_incomplete:handicap_raw_missing')
+  assert.deepEqual(decision.dataQuality.missing, ['market.handicapRaw'])
+  assert.equal(change.market.handicapRaw, null)
+  assert.equal(change.changeId, 'a'.repeat(64))
+
+  const registry = new StrategyRegistry().register('odds_delta', evaluateOddsDelta)
+  assert.deepEqual(registry.evaluate(change, {
+    rules: [rule],
+    defaultLeagues: DEFAULT_LEAGUES_CONFIG,
+  }), [])
+})
+
 function assertDataQuality(complete) {
   return {
     complete,

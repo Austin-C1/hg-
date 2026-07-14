@@ -193,4 +193,29 @@ describe('OperationsConsole', () => {
     expect(screen.getByRole('button', { name: '停止监控' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '开启真实投注' })).toBeInTheDocument()
   })
+
+  test('shows Watcher bounded recovery state and last exit reason', async () => {
+    vi.mocked(api.getOperationsSummary).mockResolvedValueOnce({ item: {
+      ...summary,
+      watcher: {
+        ...summary.watcher,
+        process: {
+          desiredRunning: true,
+          processState: 'waiting-restart',
+          restartAttempt: 2,
+          nextRestartAt: '2026-07-11T12:00:05.000Z',
+          lastExit: {
+            exitCode: 1,
+            signal: null,
+            exitedAt: '2026-07-11T12:00:00.000Z',
+            stderrSummary: 'watcher transport failed',
+          },
+        },
+      },
+    } })
+    render(<OperationsConsole />)
+
+    expect(await screen.findByText('Watcher 正在等待第 2 次恢复')).toBeInTheDocument()
+    expect(screen.getByText(/watcher transport failed/)).toBeInTheDocument()
+  })
 })

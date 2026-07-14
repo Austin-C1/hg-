@@ -7,6 +7,8 @@ import test from 'node:test'
 import { openAppDatabase } from '../src/crown/app/app-db.mjs'
 import { encryptSecret } from '../src/crown/app/app-secret.mjs'
 import { RuntimeLease } from '../src/crown/app/runtime-lease.mjs'
+import { CrownAccountExecutionProvider } from '../src/crown/betting/crown-account-execution-provider.mjs'
+import { CrownAccountPreviewProvider } from '../src/crown/betting/crown-account-provider.mjs'
 import {
   authorizeExecution,
   recoverAuthorizedChildOrders,
@@ -26,7 +28,8 @@ const LOCKED_IDENTITY = Object.freeze({
   mode: 'live',
   period: 'full_time',
   market: 'asian_handicap',
-  line: 'ah:ft:-0.25',
+  lineVariant: 'main',
+  line: '-0 / 0.5',
   side: 'home',
 })
 const PERSISTED_ENVELOPE = Object.freeze({
@@ -36,7 +39,7 @@ const PERSISTED_ENVELOPE = Object.freeze({
   snapshot: {
     provider: 'crown', mode: 'live',
     event: { eventKey: 'crown|football|gid=8878933', ids: { gid: '8878933' } },
-    market: { period: 'full_time', marketType: 'asian_handicap', lineKey: 'ah:ft:-0.25', handicapRaw: '-0 / 0.5' },
+    market: { period: 'full_time', marketType: 'asian_handicap', lineVariant: 'main', lineKey: 'ah:ft:-0.25', handicapRaw: '-0 / 0.5' },
     selection: { side: 'home', selectionIdentity: 'crown|football|gid=8878933|full_time|asian_handicap|ah:ft:-0.25|home' },
   },
 })
@@ -111,7 +114,10 @@ function insertBatchAndChild(db, {
       status, created_at
     ) VALUES (?, ?, ?, ?, ?, 'CNY', 2, ?, ?, 'queued', ?)
   `).run(batchId, signalId, ruleId, PERSISTED_ENVELOPE.selectionIdentity,
-    JSON.stringify({ lockedSelection: PERSISTED_ENVELOPE }), amountMinor, amountMinor, BASE_TIME)
+    JSON.stringify({
+      rule: { changedOddsMin: '0.75', changedOddsMax: '1.18' },
+      lockedSelection: PERSISTED_ENVELOPE,
+    }), amountMinor, amountMinor, BASE_TIME)
   db.prepare(`
     INSERT INTO bet_child_orders (
       child_order_id, batch_id, account_id, requested_amount_minor,
@@ -172,6 +178,18 @@ function setup({ dbPath = ':memory:' } = {}) {
     amountMinor: child.amountMinor,
   }, optionsAt())
   return { handle, db: handle.db, lease, authorization, child, dbPath }
+}
+
+function setupUnbound() {
+  const handle = openAppDatabase({ dbPath: ':memory:' })
+  insertRule(handle.db)
+  handle.db.prepare("UPDATE betting_rules SET amount_scale=0,target_amount_minor=20 WHERE id='rule-real'").run()
+  insertAccount(handle.db)
+  handle.db.prepare("UPDATE betting_accounts SET amount_scale=0,allocation_status='enabled' WHERE id='account-real'").run()
+  const lease = acquireLease(handle.db)
+  const child = insertBatchAndChild(handle.db, { fencingToken: lease.fencingToken })
+  handle.db.prepare("UPDATE bet_batches SET amount_scale=0 WHERE batch_id=?").run(child.batchId)
+  return { handle, db: handle.db, lease, child }
 }
 
 function gateInput(context) {
@@ -288,6 +306,33 @@ test('prepareAuthorizedSubmit commits gate, attempt, child, batch, and lock as o
   context.handle.close()
 })
 
+test('prepare uses the current strict Preview step instead of the legacy account step', async () => {
+  const { prepareAuthorizedSubmit } = await api()
+  const context = setup()
+  const input = prepareInput(context)
+  input.preview.stakeStepMinor = 10
+
+  const result = prepareAuthorizedSubmit(context.db, input, optionsAt())
+
+  assert.equal(result.child.status, 'submit_prepared')
+  assert.equal(childRow(context.db).preview_stake_step_minor, 10)
+  assert.equal(context.db.prepare("SELECT stake_step_minor FROM betting_accounts WHERE id='account-real'").get().stake_step_minor, 1)
+  context.handle.close()
+})
+
+test('prepare rejects a fresh Preview odds value outside the frozen rule range before creating an attempt', async () => {
+  const { prepareAuthorizedSubmit } = await api()
+  const context = setup()
+
+  assert.throws(
+    () => prepareAuthorizedSubmit(context.db, prepareInput(context, 1, { odds: '1.19' }), optionsAt()),
+    /preview-odds-out-of-range/,
+  )
+  assert.equal(attemptRows(context.db).length, 0)
+  assert.equal(childRow(context.db).status, 'reserved')
+  context.handle.close()
+})
+
 test('B2 continuously rechecks canonical real switch and persisted batch rule version before prepare', async () => {
   const { prepareAuthorizedSubmit } = await api()
   const switchedOff = setup()
@@ -382,7 +427,127 @@ test('production B2Executor rejects caller-supplied fake preview or execution pr
   context.handle.close()
 })
 
-test('accepted, rejected, timeout, disconnect, and pending atomically update child, batch, authorization, lock, and attempt', async (t) => {
+test('production B2Executor refuses a parsed Preview response without an evidence-complete executionPreview', async () => {
+  const { B2Executor } = await api()
+  const context = setupUnbound()
+  const previewProvider = Object.create(CrownAccountPreviewProvider.prototype)
+  previewProvider.preview = async () => ({
+    ...previewInput(),
+    freshBalanceCny: 100,
+  })
+  let submitCalls = 0
+  const executionProvider = Object.create(CrownAccountExecutionProvider.prototype)
+  executionProvider.submit = async () => {
+    submitCalls += 1
+    return { kind: 'pending' }
+  }
+  const executor = new B2Executor({
+    database: context.db,
+    previewProvider,
+    executionProvider,
+    lease: context.lease,
+    env: realEnv(),
+    now: () => new Date(BASE_TIME),
+  })
+
+  await assert.rejects(() => executor.submit({
+    ruleId: context.child.ruleId,
+    batchId: context.child.batchId,
+    childOrderId: context.child.childOrderId,
+    accountId: context.child.accountId,
+    submitAttemptId: 'submit-child-real-1',
+    attemptOrdinal: 1,
+    lockedSelection: PERSISTED_ENVELOPE,
+  }), /preview-execution-contract/)
+  assert.equal(submitCalls, 0)
+  assert.equal(attemptRows(context.db).length, 0)
+  context.handle.close()
+})
+
+test('production B2Executor passes the persisted child amount and locked selection to one provider attempt', async () => {
+  const { B2Executor } = await api()
+  const context = setupUnbound()
+  const previewProvider = Object.create(CrownAccountPreviewProvider.prototype)
+  previewProvider.preview = async () => ({
+    executionPreview: {
+      minStakeMinor: 10, maxStakeMinor: 50, stakeStepMinor: 1,
+      odds: '0.83', line: LOCKED_IDENTITY.line, currency: 'CNY', amountScale: 0,
+    },
+    freshBalanceCny: 100,
+    lockedIdentity: structuredClone(LOCKED_IDENTITY),
+    capabilityEvidenceId: 'fixture:b2-ledger:offline:v1',
+    capabilityVersion: 'b2-ledger-fixture-v1',
+  })
+  let submitted = null
+  const executionProvider = Object.create(CrownAccountExecutionProvider.prototype)
+  executionProvider.submit = async (input) => {
+    submitted = structuredClone({ ...input, onNetworkStarted: undefined })
+    input.onNetworkStarted()
+    return { kind: 'pending' }
+  }
+  const executor = new B2Executor({
+    database: context.db,
+    previewProvider,
+    executionProvider,
+    lease: context.lease,
+    env: realEnv(),
+    now: () => new Date(BASE_TIME),
+  })
+  const result = await executor.submit({
+    ruleId: context.child.ruleId,
+    batchId: context.child.batchId,
+    childOrderId: context.child.childOrderId,
+    accountId: context.child.accountId,
+    submitAttemptId: 'submit-child-real-1',
+    attemptOrdinal: 1,
+    lockedSelection: PERSISTED_ENVELOPE,
+  })
+  assert.equal(result.child.status, 'unknown')
+  assert.equal(submitted.amountMinor, context.child.amountMinor)
+  assert.equal(submitted.remainingChildAmountMinor, context.child.amountMinor)
+  assert.deepEqual(submitted.lockedSelection, PERSISTED_ENVELOPE)
+  assert.equal(submitted.preview.balanceMinor, 100)
+  assert.equal(attemptRows(context.db).length, 1)
+  context.handle.close()
+})
+
+test('neutral B2 ledger executes without authorization rows while preserving attempt, fence, and lock semantics', async () => {
+  const { prepareSubmitAttempt, recordSubmitDispatch, recordSubmitOutcome } = await api()
+  const context = setupUnbound()
+  const gate = {
+    ruleId: context.child.ruleId,
+    leaseKey: context.lease.leaseKey,
+    executorOwnerId: context.lease.ownerId,
+    fencingToken: context.lease.fencingToken,
+    childOrderId: context.child.childOrderId,
+    batchId: context.child.batchId,
+    accountId: context.child.accountId,
+  }
+  const attempt = {
+    ...gate,
+    submitAttemptId: 'submit-child-real-1',
+    attemptOrdinal: 1,
+    ...previewInput(),
+  }
+
+  prepareSubmitAttempt(context.db, attempt, optionsAt())
+  recordSubmitDispatch(context.db, { ...gate, submitAttemptId: attempt.submitAttemptId }, optionsAt())
+  recordSubmitOutcome(context.db, {
+    ...gate,
+    submitAttemptId: attempt.submitAttemptId,
+    outcome: { kind: 'accepted', providerReferenceCiphertext: PROVIDER_REFERENCE_CIPHERTEXT },
+    hasFutureCapacity: false,
+  }, optionsAt())
+
+  assert.equal(childRow(context.db).status, 'accepted')
+  assert.equal(attemptRows(context.db)[0].authorization_id, null)
+  assert.equal(context.db.prepare('SELECT COUNT(*) AS count FROM execution_authorizations').get().count, 0)
+  assert.equal(context.db.prepare('SELECT COUNT(*) AS count FROM execution_authorization_child_budgets').get().count, 0)
+  assert.equal(lockRow(context.db), undefined)
+  context.handle.close()
+})
+
+test('only accepted and rejected are definite after dispatch; every other provider outcome locks unknown', async (t) => {
   const {
     prepareAuthorizedSubmit,
     recordAuthorizedDispatch,
@@ -394,6 +559,13 @@ test('accepted, rejected, timeout, disconnect, and pending atomically update chi
     { kind: 'timeout', child: 'unknown', attempt: 'unknown', batch: 'waiting_result', binding: 'unknown', accepted: 0, unknown: 20, lock: 'unknown' },
     { kind: 'disconnect', child: 'unknown', attempt: 'unknown', batch: 'waiting_result', binding: 'unknown', accepted: 0, unknown: 20, lock: 'unknown' },
     { kind: 'pending', child: 'unknown', attempt: 'unknown', batch: 'waiting_result', binding: 'unknown', accepted: 0, unknown: 20, lock: 'unknown' },
+    { kind: 'odds_changed_unsent', child: 'unknown', attempt: 'unknown', batch: 'waiting_result', binding: 'unknown', accepted: 0, unknown: 20, lock: 'unknown' },
+    {
+      kind: 'line_changed',
+      outcome: { kind: 'line_changed', currentIdentity: { ...LOCKED_IDENTITY, line: '0 / 0.5' } },
+      child: 'unknown', attempt: 'unknown', batch: 'waiting_result', binding: 'unknown', accepted: 0, unknown: 20, lock: 'unknown',
+    },
+    { kind: 'unclassified', child: 'unknown', attempt: 'unknown', batch: 'waiting_result', binding: 'unknown', accepted: 0, unknown: 20, lock: 'unknown' },
   ]
 
   for (const expected of cases) {
@@ -407,7 +579,10 @@ test('accepted, rejected, timeout, disconnect, and pending atomically update chi
       recordAuthorizedOutcome(context.db, {
         ...gateInput(context),
         submitAttemptId: attempt.submitAttemptId,
-        outcome: { kind: expected.kind, providerReferenceCiphertext: expected.kind === 'accepted' ? PROVIDER_REFERENCE_CIPHERTEXT : '' },
+        outcome: expected.outcome || {
+          kind: expected.kind,
+          providerReferenceCiphertext: expected.kind === 'accepted' ? PROVIDER_REFERENCE_CIPHERTEXT : '',
+        },
         hasFutureCapacity: false,
       }, optionsAt())
 
@@ -632,7 +807,7 @@ test('legacy execution-gate outcome and recovery APIs cannot mutate a B2 attempt
   context.handle.close()
 })
 
-test('one explicitly unsent odds change preserves attempt one and permits exactly one same-line re-preview', async () => {
+test('a dispatched odds_changed_unsent result is unknown and cannot create a second attempt', async () => {
   const {
     prepareAuthorizedSubmit,
     recordAuthorizedDispatch,
@@ -650,89 +825,19 @@ test('one explicitly unsent odds change preserves attempt one and permits exactl
     outcome: { kind: 'odds_changed_unsent' },
   }, optionsAt())
 
-  assert.equal(childRow(context.db).status, 'reserved')
-  assert.equal(authRow(context.db).reserved_amount_minor, 20)
-  assert.equal(bindingRow(context.db).status, 'reserved')
-  assert.equal(lockRow(context.db).status, 'reserved')
-  assert.deepEqual(attemptRows(context.db).map((row) => [row.attempt_ordinal, row.status]), [
-    [1, 'odds_changed_unsent'],
-  ])
-
-  const second = prepareInput(context, 2, { odds: '0.79' })
-  prepareAuthorizedSubmit(context.db, second, optionsAt())
-  assert.equal(childRow(context.db).status, 'submit_prepared')
-  assert.equal(childRow(context.db).submit_attempt_id, second.submitAttemptId)
-  assert.deepEqual(attemptRows(context.db).map((row) => [row.attempt_ordinal, row.status, row.preview_odds]), [
-    [1, 'odds_changed_unsent', '0.83'],
-    [2, 'submit_prepared', '0.79'],
-  ])
-  context.handle.close()
-})
-
-test('a second odds change becomes unknown and attempt ordinal three is always rejected', async () => {
-  const {
-    prepareAuthorizedSubmit,
-    recordAuthorizedDispatch,
-    recordAuthorizedOutcome,
-  } = await api()
-  const context = setup()
-  const first = prepareInput(context, 1)
-  prepareAuthorizedSubmit(context.db, first, optionsAt())
-  recordAuthorizedDispatch(context.db, { ...gateInput(context), submitAttemptId: first.submitAttemptId }, optionsAt())
-  recordAuthorizedOutcome(context.db, {
-    ...gateInput(context), submitAttemptId: first.submitAttemptId, outcome: { kind: 'odds_changed_unsent' },
-  }, optionsAt())
-
-  assert.throws(() => prepareAuthorizedSubmit(context.db, prepareInput(context, 3), optionsAt()), /submit-attempt-(?:ordinal|limit)/)
-  const second = prepareInput(context, 2, { odds: '0.79' })
-  prepareAuthorizedSubmit(context.db, second, optionsAt())
-  recordAuthorizedDispatch(context.db, { ...gateInput(context), submitAttemptId: second.submitAttemptId }, optionsAt())
-  recordAuthorizedOutcome(context.db, {
-    ...gateInput(context), submitAttemptId: second.submitAttemptId, outcome: { kind: 'odds_changed_unsent' },
-  }, optionsAt())
-
   assert.equal(childRow(context.db).status, 'unknown')
   assert.equal(batchRow(context.db).status, 'waiting_result')
+  assert.equal(authRow(context.db).reserved_amount_minor, 0)
   assert.equal(authRow(context.db).unknown_amount_minor, 20)
   assert.equal(bindingRow(context.db).status, 'unknown')
   assert.equal(lockRow(context.db).status, 'unknown')
   assert.deepEqual(attemptRows(context.db).map((row) => [row.attempt_ordinal, row.status]), [
-    [1, 'odds_changed_unsent'],
-    [2, 'unknown'],
+    [1, 'unknown'],
   ])
-  context.handle.close()
-})
 
-test('line movement after an unsent odds change stops the child without creating another attempt', async () => {
-  const {
-    prepareAuthorizedSubmit,
-    recordAuthorizedDispatch,
-    recordAuthorizedOutcome,
-  } = await api()
-  const context = setup()
-  const first = prepareInput(context, 1)
-  prepareAuthorizedSubmit(context.db, first, optionsAt())
-  recordAuthorizedDispatch(context.db, { ...gateInput(context), submitAttemptId: first.submitAttemptId }, optionsAt())
-  recordAuthorizedOutcome(context.db, {
-    ...gateInput(context), submitAttemptId: first.submitAttemptId, outcome: { kind: 'odds_changed_unsent' },
-  }, optionsAt())
-
-  const changed = { ...LOCKED_IDENTITY, line: 'ah:ft:0.25' }
-  recordAuthorizedOutcome(context.db, {
-    ...gateInput(context),
-    submitAttemptId: first.submitAttemptId,
-    outcome: { kind: 'line_changed', currentIdentity: changed },
-    hasFutureCapacity: false,
-  }, optionsAt())
-
-  assert.equal(childRow(context.db).status, 'rejected')
-  assert.equal(batchRow(context.db).status, 'failed')
-  assert.equal(authRow(context.db).reserved_amount_minor, 0)
-  assert.equal(bindingRow(context.db).status, 'released')
-  assert.equal(lockRow(context.db), undefined)
-  assert.deepEqual(attemptRows(context.db).map((row) => [row.attempt_ordinal, row.status]), [
-    [1, 'odds_changed_unsent'],
-  ])
+  const second = prepareInput(context, 2, { odds: '0.79' })
+  assert.throws(() => prepareAuthorizedSubmit(context.db, second, optionsAt()), /submit-attempt-(?:ordinal|limit|state)|authorization-child-not-reserved/)
+  assert.deepEqual(attemptRows(context.db).map((row) => [row.attempt_ordinal, row.status]), [[1, 'unknown']])
   context.handle.close()
 })
 
@@ -761,8 +866,8 @@ test('stale fencing tokens cannot prepare, dispatch, resolve, or recover attempt
     fencingToken: context.lease.fencingToken,
   }, optionsAt(LATER_TIME)), /executor-(?:lease|fence|fencing)|fencing-token/)
   assert.throws(() => prepareAuthorizedSubmit(context.db, {
-    ...prepareInput(context, 2),
-    submitAttemptId: 'stale-second-attempt',
+    ...prepareInput(context, 1),
+    submitAttemptId: 'stale-duplicate-attempt',
   }, optionsAt(LATER_TIME)), /executor-(?:lease|fence|fencing)|fencing-token/)
 
   assert.equal(childRow(context.db).status, 'submit_prepared')

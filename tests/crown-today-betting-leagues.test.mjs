@@ -4,7 +4,7 @@ import test from 'node:test'
 import { openAppDatabase } from '../src/crown/app/app-db.mjs'
 import { buildTodayBettingLeagues } from '../src/crown/betting/today-betting-leagues.mjs'
 
-const SHANGHAI_NOON = new Date('2026-07-12T04:00:00.000Z')
+const FIXTURE_TIMESTAMP = '2026-07-12T04:00:00.000Z'
 
 function createDb() {
   return openAppDatabase({ dbPath: ':memory:', monitorJson: null })
@@ -16,7 +16,13 @@ function seedEvent(db, { eventKey, league, startTimeUtc, mode = 'prematch', acti
       event_key, match_group_key, active, missing_count, last_seen_at,
       provider_ids_json, event_json
     ) VALUES (?, ?, ?, 0, ?, '{}', ?)
-  `).run(eventKey, eventKey, active, startTimeUtc, JSON.stringify({ eventKey, league, startTimeUtc, mode }))
+  `).run(
+    eventKey,
+    eventKey,
+    active,
+    startTimeUtc || FIXTURE_TIMESTAMP,
+    JSON.stringify({ eventKey, league, startTimeUtc, mode }),
+  )
 }
 
 function seedTracked(db, { eventKey, league = 'unused', trackingStatus = 'active' }) {
@@ -25,7 +31,7 @@ function seedTracked(db, { eventKey, league = 'unused', trackingStatus = 'active
       event_key, league, home_team, away_team, mode, source_status,
       tracking_status, created_at, updated_at
     ) VALUES (?, ?, 'Home', 'Away', 'prematch', '', ?, ?, ?)
-  `).run(eventKey, league, trackingStatus, SHANGHAI_NOON.toISOString(), SHANGHAI_NOON.toISOString())
+  `).run(eventKey, league, trackingStatus, FIXTURE_TIMESTAMP, FIXTURE_TIMESTAMP)
 }
 
 const defaultLeagues = {
@@ -46,9 +52,26 @@ test('catalog contains today default hits and exact today manual tracking only',
     seedTracked(handle.db, { eventKey: 'today-manual' })
     seedTracked(handle.db, { eventKey: 'missing-event', league: '友谊赛' })
 
-    assert.deepEqual(buildTodayBettingLeagues({ db: handle.db, defaultLeagues, now: () => SHANGHAI_NOON }), [
+    assert.deepEqual(buildTodayBettingLeagues({ db: handle.db, defaultLeagues }), [
       { leagueName: '英超', source: 'default', todayMatchCount: 1 },
       { leagueName: '友谊赛', source: 'manual', todayMatchCount: 1 },
+    ])
+  } finally {
+    handle.close()
+  }
+})
+
+test('catalog treats the currently open Crown event set as today across the Beijing date boundary', () => {
+  const handle = createDb()
+  try {
+    seedEvent(handle.db, {
+      eventKey: 'crown-today-beijing-tomorrow',
+      league: '英超',
+      startTimeUtc: '2026-07-12T16:00:00.000Z',
+    })
+
+    assert.deepEqual(buildTodayBettingLeagues({ db: handle.db, defaultLeagues }), [
+      { leagueName: '英超', source: 'default', todayMatchCount: 1 },
     ])
   } finally {
     handle.close()
@@ -64,7 +87,7 @@ test('catalog honors default enabled and exact mode and ignores inactive events 
     seedEvent(handle.db, { eventKey: 'inactive-tracked', league: '友谊赛', startTimeUtc: '2026-07-12T05:00:00.000Z' })
     seedTracked(handle.db, { eventKey: 'inactive-tracked', trackingStatus: 'inactive' })
 
-    assert.deepEqual(buildTodayBettingLeagues({ db: handle.db, defaultLeagues, now: () => SHANGHAI_NOON }), [])
+    assert.deepEqual(buildTodayBettingLeagues({ db: handle.db, defaultLeagues }), [])
   } finally {
     handle.close()
   }
@@ -77,7 +100,7 @@ test('catalog merges default and manual source and counts each event once', () =
     seedEvent(handle.db, { eventKey: 'default-only', league: '英超', startTimeUtc: '2026-07-12T05:00:00.000Z' })
     seedTracked(handle.db, { eventKey: 'both' })
 
-    assert.deepEqual(buildTodayBettingLeagues({ db: handle.db, defaultLeagues, now: () => SHANGHAI_NOON }), [
+    assert.deepEqual(buildTodayBettingLeagues({ db: handle.db, defaultLeagues }), [
       { leagueName: '英超', source: 'both', todayMatchCount: 2 },
     ])
   } finally {
@@ -85,7 +108,7 @@ test('catalog merges default and manual source and counts each event once', () =
   }
 })
 
-test('catalog uses inclusive start and exclusive end of the Asia Shanghai day', () => {
+test('catalog includes every active Crown event regardless of the Beijing kickoff date', () => {
   const handle = createDb()
   try {
     seedEvent(handle.db, { eventKey: 'before', league: '英超', startTimeUtc: '2026-07-11T15:59:59.999Z' })
@@ -93,15 +116,15 @@ test('catalog uses inclusive start and exclusive end of the Asia Shanghai day', 
     seedEvent(handle.db, { eventKey: 'end', league: '英超', startTimeUtc: '2026-07-12T15:59:59.999Z' })
     seedEvent(handle.db, { eventKey: 'after', league: '英超', startTimeUtc: '2026-07-12T16:00:00.000Z' })
 
-    assert.deepEqual(buildTodayBettingLeagues({ db: handle.db, defaultLeagues, now: () => SHANGHAI_NOON }), [
-      { leagueName: '英超', source: 'default', todayMatchCount: 2 },
+    assert.deepEqual(buildTodayBettingLeagues({ db: handle.db, defaultLeagues }), [
+      { leagueName: '英超', source: 'default', todayMatchCount: 4 },
     ])
   } finally {
     handle.close()
   }
 })
 
-test('catalog accepts only canonical UTC ISO kickoff timestamps', () => {
+test('catalog does not require kickoff time when the active Crown state proves the market is open', () => {
   const handle = createDb()
   try {
     seedEvent(handle.db, { eventKey: 'canonical', league: '英超', startTimeUtc: '2026-07-12T04:00:00.000Z' })
@@ -111,9 +134,10 @@ test('catalog accepts only canonical UTC ISO kickoff timestamps', () => {
     seedEvent(handle.db, { eventKey: 'missing-millis', league: '英超', startTimeUtc: '2026-07-12T04:00:00Z' })
     seedEvent(handle.db, { eventKey: 'normalized-invalid-date', league: '英超', startTimeUtc: '2026-02-30T04:00:00.000Z' })
     seedEvent(handle.db, { eventKey: 'invalid', league: '英超', startTimeUtc: 'not-a-date' })
+    seedEvent(handle.db, { eventKey: 'missing', league: '英超', startTimeUtc: null })
 
-    assert.deepEqual(buildTodayBettingLeagues({ db: handle.db, defaultLeagues, now: () => SHANGHAI_NOON }), [
-      { leagueName: '英超', source: 'default', todayMatchCount: 1 },
+    assert.deepEqual(buildTodayBettingLeagues({ db: handle.db, defaultLeagues }), [
+      { leagueName: '英超', source: 'default', todayMatchCount: 8 },
     ])
   } finally {
     handle.close()

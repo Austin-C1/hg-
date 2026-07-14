@@ -10,6 +10,7 @@ import { openAppDatabase } from '../src/crown/app/app-db.mjs'
 import { RuntimeLease } from '../src/crown/app/runtime-lease.mjs'
 import { AutoBettingConsumer } from '../src/crown/betting/auto-betting-consumer.mjs'
 import { AutoBettingInboxStore } from '../src/crown/betting/auto-betting-inbox-store.mjs'
+import { BetBatchStore } from '../src/crown/betting/bet-batch-store.mjs'
 import { BettingWorker, waitFor } from '../src/crown/betting/betting-worker.mjs'
 import { createRealWorkerProvider, realCoordinatorDependencies, startRoleLeaseHeartbeat, waitForRealWorkerGo } from '../src/crown/betting/real-worker-factory.mjs'
 import { blockRealBettingRuntime, getRealBettingStatus, requestRealBettingStart } from '../src/crown/betting/real-betting-runtime.mjs'
@@ -230,16 +231,36 @@ test('card inbox waits for formal adapter readiness then terminalizes a deleted 
   } finally { worker.stop(); handle.close() }
 })
 
-test('exported real worker factory constructs only offline production seams and performs no work before invocation', async () => {
+test('exported real worker factory constructs executor-only production seams and ignores legacy eligibility flags', async () => {
   let previewCalls = 0
   let submitCalls = 0
+  let previewOptions = null
+  let executionOptions = null
+  const repository = {}
+  const loginManager = {}
+  const executorLease = {}
   const database = { prepare() { throw new Error('database-work-before-invocation') }, exec() { throw new Error('database-work-before-invocation') } }
   const provider = createRealWorkerProvider({
-    database, executorLease: {}, reconcilerLease: {}, env: {},
+    database, executorLease, env: {},
     factories: {
-      repository: () => ({}), loginManager: () => ({}),
-      previewProvider: () => ({ async preview() { previewCalls += 1; return { realExecutionEligible: false } } }),
-      executionProvider: () => ({}),
+      repository: () => repository, loginManager: () => loginManager,
+      previewProvider: (options) => { previewOptions = options; return { async preview() {
+        previewCalls += 1
+        if (previewCalls === 2) return {
+          preview: { minStakeMinor: 1, maxStakeMinor: 50, stakeStepMinor: 1, odds: '0.95' },
+          freshBalanceCny: 80,
+        }
+        return {
+          realExecutionEligible: false,
+          freshBalanceCny: 80,
+          executionPreview: {
+            minStakeMinor: 1, maxStakeMinor: 50, balanceMinor: 100, stakeStepMinor: 1,
+            odds: '0.95', currency: 'CNY', amountScale: 0,
+          },
+          lockedIdentity: 'locked', capabilityEvidenceId: 'evidence', capabilityVersion: 1,
+        }
+      } } },
+      executionProvider: (options) => { executionOptions = options; return {} },
       executor: () => ({ async submit() { submitCalls += 1; return { status: 'unknown' } } }),
     },
   })
@@ -247,89 +268,141 @@ test('exported real worker factory constructs only offline production seams and 
   assert.equal(typeof provider.previewProvider.preview, 'function')
   assert.equal(typeof provider.executionProvider, 'object')
   assert.equal(typeof provider.b2Executor.submit, 'function')
-  assert.equal(typeof provider.b2Reconciler.runDue, 'function')
-  assert.equal(provider.b2Reconciler.constructor.name, 'B2Reconciler')
+  assert.equal(Object.hasOwn(provider, 'b2Reconciler'), false)
   assert.equal(previewCalls, 0)
   assert.equal(submitCalls, 0)
+  assert.equal(previewOptions.repository, repository)
+  assert.equal(previewOptions.loginManager, loginManager)
+  assert.equal(previewOptions.executorLease, executorLease)
+  assert.equal(executionOptions.repository, repository)
+  assert.equal(executionOptions.loginManager, loginManager)
+  assert.equal(executionOptions.previewProvider, provider.previewProvider)
+  assert.equal(executionOptions.executorLease, executorLease)
   assert.deepEqual(realCoordinatorDependencies(provider), {
     provider: provider.previewAdapter,
     b2Executor: provider.b2Executor,
   })
+  assert.deepEqual(await provider.previewAdapter.preview({}), {
+    ok: true,
+    minStakeMinor: 1, maxStakeMinor: 50, balanceMinor: 80, stakeStepMinor: 1,
+    odds: '0.95', currency: 'CNY', amountScale: 0,
+    lockedIdentity: 'locked', capabilityEvidenceId: 'evidence', capabilityVersion: 1,
+  })
   assert.deepEqual(await provider.previewAdapter.preview({}), { ok: false })
   await provider.b2Executor.submit({})
-  assert.equal(previewCalls, 1)
+  assert.equal(previewCalls, 2)
   assert.equal(submitCalls, 1)
 })
 
-test('real worker settles uncertain attempts before a revoked authorization blocks new work', async () => {
-  const order = []
-  const ledger = { child: 'submit_dispatched', lock: 'submitting', reservedMinor: 20 }
-  let submitCalls = 0
-  let newBatchCalls = 0
+test('real worker does not load legacy authorizations or schedule reconciliation', async () => {
+  const queries = []
   const db = {
     prepare(sql) {
-      if (sql.includes('DISTINCT batch.authorization_id')) return { all: () => [{ authorization_id: 'auth-a' }] }
-      if (sql.includes('attempt.status = \'unknown\'')) return { all: () => [{ submit_attempt_id: 'attempt-a', deadline_at: '2099-01-01T00:00:00.000Z' }] }
-      if (sql.includes('FROM bet_batches')) return { all: () => [{ batch_id: 'batch-a' }] }
+      queries.push(sql)
+      if (sql.includes('FROM bet_batches')) return { all: () => [] }
       if (sql.includes('FROM monitor_signals')) return { all: () => [] }
       throw new Error(`unexpected-sql:${sql}`)
     },
   }
-  const lease = {
-    fencingToken: 1, acquire() { return { fencingToken: 1 } }, assertFence() { return 1 }, heartbeat() {},
-  }
+  const lease = { fencingToken: 1, acquire() { return { fencingToken: 1 } }, assertFence() { return 1 }, heartbeat() {} }
   const worker = new BettingWorker({
     mode: 'real', db, lease, processLease: { fencingToken: 1, assertFence() {}, heartbeat() {} },
-    realExecutionGate: () => { order.push('gate'); throw new Error('authorization-revoked') },
-    b2Executor: {
-      recover(id) {
-        order.push(`recover:${id}`)
-        ledger.child = 'unknown'
-        ledger.lock = 'unknown'
-      },
-      async submit() { submitCalls += 1 },
-    },
-    b2Reconciler: {
-      scheduleUnknown({ submitAttemptId }) { order.push(`schedule:${submitAttemptId}`) },
-      async runDue({ submitAttemptId }) { order.push(`reconcile:${submitAttemptId}`) },
-    },
-    coordinator: {
-      async runBatch(id) { newBatchCalls += 1; order.push(`batch:${id}`); return { batchId: id } },
-      async processSignal() { newBatchCalls += 1 },
-    },
+    realExecutionGate() {},
+    coordinator: { recover() {}, async runBatch(id) { return { batchId: id } } },
   })
-  await assert.rejects(() => worker.runOnce(), /authorization-revoked/)
-  assert.deepEqual(order, ['recover:auth-a', 'schedule:attempt-a', 'reconcile:attempt-a', 'gate'])
-  assert.deepEqual(ledger, { child: 'unknown', lock: 'unknown', reservedMinor: 20 })
-  assert.equal(submitCalls, 0)
-  assert.equal(newBatchCalls, 0)
+  await worker.runOnce()
+  assert.equal(queries.some((sql) => /execution_authorizations|bet_reconciliation_state/.test(sql)), false)
 })
 
-test('production reconciliation defer does not prevent another recoverable batch from running', async () => {
-  const order = []
+test('real worker performs local crash recovery once and keeps uncertain children locked as unknown', async () => {
+  const handle = openAppDatabase({ dbPath: ':memory:' })
+  const now = '2026-07-14T00:00:00.000Z'
+  const lease = new RuntimeLease({
+    db: handle.db,
+    leaseKey: 'betting-executor:real-local-recovery',
+    ownerId: 'real-local-recovery-owner',
+    now: () => new Date(now),
+  })
+  const store = new BetBatchStore(handle.db, { leaseKey: lease.leaseKey, now: () => now })
+  let recoverCalls = 0
+  try {
+    handle.db.prepare("INSERT INTO betting_rules (id,name,currency,amount_scale,target_amount_minor,created_at,updated_at) VALUES ('rule','Rule','CNY',0,20,?,?)").run(now, now)
+    handle.db.prepare("INSERT INTO betting_accounts (id,label,username,status,currency,amount_scale,per_bet_limit_minor,stake_step_minor,created_at,updated_at) VALUES ('a1','A1','u1','enabled','CNY',0,50,1,?,?),('a2','A2','u2','enabled','CNY',0,50,1,?,?)").run(now, now, now, now)
+    handle.db.prepare("INSERT INTO monitor_signals (signal_id,signal_key,strategy_id,strategy_version,status,observed_at,expires_at,payload_json) VALUES ('signal','key','strategy',1,'ready',?,?,'{}')").run(now, '2026-07-14T01:00:00.000Z')
+    handle.db.prepare("INSERT INTO bet_batches (batch_id,signal_id,rule_id,currency,amount_scale,target_amount_minor,reserved_amount_minor,status,created_at) VALUES ('batch','signal','rule','CNY',0,20,20,'submitting',?)").run(now)
+    handle.db.prepare(`INSERT INTO bet_child_orders (
+      child_order_id,batch_id,account_id,attempt,requested_amount_minor,submit_attempt_id,
+      submit_prepared_at,submit_dispatched_at,submitted_at,status,created_at
+    ) VALUES
+      ('prepared','batch','a1',1,10,'attempt-prepared',?,'','','submit_prepared',?),
+      ('dispatched','batch','a2',1,10,'attempt-dispatched',?,?,?,'submit_dispatched',?)`)
+      .run(now, now, now, now, now, now)
+    handle.db.prepare(`INSERT INTO bet_submit_attempts (
+      submit_attempt_id,child_order_id,authorization_id,attempt_ordinal,amount_minor,fencing_token,
+      capability_version,capability_evidence_id,preview_odds,locked_identity_json,preview_snapshot_json,
+      status,prepared_at,created_at,updated_at
+    ) VALUES
+      ('attempt-prepared','prepared',NULL,1,10,1,'v1','e1','0.88','{}','{}','submit_prepared',?,?,?),
+      ('attempt-dispatched','dispatched',NULL,1,10,1,'v1','e1','0.88','{}','{}','submit_prepared',?,?,?)`)
+      .run(now, now, now, now, now, now)
+    handle.db.prepare(`UPDATE bet_submit_attempts SET status='submit_dispatched',dispatched_at=?,updated_at=?
+      WHERE submit_attempt_id='attempt-dispatched'`).run(now, now)
+    handle.db.prepare("INSERT INTO betting_account_locks (account_id,child_order_id,batch_id,status,fencing_token,acquired_at,updated_at) VALUES ('a1','prepared','batch','submitting',1,?,?),('a2','dispatched','batch','submitting',1,?,?)").run(now, now, now, now)
+
+    const worker = new BettingWorker({
+      mode: 'real', db: handle.db, lease,
+      coordinator: {
+        recover(fencingToken) {
+          recoverCalls += 1
+          return store.recover({ fencingToken, at: now })
+        },
+        async runBatch(batchId) { return { batchId } },
+      },
+      realExecutionGate() {},
+    })
+    await worker.runOnce()
+    await worker.runOnce()
+
+    assert.equal(recoverCalls, 1)
+    assert.deepEqual(handle.db.prepare('SELECT child_order_id,status,error_code FROM bet_child_orders ORDER BY child_order_id').all().map((row) => ({ ...row })), [
+      { child_order_id: 'dispatched', status: 'unknown', error_code: 'recovery-uncertain' },
+      { child_order_id: 'prepared', status: 'unknown', error_code: 'recovery-uncertain' },
+    ])
+    assert.deepEqual(handle.db.prepare(`SELECT submit_attempt_id,status,error_code,result_at
+      FROM bet_submit_attempts ORDER BY submit_attempt_id`).all().map((row) => ({ ...row })), [
+      { submit_attempt_id: 'attempt-dispatched', status: 'unknown', error_code: 'recovery-uncertain', result_at: now },
+      { submit_attempt_id: 'attempt-prepared', status: 'unknown', error_code: 'recovery-uncertain', result_at: now },
+    ])
+    assert.deepEqual(handle.db.prepare('SELECT account_id,status FROM betting_account_locks ORDER BY account_id').all().map((row) => ({ ...row })), [
+      { account_id: 'a1', status: 'unknown' },
+      { account_id: 'a2', status: 'unknown' },
+    ])
+    worker.stop()
+  } finally { handle.close() }
+})
+
+test('real worker passes only execution mode to the consumer and never binds an authorization', async () => {
+  const queries = []
+  const processOptions = []
   const db = {
     prepare(sql) {
-      if (sql.includes('DISTINCT batch.authorization_id')) return { all: () => [{ authorization_id: 'auth-a' }] }
-      if (sql.includes("attempt.status = 'unknown'")) return { all: () => [{ submit_attempt_id: 'attempt-a', deadline_at: '2099-01-01T00:00:00.000Z' }] }
-      if (sql.includes('FROM monitor_signals')) return { all: () => [] }
-      if (sql.includes('FROM bet_batches')) return { all: () => [{ batch_id: 'batch-b' }] }
+      queries.push(sql)
+      if (sql.includes('FROM bet_batches')) return { all: () => [] }
+      if (sql.includes('execution_authorizations')) return { get: () => ({ authorization_id: 'legacy-auth' }) }
       throw new Error(`unexpected-sql:${sql}`)
     },
   }
   const lease = { fencingToken: 1, acquire: () => ({ fencingToken: 1 }), assertFence: () => 1, heartbeat() {} }
   const worker = new BettingWorker({
     mode: 'real', db, lease, processLease: { fencingToken: 1, assertFence() {}, heartbeat() {} },
-    realExecutionGate: () => { order.push('gate') },
-    b2Executor: { recover: () => order.push('recover') },
-    b2Reconciler: {
-      scheduleUnknown: () => order.push('schedule'),
-      async runDue() { order.push('defer'); return { status: 'waiting', errorCode: 'reconciliation-capability-unverified' } },
-    },
-    coordinator: { async runBatch() { order.push('batch'); return { batchId: 'batch-b' } } },
+    realExecutionGate() {}, coordinator: { recover() {}, async runBatch(id) { return { batchId: id } } },
+    inboxStore: { claimDue: () => [{ signalId: 'signal-a' }], complete() {} },
+    consumer: { async process(_item, options) { processOptions.push(options); return { status: 'batch_created', batchId: 'batch-a' } } },
   })
   const result = await worker.runOnce()
   assert.equal(result.processed, 1)
-  assert.deepEqual(order, ['recover', 'schedule', 'defer', 'gate', 'gate', 'batch'])
+  assert.deepEqual(processOptions, [{ executionMode: 'real' }])
+  assert.equal(queries.some((sql) => sql.includes('execution_authorizations')), false)
 })
 
 test('exported real worker GO barrier permits no work before exact generation and nonce', async () => {
@@ -346,15 +419,15 @@ test('exported real worker GO barrier permits no work before exact generation an
   assert.equal(channel.listenerCount('message'), 0)
 })
 
-test('three role leases heartbeat below TTL/3 and one failure aborts the worker controller', () => {
+test('worker and executor leases heartbeat below TTL/3 and one failure aborts the worker controller', () => {
   let callback
   let interval
   let cleared = false
   let calls = 0
   const controller = new AbortController()
-  const leases = [1, 2, 3].map((value) => ({
+  const leases = [1, 2].map((value) => ({
     ttlMs: 3000,
-    heartbeat() { calls += 1; if (value === 3) throw new Error('lease-lost') },
+    heartbeat() { calls += 1; if (value === 2) throw new Error('lease-lost') },
   }))
   const stop = startRoleLeaseHeartbeat({
     leases, controller,
@@ -363,7 +436,7 @@ test('three role leases heartbeat below TTL/3 and one failure aborts the worker 
   })
   assert.ok(interval < 1000)
   callback()
-  assert.equal(calls, 3)
+  assert.equal(calls, 2)
   assert.equal(controller.signal.aborted, true)
   stop()
   assert.equal(cleared, true)
@@ -518,9 +591,8 @@ test('real worker collector failure blocks runtime before scan without provider 
   const handle = openAppDatabase({ dbPath: ':memory:' })
   const coordinator = fakeCoordinator()
   const ready = Object.fromEntries([
-    'watcherFresh', 'watcherLeaseUnique', 'monitorLoginFresh', 'bettingAccountFresh', 'balanceFresh',
-    'capabilityExact', 'authorizationActive', 'schemaCurrent', 'environmentExact', 'fenceFresh',
-    'executorLeaseFresh', 'reconcilerLeaseFresh', 'executorReconcilerDistinct',
+    'ruleCardsEnabled', 'bettingAccountAvailable', 'capabilityExact', 'schemaCurrent',
+    'fenceFresh', 'executorLeaseFresh',
   ].map((field) => [field, true]))
   requestRealBettingStart(handle.db, ready)
   const lease = { fencingToken: 1, acquire: () => ({ fencingToken: 1 }), assertFence: () => 1, heartbeat() {}, release: () => true }
@@ -572,8 +644,6 @@ test('real worker finalizes drained pause-pending accounts after recovery and ev
   const order = []
   const db = {
     prepare(sql) {
-      if (sql.includes('DISTINCT batch.authorization_id')) return { all: () => [] }
-      if (sql.includes("attempt.status = 'unknown'")) return { all: () => [] }
       if (sql.includes('FROM bet_batches')) return { all: () => [{ batch_id: 'batch-drained' }] }
       if (sql.includes('FROM monitor_signals')) return { all: () => [] }
       throw new Error(`unexpected-sql:${sql}`)
@@ -581,14 +651,17 @@ test('real worker finalizes drained pause-pending accounts after recovery and ev
   }
   const worker = new BettingWorker({
     mode: 'real', db,
-    coordinator: { async runBatch(id) { order.push(`batch:${id}`); return { batchId: id } } },
+    coordinator: {
+      recover() { order.push('recover') },
+      async runBatch(id) { order.push(`batch:${id}`); return { batchId: id } },
+    },
     lease: { fencingToken: 1, acquire: () => ({ fencingToken: 1 }), assertFence() {}, heartbeat() {}, release() {} },
     processLease: { fencingToken: 1, assertFence() {}, heartbeat() {} },
     realExecutionGate() {},
     accountPauseFinalizer() { order.push('finalize') },
   })
   await worker.runOnce()
-  assert.deepEqual(order, ['finalize', 'batch:batch-drained', 'finalize', 'finalize'])
+  assert.deepEqual(order, ['recover', 'finalize', 'batch:batch-drained', 'finalize', 'finalize'])
 })
 
 test('continuous loop heartbeats and stops through an AbortSignal', async () => {

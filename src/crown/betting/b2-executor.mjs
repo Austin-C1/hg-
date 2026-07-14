@@ -14,11 +14,9 @@ import { isSafetyFinishReason } from './safety-finish-reasons.mjs'
 
 const FIXTURE_CAPABILITY_VERSION = 'b2-ledger-fixture-v1'
 const FIXTURE_CAPABILITY_EVIDENCE_ID = 'fixture:b2-ledger:offline:v1'
-const TERMINAL_ATTEMPT_STATUSES = new Set(['accepted', 'rejected', 'unknown', 'odds_changed_unsent'])
-
 export function deterministicSubmitAttemptId(childOrderId, attemptOrdinal) {
   const childId = required(childOrderId, 'child-order-id')
-  if (![1, 2].includes(Number(attemptOrdinal))) throw new Error('submit-attempt-ordinal')
+  if (Number(attemptOrdinal) !== 1) throw new Error('submit-attempt-ordinal')
   return createHash('sha256').update(`b2-submit\n${childId}\n${attemptOrdinal}`, 'utf8').digest('hex')
 }
 
@@ -100,6 +98,35 @@ function parseJsonObject(value, code) {
   return objectValue(parsed, code)
 }
 
+function exactDecimal(value) {
+  const source = typeof value === 'number' && Number.isFinite(value) ? String(value) : value
+  if (typeof source !== 'string' || !/^\d+(?:\.\d+)?$/.test(source)) return null
+  const [whole, fraction = ''] = source.split('.')
+  return { coefficient: BigInt(`${whole}${fraction}`), scale: fraction.length }
+}
+
+function compareDecimal(left, right) {
+  const scale = Math.max(left.scale, right.scale)
+  const a = left.coefficient * 10n ** BigInt(scale - left.scale)
+  const b = right.coefficient * 10n ** BigInt(scale - right.scale)
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+function frozenOddsRange(row) {
+  let source
+  if (typeof row.rule_id === 'string' && row.rule_id) {
+    source = parseJsonObject(row.rule_snapshot_json, 'bet-batch-odds-range').rule
+  } else if (typeof row.card_id === 'string' && row.card_id) {
+    source = parseJsonObject(row.card_snapshot_json, 'bet-batch-odds-range')
+  } else {
+    source = parseJsonObject(row.settings_snapshot_json, 'bet-batch-odds-range')
+  }
+  const minimum = exactDecimal(source?.changedOddsMin ?? source?.targetOddsMin)
+  const maximum = exactDecimal(source?.changedOddsMax ?? source?.targetOddsMax)
+  if (!minimum || !maximum || compareDecimal(minimum, maximum) > 0) throw new Error('bet-batch-odds-range')
+  return { minimum, maximum }
+}
+
 function assertFence(db, input, at) {
   const leaseKey = required(input.leaseKey, 'executor-lease-key')
   if (!/^betting-executor:\S+$/.test(leaseKey)) throw new Error('executor-lease-key')
@@ -160,7 +187,100 @@ function parseCardScopes(row) {
   return scopes
 }
 
+function requireUnboundContext(db, input, at, { settlement = false } = {}) {
+  const childOrderId = required(input.childOrderId, 'child-order-id')
+  const row = db.prepare(`
+    SELECT
+      NULL AS authorization_id, NULL AS binding_status,
+      child.requested_amount_minor AS binding_amount_minor,
+      child.*, batch.rule_id, batch.card_id, batch.card_version, batch.card_snapshot_json,
+      batch.betting_mode, batch.settings_version, batch.settings_snapshot_json,
+      batch.authorization_id AS batch_authorization_id,
+      batch.currency AS batch_currency, batch.amount_scale AS batch_amount_scale,
+      batch.locked_selection_identity, batch.rule_snapshot_json, batch.target_amount_minor, batch.rule_version,
+      rule.version AS current_rule_version, rule.monitor_enabled, rule.real_betting_enabled,
+      rule.archived AS rule_archived, rule.migration_review_required,
+      rule.currency AS rule_currency, rule.amount_scale AS rule_amount_scale,
+      setting.enabled AS setting_enabled,
+      setting.migration_review_required AS setting_migration_review_required,
+      setting.currency AS setting_currency, setting.amount_scale AS setting_amount_scale,
+      card.enabled AS card_enabled, card.version AS current_card_version,
+      card.migration_review_required AS card_migration_review_required,
+      card.currency AS card_currency, card.amount_scale AS card_amount_scale,
+      account.status AS account_status, account.archived AS account_archived,
+      account.allocation_status AS account_allocation_status,
+      account.currency AS account_currency, account.amount_scale AS account_amount_scale,
+      account.per_bet_limit_minor, account.stake_step_minor,
+      budget.child_order_id AS legacy_budget_child_order_id
+    FROM bet_child_orders AS child
+    JOIN bet_batches AS batch ON batch.batch_id = child.batch_id
+    LEFT JOIN betting_rules AS rule ON rule.id = batch.rule_id
+    LEFT JOIN auto_betting_settings AS setting ON setting.mode = batch.betting_mode
+    LEFT JOIN auto_betting_rule_cards AS card ON card.card_id = batch.card_id
+    JOIN betting_accounts AS account ON account.id = child.account_id
+    LEFT JOIN execution_authorization_child_budgets AS budget ON budget.child_order_id = child.child_order_id
+    WHERE child.child_order_id = ?
+  `).get(childOrderId)
+  if (!row) throw new Error('child-order-not-found')
+  if (row.batch_authorization_id !== null || row.legacy_budget_child_order_id !== null) {
+    throw new Error('authorization-context-required')
+  }
+
+  const inputHasRule = input.ruleId !== undefined && input.ruleId !== null
+  const inputHasCard = input.cardId !== undefined && input.cardId !== null
+  const inputHasMode = input.bettingMode !== undefined || input.settingsVersion !== undefined
+  if (Number(inputHasRule) + Number(inputHasCard) + Number(inputHasMode && !inputHasCard) !== 1) {
+    throw new Error('execution-scope-xor')
+  }
+  const rowHasRule = typeof row.rule_id === 'string' && row.rule_id !== ''
+  const rowHasCard = typeof row.card_id === 'string' && row.card_id !== '' && Number.isSafeInteger(Number(row.card_version))
+  const rowHasMode = !rowHasCard && ['prematch', 'live'].includes(row.betting_mode) && Number.isSafeInteger(Number(row.settings_version))
+  if (Number(rowHasRule) + Number(rowHasCard) + Number(rowHasMode) !== 1
+    || rowHasRule !== inputHasRule || rowHasCard !== inputHasCard) throw new Error('execution-scope-xor')
+  if (input.batchId !== undefined && required(input.batchId, 'batch-id') !== row.batch_id) throw new Error('bet-batch-mismatch')
+  if (input.accountId !== undefined && required(input.accountId, 'account-id') !== row.account_id) throw new Error('bet-account-mismatch')
+  if (input.ruleId !== undefined && required(input.ruleId, 'rule-id') !== row.rule_id) throw new Error('bet-batch-rule-mismatch')
+  if (input.cardId !== undefined && required(input.cardId, 'card-id') !== row.card_id) throw new Error('bet-batch-card-mismatch')
+  if (input.bettingMode !== undefined && required(input.bettingMode, 'betting-mode') !== row.betting_mode) throw new Error('bet-batch-mode-mismatch')
+  if (inputHasMode && !inputHasCard && (!Number.isSafeInteger(input.settingsVersion) || input.settingsVersion < 1
+    || Number(input.settingsVersion) !== Number(row.settings_version))) throw new Error('bet-batch-settings-version-mismatch')
+  if (settlement) return row
+
+  if (row.batch_currency !== 'CNY' || Number(row.batch_amount_scale) !== 0
+    || row.account_currency !== 'CNY' || Number(row.account_amount_scale) !== 0) {
+    throw new Error('execution-money-mismatch')
+  }
+  if (row.account_status !== 'enabled' || Number(row.account_archived) !== 0
+    || row.account_allocation_status !== 'enabled') throw new Error('betting-account-disabled')
+  if (rowHasCard) {
+    let snapshot
+    try { snapshot = JSON.parse(row.card_snapshot_json) } catch { throw new Error('bet-batch-card-snapshot') }
+    if (snapshot?.cardId !== row.card_id || Number(snapshot?.version) !== Number(row.card_version)
+      || Number(row.current_card_version) !== Number(row.card_version)) throw new Error('bet-batch-card-snapshot')
+    if (Number(row.card_enabled) !== 1) throw new Error('betting-card-disabled')
+    if (Number(row.card_migration_review_required) !== 0) throw new Error('migration-review-required')
+    if (row.card_currency !== 'CNY' || Number(row.card_amount_scale) !== 0) throw new Error('execution-money-mismatch')
+  } else if (rowHasMode) {
+    if (Number(row.setting_enabled) !== 1) throw new Error('betting-mode-disabled')
+    if (Number(row.setting_migration_review_required) !== 0) throw new Error('migration-review-required')
+    if (row.setting_currency !== 'CNY' || Number(row.setting_amount_scale) !== 0) throw new Error('execution-money-mismatch')
+  } else {
+    if (row.rule_currency !== 'CNY' || Number(row.rule_amount_scale) !== 0) throw new Error('execution-money-mismatch')
+    assertCanonicalRealRule({
+      archived: row.rule_archived,
+      monitor_enabled: row.monitor_enabled,
+      real_betting_enabled: row.real_betting_enabled,
+      migration_review_required: row.migration_review_required,
+    })
+    if (Number(row.rule_version) !== Number(row.current_rule_version)) throw new Error('rule-version-changed')
+  }
+  return row
+}
+
 function requireContext(db, input, options, at, { settlement = false } = {}) {
+  if (!String(input.authorizationId || '').trim()) {
+    return requireUnboundContext(db, input, at, { settlement })
+  }
   const authorizationId = required(input.authorizationId, 'authorization-id')
   const childOrderId = required(input.childOrderId, 'child-order-id')
   const row = db.prepare(`
@@ -168,7 +288,7 @@ function requireContext(db, input, options, at, { settlement = false } = {}) {
       budget.authorization_id, budget.status AS binding_status,
       budget.amount_minor AS binding_amount_minor,
       child.*, batch.rule_id, batch.card_id, batch.card_version, batch.card_snapshot_json,
-      batch.betting_mode, batch.settings_version,
+      batch.betting_mode, batch.settings_version, batch.settings_snapshot_json,
       batch.authorization_id AS batch_authorization_id,
       batch.currency AS batch_currency, batch.amount_scale AS batch_amount_scale,
       batch.locked_selection_identity, batch.rule_snapshot_json, batch.target_amount_minor, batch.rule_version,
@@ -225,9 +345,10 @@ function requireContext(db, input, options, at, { settlement = false } = {}) {
     let snapshot
     try { snapshot = JSON.parse(row.card_snapshot_json) } catch { throw new Error('bet-batch-card-snapshot') }
     if (snapshot?.cardId !== row.card_id || Number(snapshot?.version) !== Number(row.card_version)
-      || Number(snapshot?.realEligibilityVersion) !== Number(input.eligibilityVersion)) throw new Error('bet-batch-card-snapshot')
+      || (snapshot?.realEligibilityVersion !== undefined
+        && Number(snapshot.realEligibilityVersion) !== Number(input.eligibilityVersion))) throw new Error('bet-batch-card-snapshot')
     const scope = parseCardScopes(row).find((item) => item.cardId === row.card_id)
-    if (!scope || scope.eligibilityVersion !== snapshot.realEligibilityVersion) throw new Error('authorization-card-scope')
+    if (!scope || scope.eligibilityVersion !== Number(input.eligibilityVersion)) throw new Error('authorization-card-scope')
     if (!parseModeScope(row).modes.includes(row.betting_mode)) throw new Error('authorization-mode-scope')
     if (parseRuleIds(row).length !== 0) throw new Error('authorization-scope-mixed')
   }
@@ -287,8 +408,8 @@ function capabilityInput(input) {
   return {
     mode: identity.mode,
     period: identity.period,
-    marketType: identity.marketType,
-    lineVariant: identity.lineVariant || 'main',
+    marketType: identity.market,
+    lineVariant: identity.lineVariant,
   }
 }
 
@@ -336,8 +457,12 @@ function assertPreview(row, input) {
   if (min > max || amount < min || amount > max || amount > balance) throw new Error('preview-capacity-blocked')
   if ((amount - min) % step !== 0) throw new Error('preview-stake-step-mismatch')
   if (amount > Number(row.per_bet_limit_minor)) throw new Error('account-per-bet-limit')
-  if (step !== Number(row.stake_step_minor)) throw new Error('account-stake-step-mismatch')
   const odds = required(preview.odds, 'preview-odds')
+  const exactOdds = exactDecimal(odds)
+  const range = frozenOddsRange(row)
+  if (!exactOdds || compareDecimal(exactOdds, range.minimum) < 0 || compareDecimal(exactOdds, range.maximum) > 0) {
+    throw new Error('preview-odds-out-of-range')
+  }
   const line = required(preview.line, 'preview-line')
   if (line !== String(current.line || '')) throw new Error('preview-line-changed')
   return { min, max, balance, step, amount, odds, line, locked, current, preview }
@@ -448,7 +573,9 @@ export function assertAuthorizedSubmitContext(database, input = {}, options = {}
   return immediate(db, () => {
     assertFence(db, input, at)
     const row = requireContext(db, input, options, at)
-    if (row.binding_status !== 'reserved' || row.status !== 'reserved') throw new Error('authorization-child-not-reserved')
+    if ((row.authorization_id && row.binding_status !== 'reserved') || row.status !== 'reserved') {
+      throw new Error('authorization-child-not-reserved')
+    }
     return { childOrderId: row.child_order_id, batchId: row.batch_id, authorizationId: row.authorization_id }
   })
 }
@@ -459,21 +586,15 @@ export function prepareAuthorizedSubmit(database, input = {}, options = {}) {
   const at = atFrom(options)
   const submitAttemptId = required(input.submitAttemptId, 'submit-attempt-id')
   const ordinal = Number(input.attemptOrdinal)
-  if (![1, 2].includes(ordinal)) throw new Error('submit-attempt-ordinal')
+  if (ordinal !== 1) throw new Error('submit-attempt-ordinal')
   return immediate(db, () => {
     const fencingToken = assertFence(db, input, at)
     const row = requireContext(db, input, options, at)
-    if (row.binding_status !== 'reserved') throw new Error('authorization-child-not-reserved')
+    if (row.authorization_id && row.binding_status !== 'reserved') throw new Error('authorization-child-not-reserved')
     const previous = db.prepare(`
       SELECT * FROM bet_submit_attempts WHERE child_order_id=? ORDER BY attempt_ordinal
     `).all(row.child_order_id)
-    if (ordinal === 1 && (previous.length !== 0 || row.status !== 'reserved')) throw new Error('submit-attempt-state')
-    if (ordinal === 2 && (
-      previous.length !== 1
-      || Number(previous[0].attempt_ordinal) !== 1
-      || previous[0].status !== 'odds_changed_unsent'
-      || row.status !== 'reserved'
-    )) throw new Error('submit-attempt-limit')
+    if (previous.length !== 0 || row.status !== 'reserved') throw new Error('submit-attempt-state')
     const preview = assertPreview(row, input)
     db.prepare(`
       INSERT INTO bet_submit_attempts (
@@ -580,8 +701,7 @@ export function recordAuthorizedDispatch(database, input = {}, options = {}) {
 function ledgerOutcome(kind) {
   if (kind === 'accepted') return { child: 'accepted', attempt: 'accepted', binding: 'accepted' }
   if (kind === 'rejected') return { child: 'rejected', attempt: 'rejected', binding: 'released' }
-  if (['timeout', 'disconnect', 'pending'].includes(kind)) return { child: 'unknown', attempt: 'unknown', binding: 'unknown' }
-  return null
+  return { child: 'unknown', attempt: 'unknown', binding: 'unknown' }
 }
 
 function providerReferenceCiphertext(value, { childOrderId, submitAttemptId, secretOptions, requiredValue = false } = {}) {
@@ -612,6 +732,7 @@ function providerReferenceCiphertext(value, { childOrderId, submitAttemptId, sec
 }
 
 function updateAuthorization(db, context, bindingStatus, at) {
+  if (!context.authorization_id) return
   if (context.binding_status === bindingStatus) return
   if (context.binding_status !== 'reserved') throw new Error('authorization-child-binding-terminal')
   const amount = Number(context.binding_amount_minor)
@@ -707,7 +828,7 @@ export function recordAuthorizedOutcome(database, input = {}, options = {}) {
       }
       fault(options, 'outcome:after-child-update', { childOrderId: row.child_order_id, kind })
       recomputeBatch(db, row.batch_id, at, {
-        hasFutureCapacity: standard.child === 'rejected' ? false : (input.hasFutureCapacity ?? true),
+        hasFutureCapacity: input.hasFutureCapacity ?? true,
       })
       fault(options, 'outcome:after-batch-recompute', { childOrderId: row.child_order_id, kind })
       updateAuthorization(db, row, standard.binding, at)
@@ -717,66 +838,6 @@ export function recordAuthorizedOutcome(database, input = {}, options = {}) {
       return result(db, row.child_order_id, submitAttemptId)
     }
 
-    if (kind === 'odds_changed_unsent') {
-      if (attempt.status !== 'submit_dispatched' || row.status !== 'submit_dispatched') throw new Error('submit-attempt-not-dispatched')
-      if (Number(attempt.attempt_ordinal) === 1) {
-        db.prepare(`
-          UPDATE bet_submit_attempts
-          SET status='odds_changed_unsent', result_at=?, error_code='odds-changed-unsent', updated_at=?
-          WHERE submit_attempt_id=? AND status='submit_dispatched'
-        `).run(at, at, submitAttemptId)
-        db.prepare(`
-          UPDATE bet_child_orders
-          SET status='reserved', error_code='odds-changed-unsent', resolved_at=''
-          WHERE child_order_id=? AND status='submit_dispatched'
-        `).run(row.child_order_id)
-        db.prepare(`
-          UPDATE betting_account_locks SET status='reserved', fencing_token=?, updated_at=?
-          WHERE child_order_id=?
-        `).run(fencingToken, at, row.child_order_id)
-        recomputeBatch(db, row.batch_id, at)
-        writeAudit(db, 'submit_odds_changed_unsent', submitAttemptId, { childOrderId: row.child_order_id }, at)
-        return result(db, row.child_order_id, submitAttemptId)
-      }
-      db.prepare(`
-        UPDATE bet_submit_attempts
-        SET status='unknown', result_at=?, error_code='second-odds-change', updated_at=?
-        WHERE submit_attempt_id=? AND status='submit_dispatched'
-      `).run(at, at, submitAttemptId)
-      db.prepare(`
-        UPDATE bet_child_orders SET status='unknown', error_code='second-odds-change', resolved_at=''
-        WHERE child_order_id=? AND status='submit_dispatched'
-      `).run(row.child_order_id)
-      db.prepare(`
-        UPDATE betting_account_locks SET status='unknown', fencing_token=?, updated_at=?
-        WHERE child_order_id=?
-      `).run(fencingToken, at, row.child_order_id)
-      recomputeBatch(db, row.batch_id, at)
-      updateAuthorization(db, row, 'unknown', at)
-      enqueueNotification(db, row, 'unknown', at)
-      writeAudit(db, 'submit_unknown', submitAttemptId, { childOrderId: row.child_order_id, outcome: 'second-odds-change' }, at)
-      return result(db, row.child_order_id, submitAttemptId)
-    }
-
-    if (kind === 'line_changed') {
-      if (attempt.status !== 'odds_changed_unsent' || row.status !== 'reserved' || Number(attempt.attempt_ordinal) !== 1) {
-        throw new Error('line-change-state')
-      }
-      const current = objectValue(outcome.currentIdentity, 'current-identity-required')
-      const locked = parseJsonObject(attempt.locked_identity_json, 'locked-identity-corrupt')
-      if (stableJson(current) === stableJson(locked)) throw new Error('line-change-not-observed')
-      db.prepare(`
-        UPDATE bet_child_orders SET status='rejected', error_code='line-changed', resolved_at=?
-        WHERE child_order_id=? AND status='reserved'
-      `).run(at, row.child_order_id)
-      db.prepare('DELETE FROM betting_account_locks WHERE child_order_id=?').run(row.child_order_id)
-      recomputeBatch(db, row.batch_id, at, { hasFutureCapacity: input.hasFutureCapacity ?? false })
-      updateAuthorization(db, row, 'released', at)
-      enqueueNotification(db, row, 'rejected', at)
-      writeAudit(db, 'submit_line_changed', submitAttemptId, { childOrderId: row.child_order_id }, at)
-      return result(db, row.child_order_id, submitAttemptId)
-    }
-    throw new TypeError('submit-outcome-kind')
   })
 }
 
@@ -811,7 +872,8 @@ export function recoverAuthorizedAttempts(database, input = {}, options = {}) {
           throw new Error('bet-batch-card-snapshot')
         }
         const scope = parseCardScopes(row).find((item) => item.cardId === row.card_id)
-        if (!scope || scope.eligibilityVersion !== snapshot.realEligibilityVersion) throw new Error('authorization-card-scope')
+        if (!scope || (snapshot.realEligibilityVersion !== undefined
+          && scope.eligibilityVersion !== snapshot.realEligibilityVersion)) throw new Error('authorization-card-scope')
         if (!parseModeScope(row).modes.includes(row.betting_mode)) throw new Error('authorization-mode-scope')
       }
       if (row.status !== 'unknown') {
@@ -910,6 +972,31 @@ export function recoverAuthorizedAttempt(database, input = {}, options = {}) {
   })
 }
 
+export function assertSubmitContext(database, input = {}, options = {}) {
+  if (String(input.authorizationId || '').trim()) throw new Error('authorization-not-supported-by-neutral-submit')
+  return assertAuthorizedSubmitContext(database, input, options)
+}
+
+export function prepareSubmitAttempt(database, input = {}, options = {}) {
+  if (String(input.authorizationId || '').trim()) throw new Error('authorization-not-supported-by-neutral-submit')
+  return prepareAuthorizedSubmit(database, input, options)
+}
+
+export function recordSubmitDispatch(database, input = {}, options = {}) {
+  if (String(input.authorizationId || '').trim()) throw new Error('authorization-not-supported-by-neutral-submit')
+  return recordAuthorizedDispatch(database, input, options)
+}
+
+export function recordSubmitOutcome(database, input = {}, options = {}) {
+  if (String(input.authorizationId || '').trim()) throw new Error('authorization-not-supported-by-neutral-submit')
+  return recordAuthorizedOutcome(database, input, options)
+}
+
+export function recoverSubmitAttempt(database, input = {}, options = {}) {
+  if (String(input.authorizationId || '').trim()) throw new Error('authorization-not-supported-by-neutral-submit')
+  return recoverAuthorizedAttempt(database, input, options)
+}
+
 export class B2Executor {
   constructor({
     database,
@@ -940,7 +1027,7 @@ export class B2Executor {
         ? { cardId: input.cardId, eligibilityVersion: input.eligibilityVersion, bettingMode: input.bettingMode }
         : { bettingMode: input.bettingMode, settingsVersion: input.settingsVersion }
     return {
-      authorizationId: input.authorizationId,
+      ...(input.authorizationId ? { authorizationId: input.authorizationId } : {}),
       ...scope,
       batchId: input.batchId,
       childOrderId: input.childOrderId,
@@ -953,13 +1040,26 @@ export class B2Executor {
 
   async submit(input = {}) {
     const gate = this._gate(input)
-    assertAuthorizedSubmitContext(this.database, gate, this.options)
+    const legacyAuthorized = Boolean(gate.authorizationId)
+    const assertContext = legacyAuthorized ? assertAuthorizedSubmitContext : assertSubmitContext
+    const prepare = legacyAuthorized ? prepareAuthorizedSubmit : prepareSubmitAttempt
+    const dispatch = legacyAuthorized ? recordAuthorizedDispatch : recordSubmitDispatch
+    const recover = legacyAuthorized ? recoverAuthorizedAttempt : recoverSubmitAttempt
+    const recordOutcome = legacyAuthorized ? recordAuthorizedOutcome : recordSubmitOutcome
+    assertContext(this.database, gate, this.options)
     const previewResult = await this.previewProvider.preview({
       accountId: input.accountId,
       batchId: input.batchId,
       lockedSelection: input.lockedSelection,
     })
-    if (previewResult?.realExecutionEligible !== true) throw new Error('preview-real-execution-blocked')
+    const executionPreview = previewResult?.executionPreview
+    const freshBalanceCny = previewResult?.freshBalanceCny
+    if (
+      !executionPreview
+      || typeof executionPreview !== 'object'
+      || !Number.isSafeInteger(freshBalanceCny)
+      || freshBalanceCny < 0
+    ) throw new Error('preview-execution-contract')
     const trusted = {
       ...input,
       ...gate,
@@ -967,13 +1067,13 @@ export class B2Executor {
       capabilityVersion: previewResult.capabilityVersion,
       lockedIdentity: previewResult.lockedIdentity,
       currentIdentity: previewResult.lockedIdentity,
-      preview: previewResult.executionPreview,
+      preview: { ...executionPreview, balanceMinor: freshBalanceCny },
     }
-    const prepared = prepareAuthorizedSubmit(this.database, trusted, this.options)
+    const prepared = prepare(this.database, trusted, this.options)
     let dispatched = false
     const onNetworkStarted = () => {
       if (dispatched) throw new Error('provider-network-started-twice')
-      recordAuthorizedDispatch(this.database, {
+      dispatch(this.database, {
         ...gate,
         submitAttemptId: input.submitAttemptId,
       }, this.options)
@@ -990,13 +1090,15 @@ export class B2Executor {
         capabilityVersion: trusted.capabilityVersion,
         capabilityEvidenceId: trusted.capabilityEvidenceId,
         lockedIdentity: trusted.lockedIdentity,
-        currentIdentity: trusted.currentIdentity,
+        lockedSelection: input.lockedSelection,
         preview: trusted.preview,
+        amountMinor: prepared.child.requestedAmountMinor,
+        remainingChildAmountMinor: prepared.child.requestedAmountMinor,
         onNetworkStarted,
       })
     } catch {
       if (!dispatched) {
-        recoverAuthorizedAttempt(this.database, {
+        recover(this.database, {
           ...gate,
           submitAttemptId: input.submitAttemptId,
         }, this.options)
@@ -1005,13 +1107,13 @@ export class B2Executor {
       outcome = { kind: 'disconnect' }
     }
     if (!dispatched) {
-      recoverAuthorizedAttempt(this.database, {
+      recover(this.database, {
         ...gate,
         submitAttemptId: input.submitAttemptId,
       }, this.options)
       return { ...prepared, status: 'unknown', reason: 'provider-dispatch-contract' }
     }
-    return recordAuthorizedOutcome(this.database, {
+    return recordOutcome(this.database, {
       ...gate,
       submitAttemptId: input.submitAttemptId,
       outcome,

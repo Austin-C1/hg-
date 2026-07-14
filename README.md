@@ -1,26 +1,27 @@
 # 皇冠足球监控与投注协议实验室
 
-当前状态：足球赔率监控默认使用 schema v2（SnapshotBatch + canonical identity + SQLite state + Change→Strategy→Signal）；监控报警的 prematch/live 配置彼此独立。当前投注规则唯一入口是 `/betting-rules` 动态卡片：卡片不保存赛前/滚球模式，执行 mode 来自 Signal；每张卡至少选择一个今日联赛，同一联赛只能属于一张现存卡片。app/frontend/schema contract 均为 `dynamic-betting-cards-v1`。当前能力矩阵仍为 preview/submit/reconciliation `0/0/0`，所以真实 Crown worker 和提交网络保持阻断；尚未执行真实 preview 或 submit。
+当前状态：足球赔率监控默认使用 schema v2（SnapshotBatch + canonical identity + SQLite state + Change→Strategy→Signal）；监控报警的 prematch/live 配置彼此独立。当前投注规则唯一入口是 `/betting-rules` 动态卡片：卡片不保存赛前/滚球模式，执行 mode 来自 Signal；每张卡至少选择一个今日联赛，同一联赛只能属于一张现存卡片。app/frontend/schema contract 均为 `dynamic-betting-cards-v1`。当前 capability 仅开放 exact row `prematch/full_time/asian_handicap/main`，Preview/Submit/Reconciliation 为 `1/1/0`；其他 period/market/mode/lineVariant 仍关闭。真实 runtime 默认 off，继续受规则卡、账号、fresh Preview、lease/fence 和单次 Submit 门禁约束，Reconciliation 尚未开放。
 
 这个项目用于采集和监控皇冠足球赔率，并逐步还原投注协议。当前默认监控以 `POST /transform.php` `text/xml` 响应为真实赔率主源；默认 v2 缺少完整账号凭据时会 fail-closed，不会静默降级。DOM 只属于显式 schema-v1 回滚/cross-check，fixture 用于离线兼容验证。
 
 ## Windows Portable Private Beta
 
-少量 Windows 用户使用时，请只从 [GitHub Releases](https://github.com/Austin-C1/hg-/releases) 下载明确标记为“已完成 Fresh Windows 验收”、并带有匹配签名 manifest 的 ZIP。GitHub Actions 生成的 `unsigned` artifact 仅供维护者审计，不是交付给用户的安装包。
+少量 Windows 用户使用时，请只从 [GitHub Releases](https://github.com/Austin-C1/hg-/releases) 下载明确标记为“已完成 Fresh Windows 验收”的手工 Portable ZIP。GitHub Actions 生成的 `unsigned` artifact 仅供维护者审计，不是交付给用户的安装包。
 
 Portable ZIP 面向 Windows 10/11 x64，内置 Node.js 和 Chromium，不依赖系统 Node、Chrome、Edge 或 Docker，也不安装 Windows Service。使用方式：
 
 1. 把 ZIP 完整解压到普通文件夹，不要在压缩软件预览窗口里运行。
 2. 双击 `启动程序.cmd`，并保留打开的运行窗口；关闭窗口或按 `Ctrl+C` 会停止程序。
-3. 首次打开 Dashboard 后，在“皇冠监控账号”中填写自己的 exact public HTTPS 皇冠网址、账号和密码。网址只能是完整 HTTPS origin，不能带路径、参数或账号信息。
-4. 点击人工登录后，由本人在包内 Chromium 中处理验证码、滑块或 OTP，再回到 Dashboard 确认。程序不会绕过人机验证，登录成功也不会自动启动 Watcher。
-5. 需要监控时，只能在 Dashboard 中手动启动 Watcher。程序重启、更新或回滚后，Watcher 都保持停止。
+3. 首次成功启动后，程序会在当前用户桌面创建 `皇冠抓水投注.lnk`；以后每次成功启动都会幂等校正 Target、WorkingDirectory 和图标。把程序移动到新目录或手工换用新版本后，从新目录运行一次 `启动程序.cmd` 即可修复快捷方式。快捷方式创建失败不会阻止 Dashboard 启动。
+4. 首次打开 Dashboard 后，在“皇冠监控账号”中填写自己的 exact public HTTPS 皇冠网址、账号和密码。网址只能是完整 HTTPS origin，不能带路径、参数或账号信息。
+5. 点击人工登录后，由本人在包内 Chromium 中处理验证码、滑块或 OTP，再回到 Dashboard 确认。程序不会绕过人机验证，登录成功也不会自动启动 Watcher。
+6. 需要监控时，只能在 Dashboard 中手动启动 Watcher。程序重启或手工更换 Portable 目录后，Watcher 都保持停止。
 
-用户数据库、账号密文、session、浏览器 Profile、日志和本地配置位于 `%LOCALAPPDATA%\CrownMonitor`，不会写回解压目录。下载包内含 118 项默认联赛白名单，但只在目标文件不存在的首次运行时 seed；之后更新不会覆盖用户修改。
+用户数据库、账号密文、session、浏览器 Profile、日志和本地配置位于 `%LOCALAPPDATA%\CrownMonitor`，不会写回解压目录。下载包内含 118 项默认联赛白名单，但只在目标文件不存在的首次运行时 seed；手工换用新版 ZIP 不会覆盖用户修改。
 
-Dashboard 的“系统更新”只支持用户手动检查和确认安装。更新包必须通过 Ed25519 签名、SHA-256、文件清单、SQLite 一致性备份和候选版本健康检查；失败会按持久 journal 回滚。更新不会自动启动 Watcher 或投注 worker。
+程序不包含远程检查、下载或安装更新的功能。需要升级时，由维护者重新构建并发布 Portable ZIP；用户把新 ZIP 解压到新目录，从新目录成功启动一次，桌面快捷方式就会自动指向新目录。确认新版本和用户数据正常后，再人工删除旧程序目录；不要删除 `%LOCALAPPDATA%\CrownMonitor`。
 
-当前真实投注 capability 为 preview/submit/reconciliation `0/0/0`。Portable、人工登录和远程更新都不会开放真实投注，也不会发送 `FT_bet`。
+程序不设置开机启动，不创建 Startup 项或 Windows Service，也不要求管理员权限。当前 exact row `prematch/full_time/asian_handicap/main` 的 Preview/Submit/Reconciliation capability 为 `1/1/0`；Portable 与人工登录本身不会开启真实投注，也不会自行发送 `FT_bet`。
 
 - 用户说明：[`docs/windows-private-beta-quick-start.md`](docs/windows-private-beta-quick-start.md)
 - 维护者发布手册：[`docs/github-release-runbook.md`](docs/github-release-runbook.md)
@@ -149,17 +150,18 @@ npm run crown:betting:analyze -- data/runtime/betting-protocol-captures/<run>
 B1 以持久 Signal 为唯一触发事实，并使用以下安全核心：
 
 - 金额只用 safe INTEGER minor units；规则目标金额与账号单笔限额分离，分配同时遵守 provider min/max/step、余额、币种和 amount scale。
+- 每个投注账号的 `perBetLimit` 都由用户在账号配置中手工设置和修改；账号启用要求它是大于 0 的整数 CNY。文档、fixture 或测试里出现的 `50 CNY` 只是测试配置，不是生产默认值、统一硬上限或自动填充值。
 - `signalId + ruleId` 生成确定性 batch；child order 是金额账本真相，batch 聚合金额可从 child 重算。
 - 不同账号可并发 preview/submit；同一账号由 SQLite lock 串行。`rejected` 释放自身锁但金额终止且绝不转投；`unknown` 保留金额和账号锁且绝不自动重投。
 - 批次锁定 event、period、market、lineKey/handicap 和反向 side；同盘口赔率变化继续，盘口线、阶段、方向或 suspended 变化停止未发送部分。
 - worker 每轮从 SQLite 回读持久 Signal，恢复 `submit_prepared/submit_dispatched` 时按 unknown 处理；四个崩溃窗口不会产生重复模拟 submit。
 - Executor 使用 `betting-executor:<canonical-db>` fenced lease。CLI 默认 `off`；`preview` 只做只读能力分配，`simulated` 只消费确定脚本，两者网络/`FT_bet` 计数均为零。
 
-B1/B2 与 C 阶段的离线实现、安全整改、授权预算、逐账号 session、提交恢复和对账状态机均已完成回归；真实 Provider 仍由 exact capability `0/0/0` 阻断，真实小额提交不属于自动测试权限。
+历史 B1/B2 与 C 阶段快照：离线实现、安全整改、授权预算、逐账号 session、提交恢复和对账状态机当时已完成回归；真实 Provider 当时由 exact capability `0/0/0` 阻断。该历史数值已被本文顶部现行 `1/1/0` 取代，真实小额提交仍不属于自动测试权限。
 
 ## 已删除的旧投注 CLI
 
-旧 bootstrap、单笔执行、顺序执行和 candidate dry-run 入口已被 Dashboard 统一 worker 取代并从仓库删除。不要从历史文档恢复这些脚本；当前真实执行唯一入口是 Dashboard 管理的 worker，且 capability 仍为 `0/0/0`。
+旧 bootstrap、单笔执行、顺序执行和 candidate dry-run 入口已被 Dashboard 统一 worker 取代并从仓库删除。历史删除阶段的 capability 当时为 `0/0/0`；不要从历史文档恢复这些脚本，当前 capability 统一以本文顶部 exact row `1/1/0` 为准。
 
 ## Probe
 
@@ -330,7 +332,7 @@ Dashboard 页面：
 - `比赛选择`：比赛列表、北京时间/质量诊断、筛选、详情抽屉、追踪/取消追踪。
 - `赔率监控设置`：赛前/滚球独立 Switch、参数配置、运行健康和逐赛事诊断。
 - `投注规则`：动态卡片 CRUD/CAS；卡片名称、至少一个今日联赛、目标赔率区间、正整数 CNY 金额和备注。今日手动追踪联赛只进入选项目录，仍需显式选择；被其他现存卡片占用的联赛不可选。
-- `投注账号配置`：账号整数 CNY 单笔上限、顺序、暂停/启用 fresh check、accepted-only 今日统计和 child 账本；用户不再配置精度或 step。
+- `投注账号配置`：每账户可手工修改整数 CNY `perBetLimit`、顺序、暂停/启用 fresh check、accepted-only 今日统计和 child 账本；用户不再配置精度或 step。测试中的 `50 CNY` 不是生产默认值或统一上限。
 - `运行控制台`：watcher freshness、全局 runtime、unknown/reconciliation、账号和最近 batch 的 bounded 汇总。
 
 Dashboard 行为：
@@ -428,22 +430,22 @@ Select-String -Path src\**\*.mjs,scripts\*.mjs,frontend\src\**\*.ts,frontend\src
 ```
 
 预期不会在监控路径命中下注执行函数；后续真实执行只能位于独立投注模块，并通过确认、限额和审计。
-# C 阶段统一自动投注状态（2026-07-12）
+# 历史：C 阶段统一自动投注状态（2026-07-12）
 
 统一监控投注链路已经完成离线实现与回归：`Change -> priority winner -> one-market claim -> 60+40 ordered allocation -> per-account queue -> outcome/restart recovery`。用户规则的 canonical 字段是 `mode/period/marketType/monitoredSide/minWaterRise/targetOddsMin/targetOddsMax/targetAmountMinor/leagueNames`，监控与真实投注开关独立；真实开关必须依赖监控开关。
 
 运行语义：同一 event/mode/period/market/line identity/line value/actual side 生命周期只取得一次资格；新 line identity 或 line value 可取得新资格。`accepted` 计入金额并释放账号锁，`rejected` 终止且不转投，`unknown` 保留金额与账号锁并只进入对账，不自动重投。账号暂停为 `enabled -> pause_pending -> paused`，已有队列完成后暂停；重新启用为 `paused -> checking -> enabled`，必须重新登录、读取比赛/会员/余额。
 
-真实投注意图持久化。启动后先进入 `armed_waiting` 并重新执行 13 项预检，只有全部通过才可进入 `running`。当前能力矩阵 `crown-protocol-capabilities-v2:23628f891d1edb9a` 的 preview/submit/reconciliation 覆盖仍为 `0/0/0`，因此真实 Crown worker 与 submit 网络调用保持阻断；不能宣称自动真实下注可用。
+该历史阶段的真实投注意图已持久化。启动后先进入 `armed_waiting` 并重新执行 13 项预检，只有全部通过才可进入 `running`。当时能力矩阵 `crown-protocol-capabilities-v2:23628f891d1edb9a` 的 preview/submit/reconciliation 覆盖为 `0/0/0`，因此真实 Crown worker 与 submit 网络调用保持阻断；该数值不是当前 capability。
 
-真实运行意图的唯一入口是 Dashboard `/operations` 的全局开关；具体规则来自 `/betting-rules` 动态卡片。不要独立启动 real worker；Dashboard 只有在全局意图已开启且全部预检通过后，才会通过受控 IPC/ready-ticket 启动并激活 worker。当前 capability `0/0/0`，因此该入口保持阻断。
+该历史阶段的真实运行意图唯一入口是 Dashboard `/operations` 的全局开关；具体规则来自 `/betting-rules` 动态卡片。不要独立启动 real worker；Dashboard 只有在全局意图已开启且全部预检通过后，才会通过受控 IPC/ready-ticket 启动并激活 worker。当时 capability 为 `0/0/0`，当前 capability 以本文顶部 `1/1/0` 为准。
 
 本机运行：
 
 ```powershell
 npm run crown:dashboard
 # 打开 http://127.0.0.1:8787/betting-rules 配置动态卡片
-# 打开 http://127.0.0.1:8787/operations 启动 Watcher；真实投注总开关当前受 capability 0/0/0 阻断
+# 历史 C 阶段当时：打开 http://127.0.0.1:8787/operations 启动 Watcher；真实投注总开关受 capability 0/0/0 阻断
 ```
 
 停止顺序：先在 Dashboard 确认“停止真实投注”，关闭新 claim 并取消可证明未发送的 child；再在 `/operations` 确认 unknown/reconciliation 状态；然后停止 Watcher，最后 `Ctrl+C` 关闭 Dashboard。

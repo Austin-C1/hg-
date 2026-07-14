@@ -11,7 +11,7 @@ function writeJsonl(file, rows) {
   fs.writeFileSync(file, rows.map((row) => JSON.stringify(row)).join('\n') + '\n', 'utf8')
 }
 
-async function withServer(t, handler, { changes = [], appDbPath = null } = {}) {
+async function withServer(t, handler, { changes = [], appDbPath = null, appOptions = {} } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-dashboard-server-'))
   const staticDir = path.join(dir, 'public')
   const runtimeDir = path.join(dir, 'runtime')
@@ -31,7 +31,7 @@ async function withServer(t, handler, { changes = [], appDbPath = null } = {}) {
 
   const server = createDashboardServer({
     staticDir,
-    appOptions: { dbPath: appDbPath || path.join(dir, 'expected-missing.sqlite') },
+    appOptions: { dbPath: appDbPath || path.join(dir, 'expected-missing.sqlite'), ...appOptions },
     dataOptions: {
       snapshotPath: path.join(runtimeDir, 'crown-odds-snapshots.jsonl'),
       changesPath: path.join(runtimeDir, 'crown-odds-changes.jsonl'),
@@ -68,6 +68,31 @@ test('dashboard server exposes read-only JSON APIs and static HTML', async (t) =
 
     const missing = await fetch(`${baseUrl}/missing`)
     assert.equal(missing.status, 404)
+
+    assert.equal((await fetch(`${baseUrl}/api/health/update`)).status, 404)
+    assert.equal((await fetch(`${baseUrl}/system-update`)).status, 404)
+  })
+})
+
+test('retired candidate health stays 404 even when obsolete candidate inputs are supplied', async (t) => {
+  let called = false
+  await withServer(t, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/health/update`, {
+      headers: { 'x-crown-update-probe': 'P'.repeat(43) },
+    })
+    assert.equal(response.status, 404)
+    assert.deepEqual(await response.json(), { error: 'not-found' })
+    assert.equal(called, false)
+  }, {
+    appOptions: {
+      installationId: 'install-fixture',
+      env: {
+        CROWN_UPDATE_CANDIDATE: '1',
+        CROWN_UPDATE_PROBE_TOKEN: 'P'.repeat(43),
+        CROWN_APP_VERSION: '0.2.0',
+      },
+      updateHealthProvider: () => { called = true; return {} },
+    },
   })
 })
 

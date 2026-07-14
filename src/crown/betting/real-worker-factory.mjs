@@ -3,20 +3,20 @@ import { CrownApiLoginManager } from '../login/crown-api-login-manager.mjs'
 import { B2Executor } from './b2-executor.mjs'
 import { CrownAccountExecutionProvider } from './crown-account-execution-provider.mjs'
 import { CrownAccountPreviewProvider } from './crown-account-provider.mjs'
-import { B2Reconciler } from './b2-reconciler.mjs'
 
 function createPreviewAdapter(previewProvider) {
   return {
     async preview(input) {
       const result = await previewProvider.preview(input)
-      if (result?.realExecutionEligible !== true) return { ok: false }
-      const preview = result.executionPreview || result.preview
-      if (!preview || typeof preview !== 'object') throw new Error('preview-execution-contract')
+      const preview = result.executionPreview
+      if (!preview || typeof preview !== 'object'
+        || !Number.isSafeInteger(result.freshBalanceCny)
+        || result.freshBalanceCny < 0) return { ok: false }
       return {
         ok: true,
         minStakeMinor: preview.minStakeMinor,
         maxStakeMinor: preview.maxStakeMinor,
-        balanceMinor: preview.balanceMinor,
+        balanceMinor: result.freshBalanceCny,
         stakeStepMinor: preview.stakeStepMinor,
         odds: preview.odds,
         currency: preview.currency,
@@ -32,9 +32,9 @@ function createPreviewAdapter(previewProvider) {
 export function createRealWorkerProvider({
   database,
   executorLease,
-  reconcilerLease,
   env = process.env,
   runtimeDir = 'data/runtime',
+  logger = null,
   factories = {},
 } = {}) {
   const repository = (factories.repository || ((db, options) => createAppRepository(db, options)))(database, { env })
@@ -42,20 +42,13 @@ export function createRealWorkerProvider({
     runtimeDir, bettingAllowedOrigins: env.CROWN_BETTING_ALLOWED_ORIGINS || '',
   })
   const previewProvider = (factories.previewProvider || ((options) => new CrownAccountPreviewProvider(options)))({
-    repository, loginManager, executorLease,
+    repository, loginManager, executorLease, logger,
   })
-  const executionProvider = (factories.executionProvider || (() => new CrownAccountExecutionProvider()))()
+  const executionProvider = (factories.executionProvider || ((options) => new CrownAccountExecutionProvider(options)))({
+    repository, loginManager, previewProvider, executorLease, logger,
+  })
   const executor = (factories.executor || ((options) => new B2Executor(options)))({
     database, previewProvider, executionProvider, lease: executorLease, env,
-  })
-  const sourceClient = (factories.sourceClient || (() => ({
-    async getDangerous() { throw new Error('reconciliation-capability-unverified') },
-    async getTodayWagers() { throw new Error('reconciliation-capability-unverified') },
-  })))()
-  const b2Reconciler = (factories.reconciler || ((options) => new B2Reconciler(options)))({
-    database,
-    lease: reconcilerLease,
-    sourceClient,
   })
   const previewAdapter = createPreviewAdapter(previewProvider)
   return {
@@ -63,7 +56,6 @@ export function createRealWorkerProvider({
     previewProvider,
     executionProvider,
     b2Executor: executor,
-    b2Reconciler,
     previewAdapter,
     finalizeAccountPauses: () => repository.finalizePendingBettingAccountPauses?.() || 0,
   }
@@ -102,7 +94,7 @@ export function startRoleLeaseHeartbeat({
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
 } = {}) {
-  if (!Array.isArray(leases) || leases.length !== 3 || !controller?.abort) throw new TypeError('real-worker-role-heartbeat')
+  if (!Array.isArray(leases) || leases.length !== 2 || !controller?.abort) throw new TypeError('real-worker-role-heartbeat')
   const ttlMs = Math.min(...leases.map((lease) => lease.ttlMs))
   if (!Number.isSafeInteger(ttlMs) || ttlMs < 3) throw new TypeError('real-worker-role-heartbeat-ttl')
   const timer = setIntervalFn(() => {

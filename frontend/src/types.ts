@@ -505,7 +505,21 @@ export interface RealBettingStatus {
 export interface OperationsSummary {
   serverTime: string
   freshness: { lastOddsAt: string | null; ageMs: number | null; state: 'fresh' | 'stale' | 'missing'; staleAfterMs: number }
-  watcher: { active: boolean; unique: boolean; activeCount: number; heartbeatAt: string | null; expiresAt: string | null; fencingToken: number }
+  watcher: {
+    active: boolean
+    unique: boolean
+    activeCount: number
+    heartbeatAt: string | null
+    expiresAt: string | null
+    fencingToken: number
+    process?: {
+      desiredRunning: boolean
+      processState: 'running' | 'waiting-restart' | 'stopped-after-retries' | 'manually-stopped' | 'stopping'
+      restartAttempt: number
+      nextRestartAt: string | null
+      lastExit: { exitCode: number | null; signal: string | null; exitedAt: string | null; stderrSummary: string } | null
+    }
+  }
   readiness: Record<'monitor' | 'rules' | 'accounts' | 'realBetting', {
     state: 'ready' | 'action-required' | 'blocked' | 'off'; ready: boolean; reason: string
   }>
@@ -646,30 +660,4 @@ export interface BootstrapPayload {
   oddsSummary: OddsSummary
   events: { items: OddsEvent[]; warnings?: string[] }
   changes: { items: unknown[]; warnings?: string[] }
-}
-
-export type SystemUpdateState =
-  | 'unavailable'
-  | 'idle'
-  | 'checking'
-  | 'available'
-  | 'up-to-date'
-  | 'downloading'
-  | 'applying'
-  | 'error'
-
-export interface SystemUpdateStatus {
-  state: SystemUpdateState
-  currentVersion: string
-  availableVersion: string
-  progress: number
-  errorCode: string
-  cancellable: boolean
-  releaseNotes: string
-  rollbackReason: string
-}
-
-export interface SystemUpdateCancelResult {
-  cancelled: boolean
-  code: string
 }

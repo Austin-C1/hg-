@@ -45,6 +45,67 @@ function fakeLongRunningSpawnFactory(calls) {
   }
 }
 
+function fakeRecoveryHarness() {
+  let nowMs = Date.parse('2026-07-13T00:00:00.000Z')
+  let timerId = 0
+  const timers = new Map()
+  const calls = []
+  const cleared = new Map()
+  return {
+    calls,
+    now: () => new Date(nowMs),
+    setTimeoutFn(callback, delay) {
+      timerId += 1
+      const timer = { id: timerId, callback, delay, at: nowMs + delay, cleared: false, unref() {} }
+      timers.set(timer.id, timer)
+      return timer
+    },
+    clearTimeoutFn(timer) {
+      if (!timer) return
+      const current = timers.get(timer.id)
+      if (current) {
+        current.cleared = true
+        timers.delete(timer.id)
+        cleared.set(timer.id, current)
+      }
+    },
+    spawnCommand(command, args, options) {
+      const child = new EventEmitter()
+      child.pid = 4000 + calls.length
+      child.exitCode = null
+      child.signalCode = null
+      child.stderr = new EventEmitter()
+      child.kill = (signal = 'SIGTERM') => {
+        child.signalCode = signal
+        child.emit('exit', null, signal)
+      }
+      calls.push({ command, args, options, child })
+      return child
+    },
+    activeDelays: () => [...timers.values()].map((timer) => timer.delay).sort((a, b) => a - b),
+    runDelay(delay) {
+      const timer = [...timers.values()].find((candidate) => candidate.delay === delay)
+      assert.ok(timer, `missing timer ${delay}`)
+      timers.delete(timer.id)
+      nowMs = timer.at
+      timer.callback()
+      return timer
+    },
+    runCleared(timer) {
+      const value = cleared.get(timer.id) || timer
+      nowMs = Math.max(nowMs, value.at)
+      value.callback()
+    },
+    crash(index, { code = 1, signal = null, stderr = '' } = {}) {
+      const child = calls[index].child
+      if (stderr) child.stderr.emit('data', Buffer.from(stderr))
+      child.exitCode = code
+      child.signalCode = signal
+      child.emit('exit', code, signal)
+    },
+  }
+}
+
 test('monitor process runLoginTest starts crown-watch with --login-test and waits for exit', async () => {
   const calls = []
   const controller = createMonitorProcessController({
@@ -190,4 +251,160 @@ test('stopAndWait reports a stable unsafe failure when forced termination cannot
   await assert.rejects(controller.stopAndWait({ timeoutMs: 5, forceTimeoutMs: 5 }), /watcher-stop-unsafe/)
   assert.deepEqual(calls[0].child.killSignals, ['SIGTERM', 'SIGKILL'])
   assert.equal(controller.isRunning(), true)
+})
+
+test('unexpected exits retain bounded sanitized diagnostics and recover after 2, 5, and 15 seconds only', () => {
+  const harness = fakeRecoveryHarness()
+  const controller = createMonitorProcessController({
+    cwd: process.cwd(),
+    dbPath: 'storage/test.sqlite',
+    runtimeDir: 'data/runtime-test',
+    spawnCommand: harness.spawnCommand,
+    setTimeoutFn: harness.setTimeoutFn,
+    clearTimeoutFn: harness.clearTimeoutFn,
+    now: harness.now,
+    isRestartLeaseAvailable: () => true,
+    stableRunMs: 60_000,
+  })
+
+  controller.start()
+  harness.crash(0, {
+    stderr: `fatal watcher error cookie=secret-token password=hunter2 C:\\Users\\Owner\\private\\state.json\n${'x'.repeat(5000)}`,
+  })
+  let status = controller.getStatus()
+  assert.equal(status.desiredRunning, true)
+  assert.equal(status.processState, 'waiting-restart')
+  assert.equal(status.restartAttempt, 1)
+  assert.equal(status.nextRestartAt, '2026-07-13T00:00:02.000Z')
+  assert.equal(status.lastExit.exitCode, 1)
+  assert.equal(status.lastExit.signal, null)
+  assert.equal(status.lastExit.exitedAt, '2026-07-13T00:00:00.000Z')
+  assert.match(status.lastExit.stderrSummary, /fatal watcher error/)
+  assert.doesNotMatch(status.lastExit.stderrSummary, /secret-token|hunter2|Owner|state\.json/i)
+  assert.equal(Buffer.byteLength(status.lastExit.stderrSummary) <= 2048, true)
+  assert.match(status.lastExit.stderrSummary, /x{50}$/)
+  assert.deepEqual(harness.activeDelays(), [2000])
+
+  harness.runDelay(2000)
+  assert.equal(harness.calls.length, 2)
+  harness.crash(1)
+  assert.equal(controller.getStatus().restartAttempt, 2)
+  assert.deepEqual(harness.activeDelays(), [5000])
+  harness.runDelay(5000)
+  harness.crash(2)
+  assert.equal(controller.getStatus().restartAttempt, 3)
+  assert.deepEqual(harness.activeDelays(), [15000])
+  harness.runDelay(15000)
+  harness.crash(3)
+  status = controller.getStatus()
+  assert.equal(status.processState, 'stopped-after-retries')
+  assert.equal(status.restartAttempt, 3)
+  assert.equal(status.nextRestartAt, null)
+  assert.deepEqual(harness.activeDelays(), [])
+})
+
+test('manual stop and reset invalidate pending or old-generation recovery callbacks', () => {
+  const harness = fakeRecoveryHarness()
+  const controller = createMonitorProcessController({
+    cwd: process.cwd(), dbPath: 'storage/test.sqlite', runtimeDir: 'data/runtime-test',
+    spawnCommand: harness.spawnCommand,
+    setTimeoutFn: harness.setTimeoutFn,
+    clearTimeoutFn: harness.clearTimeoutFn,
+    now: harness.now,
+    isRestartLeaseAvailable: () => true,
+  })
+  controller.start()
+  harness.crash(0)
+  const pending = harness.runDelay(2000)
+  assert.equal(harness.calls.length, 2)
+  harness.crash(1)
+  const stale = { ...harness.runDelay(5000) }
+  assert.equal(harness.calls.length, 3)
+  harness.crash(2)
+  const stopped = controller.stop()
+  assert.equal(stopped.stopped, false)
+  assert.equal(controller.getStatus().desiredRunning, false)
+  assert.equal(controller.getStatus().processState, 'manually-stopped')
+  harness.runCleared(stale)
+  harness.runCleared(pending)
+  assert.equal(harness.calls.length, 3)
+
+  controller.start()
+  assert.equal(harness.calls.length, 4)
+  const reset = controller.reset()
+  assert.equal(reset.stopped, true)
+  assert.equal(controller.getStatus().desiredRunning, false)
+  assert.equal(controller.getStatus().processState, 'manually-stopped')
+  assert.equal(harness.calls.length, 4)
+})
+
+test('recovery rechecks desired state and lease before every replacement spawn', () => {
+  const harness = fakeRecoveryHarness()
+  let leaseAvailable = false
+  let checks = 0
+  const controller = createMonitorProcessController({
+    cwd: process.cwd(), dbPath: 'storage/test.sqlite', runtimeDir: 'data/runtime-test',
+    spawnCommand: harness.spawnCommand,
+    setTimeoutFn: harness.setTimeoutFn,
+    clearTimeoutFn: harness.clearTimeoutFn,
+    now: harness.now,
+    isRestartLeaseAvailable() {
+      checks += 1
+      return leaseAvailable ? true : { available: false, retryAfterMs: 1000 }
+    },
+  })
+  controller.start()
+  harness.crash(0)
+  harness.runDelay(2000)
+  assert.equal(checks, 1)
+  assert.equal(harness.calls.length, 1)
+  assert.equal(controller.getStatus().processState, 'waiting-restart')
+  assert.deepEqual(harness.activeDelays(), [1000])
+  leaseAvailable = true
+  harness.runDelay(1000)
+  assert.equal(checks, 2)
+  assert.equal(harness.calls.length, 2)
+  assert.equal(controller.getStatus().processState, 'running')
+})
+
+test('a recovered watcher earns a fresh retry budget only after the stable-run window', () => {
+  const harness = fakeRecoveryHarness()
+  const controller = createMonitorProcessController({
+    cwd: process.cwd(), dbPath: 'storage/test.sqlite', runtimeDir: 'data/runtime-test',
+    spawnCommand: harness.spawnCommand,
+    setTimeoutFn: harness.setTimeoutFn,
+    clearTimeoutFn: harness.clearTimeoutFn,
+    now: harness.now,
+    isRestartLeaseAvailable: () => true,
+    stableRunMs: 60_000,
+  })
+  controller.start()
+  harness.crash(0)
+  harness.runDelay(2000)
+  assert.equal(controller.getStatus().restartAttempt, 1)
+  harness.runDelay(60_000)
+  assert.equal(controller.getStatus().restartAttempt, 0)
+  harness.crash(1)
+  assert.equal(controller.getStatus().restartAttempt, 1)
+  assert.deepEqual(harness.activeDelays(), [2000])
+})
+
+test('child process error events are sanitized and enter the same bounded recovery state', () => {
+  const harness = fakeRecoveryHarness()
+  const controller = createMonitorProcessController({
+    cwd: process.cwd(), dbPath: 'storage/test.sqlite', runtimeDir: 'data/runtime-test',
+    spawnCommand: harness.spawnCommand,
+    setTimeoutFn: harness.setTimeoutFn,
+    clearTimeoutFn: harness.clearTimeoutFn,
+    now: harness.now,
+    isRestartLeaseAvailable: () => true,
+  })
+  controller.start()
+  harness.calls[0].child.emit('error', new Error('spawn failed token=private C:\\Users\\Owner\\watcher.mjs'))
+  const status = controller.getStatus()
+  assert.equal(status.processState, 'waiting-restart')
+  assert.equal(status.restartAttempt, 1)
+  assert.match(status.lastExit.stderrSummary, /spawn failed/)
+  assert.doesNotMatch(status.lastExit.stderrSummary, /private|Owner|watcher\.mjs/)
+  assert.deepEqual(harness.activeDelays(), [2000])
 })

@@ -81,7 +81,7 @@ test('invalid calendar timestamp in matched card fails closed while preserving S
   try {
     seedCard(handle.db)
     handle.db.exec('PRAGMA ignore_check_constraints=ON')
-    handle.db.prepare("UPDATE auto_betting_rule_cards SET real_eligibility_updated_at='2026-99-99T00:00:00.000Z'").run()
+    handle.db.prepare("UPDATE auto_betting_rule_cards SET updated_at='2026-99-99T00:00:00.000Z'").run()
     assert.equal(state.insertSignal(fixture(), { availableLeagueNames: new Set(['League']) }).inserted, true)
     assert.equal(handle.db.prepare('SELECT COUNT(*) count FROM monitor_signals').get().count, 1)
     assert.equal(handle.db.prepare("SELECT COUNT(*) count FROM monitor_deliveries WHERE channel='telegram'").get().count, 1)

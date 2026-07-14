@@ -1,35 +1,69 @@
 # 模块汇总
 
-## 2026-07-13 Windows Portable 与手动签名更新
+## 2026-07-14 真实投注 runtime 两阶段启动
 
-- 模块入口：`docs/modules/windows-portable-release.md`；设计和实施计划入口为 `docs/superpowers/specs/2026-07-13-crown-windows-portable-and-remote-update-design.md`、`docs/superpowers/plans/2026-07-13-crown-windows-portable-release-and-update.md`。
-- 发行边界：Windows 10/11 x64 Portable ZIP、内置 runtime-lock Node/Chromium、APP_ROOT 与 `%LOCALAPPDATA%\CrownMonitor` 分离、可见 launcher、Watcher 只能手动启动、真实 capability `0/0/0`。
-- 已实现模块：Portable path/first-run、118 项白名单 seed、精确进程身份 launcher、allowlist release builder/audit、包内 Chromium 人工登录与 exact-origin session bridge、最终 ZIP canonical manifest 生成、strict manifest/Ed25519/GitHub 下载/安全解压、SQLite backup/preflight/health/journal、外部 update handoff/recovery、Dashboard update API/UI、pinned unsigned CI workflow。
-- 强绑定验证：launcher/path/current/installation/process identity 一起验证；人工登录/origin/session/API read-only verification 一起验证；manifest/signature/download/extract/backup/preflight/health/applier/Windows handoff/recovery 端到端验证；release allowlist/runtime lock/workflow/audit 一起验证。
-- 可独立开发：用户 quick start、Release notes 和纯展示文案可单独修改，但不得改变运行契约；受信公钥轮换、manifest schema 和 production allowlist 不是独立修改项。
-- 发布状态：公开仓库和 unsigned Actions artifact 不等于用户 Release。生产 trusted public key、离线签名、最终资产复验及 Fresh Windows 证据全部完成前，不能把 ZIP 标记为可用下载版；签名私钥绝不进入仓库或 GitHub。
-- Fresh Windows 必须覆盖无系统 Node/Chrome/Edge/Docker、外部 cwd、中文/空格路径、端口冲突、离线、篡改包、更新各阶段强制终止、SQLite 保持及 Watcher/worker 始终 off。
+- 启动静态门禁为规则卡、可用账号、exact capability、schema；通过后才能 spawn worker。readyTicket 返回后再执行完整 worker/executor fence preflight，成功才 `running + GO`。
+- `app-api.mjs`、`real-betting-runtime.mjs` 与 `betting-process.mjs` 是强绑定启动链；缺 ticket 或 post-ready 检查失败必须停止 worker，不能提交 running。执行期 Submit gate 未改变。
+
+## 2026-07-14 Task 10 accepted-only execution
+
+- 强绑定执行链已接通：Watcher exact row `prematch/full_time/asian_handicap/main` → capability matrix Preview/Submit/Reconciliation `1/1/0` → strict Preview → coordinator/B2 持久化 child amount 与 locked selection → 单次 production Submit → accepted/unknown ledger。
+- `crown-transform-xml`、capability matrix、order mapper、response parser、account Preview/Submit providers、real worker factory、B2 executor 和 repository ciphertext seal 必须一起验证；任一 identity、字段集、session provenance、fence、金额、赔率或盘口漂移均 fail-closed。
+- 可独立验证：public accepted-only evidence candidate/fixture、matrix digest、strict mapper/parser 和 watcher main-row classification。Reconciliation、其他 period/market/mode/lineVariant 仍未开放。
+- 运行配置中的监控阈值（当前由用户设为 `0.01`）不进入 protocol capability 或 mapper 硬编码；执行仍只认 Signal 与冻结规则事实。
+
+## 历史：2026-07-14 exact execution evidence candidate（已被 Task 10 accepted-only evidence 取代）
+
+- `scripts/crown-betting-protocol-analyze.mjs` 新增离线 exact evidence builder，严格绑定 matching raw/public record、account/session/execution/result identity、直接 Preview/Submit 值和字段集合指纹；任一重复、漂移、未知敏感字段、额外关键字段或截断都会 fail-closed。
+- 当时为 capture `20260714-085221` 生成 safe candidate：4 条记录、6 个排除字段、8 个 HMAC binding；因 `rejected-attempt-required`、`integer-cny-step-unproven`、`exact-capability-unproven` 保持 evidence incomplete，capability 当时为 `0/0/0`。当前值以顶部 Task 10 的 `1/1/0` 为准。
+- 该模块可独立离线验证；只有取得单独 rejected capture 后，才需要开发跨 capture combiner。与 production capability gate 强绑定的启用逻辑本次未改。
+
+## 2026-07-14 账号现场可执行性
+
+- 账号历史登录/余额检查时间不参与全局真实投注启动；账号执行资格由每个 child 当场登录或复用有效 session、读取皇冠账号信息和 strict `FT_order_view` Preview 共同证明。
+- 运行状态中的旧 `betting-account-login-not-fresh`、`betting-account-balance-not-fresh` 必须按当前 preflight 重算。
+- exact Preview/Submit capability、`perBetLimit`、精确盘口/赔率/金额和每 child 单次 Submit 仍是强绑定约束。
+
+## 历史：2026-07-13 自动投注状态（已被 Task 10 取代）
+
+- 强绑定执行链为：监控变化 → 冻结规则卡快照 → fresh Preview → 顺序账号分配 → 单次 Submit → outcome/锁处理。盘口身份以 `handicapRaw` 为准；fresh Preview 赔率必须仍位于冻结规则区间。
+- 账号按 `bet_order` 顺序使用；`perBetLimit` 投注上限保留并允许用户手工修改，`50 CNY` 只属于测试配置。明确 `rejected` 后剩余金额转下一个未使用账号；`unknown` 保留锁且不重试。
+- Submit 网络请求一旦开始，每个 child 最多一次提交；恢复路径不能生成第二次请求。
+- 该历史阶段的生产 Preview/Submit capability 为 `0/0`。随后在 2026-07-14 完成一笔受控 accepted `FT_bet`；当前 capability 以顶部 Task 10 的 exact row `1/1/0` 为准。
+- 可独立开发：Watcher 退出诊断与有界恢复、只读 Operations 投影。强绑定验证：execution identity、规则冻结快照、coordinator、B2、attempt recovery、capability/evidence gate 必须一起验证。
+- 当时规格与计划入口：`docs/superpowers/specs/2026-07-13-crown-demo-account-auto-betting-design.md`、`docs/superpowers/plans/2026-07-13-crown-demo-account-auto-betting.md`。下方旧阶段口径只作历史依据。
+
+## 2026-07-13 Windows 手工 Portable 与桌面快捷启动
+
+- 模块入口：`docs/modules/windows-portable-release.md`；当前设计和实施计划入口为 `docs/superpowers/specs/2026-07-13-crown-manual-portable-and-desktop-shortcut-design.md`、`docs/superpowers/plans/2026-07-13-crown-manual-portable-and-desktop-shortcut.md`。旧远程 updater 设计与计划已标记 Superseded，只作历史证据，不得恢复实现。
+- 发行边界：Windows 10/11 x64 完整 Portable ZIP、内置 runtime-lock Node/Chromium、APP_ROOT 与 `%LOCALAPPDATA%\CrownMonitor` 分离、可见 launcher、Watcher 只能手动启动；不提供程序内远程检查/下载/安装，不设开机启动，不创建 Startup 项或 Windows Service。
+- 已实现模块：Portable path/first-run、118 项白名单 seed、精确进程身份 launcher、allowlist release builder/audit、包内 Chromium 人工登录与 exact-origin session bridge、成功启动后的幂等桌面快捷方式创建/修复，以及 pinned unsigned CI workflow。
+- 强绑定验证：launcher/path/current/installation/process identity 一起验证；launcher health、`启动程序.cmd`、`.ico` 和快捷方式脚本一起验证；人工登录/origin/session/API read-only verification 一起验证；release allowlist/runtime lock/workflow/audit 一起验证。
+- 可独立开发：Portable 发布/快捷方式模块可以独立于投注模块开发；用户 quick start、Release notes 和纯展示文案可单独修改，但不得改变用户数据、启动身份或快捷方式失败非致命的运行契约。
+- 发布状态：公开仓库和 unsigned Actions artifact 不等于用户 Release。最终 ZIP 审计、仓库外启动及 Fresh Windows 证据全部完成前，不能把 ZIP 标记为可用下载版。
+- Fresh Windows 必须覆盖无系统 Node/Chrome/Edge/Docker、外部 cwd、中文/空格/非系统盘路径、端口冲突、桌面快捷方式幂等与移动后修复、手工换版的数据保持，以及 Watcher/worker 始终 off。
 
 ## 2026-07-13 Dashboard 当前状态与页面性能
 
+- “今日比赛”以皇冠当前开盘的 active event state 为准，不按北京时间自然日或滚动 24 小时截断；`/matches` 与 `/betting-rules` 的白名单联赛目录使用同一当前集合语义。
 - `/matches`、默认联赛和监控设置页面只消费 SQLite `monitor_*_state` 当前投影；legacy `/api/events`、`/api/summary`、`/api/changes` 继续保留 JSONL 审计兼容语义。
 - 当前投影 read-only、按 DB+WAL 版本缓存并在 WAL-only commit 后失效；页面 GET 不执行 schema/migration。`app-db.mjs` schema connection 与 runtime/read-only connection 的边界仍是强绑定验证项。
 - `/matches` 首屏/30 秒列表刷新不读取 global changes；详情按 eventKey 延迟读取，列表/详情分别 single-flight，缓存刷新不遮罩现有内容。
 - `frontend/src/styles/index.css` 的 settings 字段 selector 只命中 direct-child label，不再改写 Ant Checkbox wrapper；CSS contract 禁止 checkbox inner 的定位和 physical/logical size 补丁。
 - 2026-07-13 隔离克隆验收：cold P95 499.8ms、warm P95 79.2ms、菜单 P95 615.2ms；三档 viewport 无横向溢出，7 个 Checkbox 为 16×16 且勾号居中，console 0。正式 watcher/8787 当时未运行，持续写入正式环境仍需单独运行态复核。
 
-## 2026-07-12 动态投注规则卡片（当前唯一权威入口）
+## 历史基础：2026-07-12 动态投注规则卡片
 
 - 权威设计：`docs/superpowers/specs/2026-07-12-crown-dynamic-betting-rule-cards-design.md`；当前页面：`/betting-rules`。历史 C 统一规则、固定赛前/滚球投注设置及其 plans/reports 仅作演进证据。
 - Monitor：`alert-settings.mjs`、`alert-settings-watcher.mjs`、`strategy-registry.mjs` 保持 prematch/live 独立且可同时启用；上涨和下降都生成 Signal/TG，下降在投注前终结。
-- Card schema/API：`app-db.mjs`、`app-repository.mjs`、`app-api.mjs`、`today-betting-leagues.mjs`。卡片 mode-agnostic，联赛必选且 `UNIQUE(league_name)`；手动今日联赛必须显式选择；停用仍占用，物理删除释放。
+- Card schema/API：`app-db.mjs`、`app-repository.mjs`、`app-api.mjs`、`today-betting-leagues.mjs`。卡片 mode-agnostic，联赛必选且 `UNIQUE(league_name)`；目录从皇冠当前开盘 active events 中筛选默认白名单和 exact 手动追踪，手动联赛必须显式选择；停用仍占用，物理删除释放。
 - Signal/B2：`monitor-state-store.mjs`、`auto-betting-inbox-store.mjs`、`auto-betting-consumer.mjs`、`bet-batch-store.mjs`、`market-once-store.mjs`、`execution-gate.mjs`、`b2-executor.mjs` 强绑定。Signal 原子产物、card snapshot、card-scoped authorization、delete race 与 B2 recovery 必须一起验证。
 - Dashboard：`frontend/src/pages/AutoBetRules.tsx` 动态卡片/create-edit modal；Operations 使用 `ruleCards` 计数；完全重置保留卡片/联赛配置并清理 card snapshot 在内的运行历史。
-- Contract/capability：app/frontend/schema 均为 `dynamic-betting-cards-v1`；canonical Crown preview/submit/reconciliation 仍为 `0/0/0`。
+- 历史阶段 Contract/capability：app/frontend/schema 均为 `dynamic-betting-cards-v1`；canonical Crown Preview/Submit/Reconciliation 当时为 `0/0/0`，当前值以顶部 Task 10 的 `1/1/0` 为准。
 
-## 2026-07-12 C 阶段完成与运行数据策略
+## 历史：2026-07-12 C 阶段完成与运行数据策略
 
-- C Task 1–11 已完成，当前代码验证基线为 backend 874/874、syntax 180、frontend 66/66；真实投注仍被 capability `0/0/0` 阻断。
+- C Task 1–11 当时已完成，历史代码验证基线为 backend 874/874、syntax 180、frontend 66/66；真实投注当时被 capability `0/0/0` 阻断，当前值以顶部 Task 10 的 `1/1/0` 为准。
 - 监控 SQLite 只保存当前运行状态、待处理事务和幂等边界；已投递 audit outbox 立即清除。
 - 原始 snapshot/change JSONL 正常保留到用户在运维控制台手动执行“每日开工完全重置”；没有定时或启动自动清理。
 - 完全重置会删除点击前的监控状态、候选、投注账本、market-once 幂等锁、pending/unknown、提交/对账、通知与执行审计；账号、登录会话、规则、Telegram、协议证据和运行依赖保留。重置后真实投注回到 off，旧盘口允许重新下注。
@@ -49,21 +83,21 @@
 - 检测链为 fresh login → `get_game_list` → `get_member_data`，只保存脱敏状态和 Crown 返回的展示余额/额度；执行余额 `balance_minor` 不受影响。投注账号 busy/locked 时 fail-closed。
 - 验证：backend 756/756、syntax 163、frontend 51/51、production build 通过；真实投注仍关闭。
 
-## 2026-07-11 B 阶段完成状态
+## 历史：2026-07-11 B 阶段完成状态
 
 - B1 Task 1–9、B2 Task 10–12 已完成代码实现和独立复核；最终 focused 108/108、backend 749/749、syntax 162、frontend 48/48、build/Compose config 通过。
 - 投注执行模块现包含 ExecutionAuthorization、durable submit attempt、fenced single-child recovery、persistent reconciliation evidence、context-bound provider reference、outcome outbox 和 Telegram consumer。
 - 强绑定模块：`execution-gate.mjs`、`b2-executor.mjs`、`b2-reconciler.mjs`、`app-db.mjs` 必须一起验证；通知链 `b2-outcome-dispatcher.mjs`、`telegram-alert.mjs`、`telegram-client.mjs`、`crown-b2-notifications.mjs` 必须一起验证。
-- 生产 Crown capability matrix 的 preview/submit 均为 0，真实提交和自动对账仍 fail-closed；offline fixture 不能证明 Crown batch。未执行真实 preview、`FT_bet` 或 Telegram 发送。
+- 当时生产 Crown capability matrix 的 preview/submit 均为 0，真实提交和自动对账 fail-closed；offline fixture 不能证明 Crown batch。该历史阶段未执行真实 preview、`FT_bet` 或 Telegram 发送；当前 capability 以顶部 Task 10 的 exact row `1/1/0` 为准。
 - B 报告入口：`.superpowers/sdd/task-12-report.md`。C 设计草案：`docs/superpowers/specs/2026-07-11-crown-c-strategy-mobile-console-design.md`，待范围确认后进入计划。
 
-## 2026-07-11 B 阶段方案 A 当前状态
+## 历史：2026-07-11 B 阶段方案 A 当时状态
 
 - 设计：`docs/superpowers/specs/2026-07-10-crown-b-multi-account-betting-design.md`；计划：`docs/superpowers/plans/2026-07-10-crown-b-multi-account-betting.md`；执行进度：`.superpowers/sdd/progress.md`。
-- B1 Task 1–9 与 B2 Task 10–12 代码已完成并通过独立复核；当前最终 backend 749/749、syntax 162、frontend 48/48、production build 与 Compose 配置通过。
+- B1 Task 1–9 与 B2 Task 10–12 代码已完成并通过独立复核；当时最终 backend 749/749、syntax 162、frontend 48/48、production build 与 Compose 配置通过。
 - B1 提供 exact minor-unit money、规则/账号原子 CRUD、确定性 Signal→batch、child ledger、账号锁、unknown 恢复、严格盘口锁、Simulated Provider、默认 off worker、preview/simulated 零真实网络，以及 batch/child Dashboard。
 - 赛前/滚球可同时启用但由单 watcher 处理；Dashboard 显示北京时间质量/warnings 和逐赛事诊断；watcher 与 Executor 使用不同 canonical fenced lease key。
-- B2 Task 11–12 已完成 sanitized fixture/offline-only 验收；canonical Crown preview/submit 能力仍为 0。历史诊断实际清理和凭据/session 轮换完成前不执行真实 preview；真实小额 `FT_bet` 仍需验收当次新授权。
+- B2 Task 11–12 当时已完成 sanitized fixture/offline-only 验收；该历史阶段 canonical Crown preview/submit 能力为 0。历史诊断实际清理和凭据/session 轮换完成前不执行真实 preview；真实小额 `FT_bet` 仍需验收当次新授权。当前 capability 以顶部 Task 10 的 exact row `1/1/0` 为准。
 
 
 ## 2026-07-10 A 阶段 schema-v2 监控迁移
@@ -126,7 +160,7 @@
 | 皇冠足球监控 | `docs/modules/crown-football-monitor.md`、`scripts/crown-watch.mjs`、`src/crown/monitor/`、`src/crown/storage/`、`src/crown/crown-transform-xml.mjs`、`src/crown/login/crown-api-login-manager.mjs` | XML 主源、SnapshotBatch、canonical identity/time、SQLite state、Change→Strategy→Signal、Dispatcher、候选；prematch/live 同进程双模式、canonical watcher lease、schema-v1 回滚和 DOM/fixture compatibility | 部分；持久契约强绑定 | `node --test tests\crown-watch-state-version.test.mjs tests\crown-monitor-v2-integration.test.mjs tests\crown-monitor-state-store.test.mjs tests\crown-strategy-engine.test.mjs tests\crown-alert-dispatcher.test.mjs` |
 | 皇冠 Telegram 通知 | `docs/modules/crown-telegram-notifications.md`、`src/crown/telegram/`、`src/crown/alerts/telegram-*.mjs` | schema-v2 Signal 命中后发送无抬头五行中文赔率变化 TG；显示联赛、比赛、类型、盘口与新旧赔率和北京时间；支持多个 Chat ID、群话题、Chat ID 获取、重试和测试发送 | 是 | `node --test tests\crown-telegram-client.test.mjs tests\crown-alerts.test.mjs tests\crown-alert-dispatcher.test.mjs tests\crown-telegram-settings.test.mjs` |
 | 皇冠监控 Dashboard | `Dockerfile`、`docker-compose.yml`、`scripts/crown-dashboard.mjs`、`src/crown/dashboard/`、`src/crown/app/`、`src/crown/config/`、`src/crown/monitor/`、`frontend/`、`docs/modules/crown-dashboard.md` | Docker-first 本地配置与赔率监控 App；React + Ant Design UI 展示七个页面，SQLite 保存配置与 monitor 当前状态；`/matches` 当前列表读取只读 SQLite 投影并按 DB+WAL 版本缓存，30 秒静默刷新，单场详情才按 `eventKey` 读取 JSONL 变化历史；`/monitor-account` 每 5 秒轻量刷新 runtime 状态；`/betting-rules` 和 `/betting-accounts` 使用横向卡片；旧 JSONL odds API 保持兼容 | 是 | `node --test tests\crown-current-odds-state.test.mjs tests\crown-app-api.test.mjs tests\crown-dashboard-css-contract.test.mjs`、`npm --prefix frontend test -- --run src/pages/MatchSelection.test.tsx src/pages/MonitorSettings.test.tsx`、`npm test`、`npm run check`、`npm --prefix frontend run test` |
-| 投注协议与执行模块 | `docs/modules/crown-betting-protocol.md`、`docs/betting-architecture.md`、`docs/betting-contract.md`、`docs/crown-betting-protocol-map.md`、`src/crown/betting-protocol/`、`src/crown/betting/`、`src/betting/`、`scripts/crown-betting-protocol-capture.mjs`、`scripts/crown-betting-protocol-analyze.mjs`、`scripts/crown-betting-worker.mjs` | B1 exact money、Signal 幂等 batch、child ledger、账号锁/unknown 恢复、严格盘口锁与 B2 durable submit/authorization/reconciliation 已完成；Task 6 新增 fresh production `protocolVersion` provenance、exact field-set fail-closed、request/response 精确配对和私有 HMAC locked-context linkage。canonical Crown capability 仍为 0，旧 adapter 不是绕过入口 | 是 | `node --test tests\crown-betting-protocol-redaction.test.mjs tests\crown-betting-protocol-classifier.test.mjs tests\crown-api-login-manager.test.mjs tests\crown-account-provider.test.mjs tests\crown-capability-matrix.test.mjs`、`npm test`、`npm run check` |
+| 投注协议与执行模块 | `docs/modules/crown-betting-protocol.md`、`docs/betting-architecture.md`、`docs/betting-contract.md`、`docs/crown-betting-protocol-map.md`、`src/crown/betting-protocol/`、`src/crown/betting/`、`src/betting/`、`scripts/crown-betting-protocol-capture.mjs`、`scripts/crown-betting-protocol-analyze.mjs`、`scripts/crown-betting-worker.mjs` | B1 exact money、Signal 幂等 batch、child ledger、账号锁/unknown 恢复、严格盘口锁与 B2 durable submit 已完成；exact `prematch/full_time/asian_handicap/main` 由同 capture watcher 的 `RATIO_R + gid/side/line/odds` 内容绑定，canonical capability 为 `1/1/0`。Submit 前独立重读 latest selection 并 fresh Preview；其余 row 仍关闭 | 是 | `node --test tests\crown-betting-protocol-execution-evidence.test.mjs tests\crown-capability-matrix.test.mjs tests\crown-task10-auto-submit.test.mjs tests\crown-app-repository.test.mjs`、`npm test`、`npm run check` |
 
 ## 模块关系
 
@@ -150,7 +184,7 @@
 | Persistent real runtime | 完成但 fail-closed | 与 capability/authorization/leases 强绑定 | `crown-real-betting-runtime.test.mjs` |
 | Account pause/enable | 完成 | pause finalizer 与 worker 强绑定 | `crown-betting-account-actions.test.mjs` |
 | Unified UI + operations | 完成 | API DTO 与 responsive frontend 强绑定 | frontend tests + browser acceptance |
-| Crown protocol capability | 证据阻断 | 必须同时具备 exact preview+submit+reconciliation | `crown-capability-matrix.test.mjs` |
+| Crown protocol capability | 证据阻断 | 自动 Submit 仍须 exact preview+submit；一笔手工 accepted 不能替代 binding、stake step 和 rejected 证据 | `crown-capability-matrix.test.mjs` |
 
 ## 2026-07-12 安全开工补充
 
@@ -158,4 +192,4 @@
 - Operations UI 与 `getOperationsSummary().readiness` 强绑定；reason code 和前端中文映射必须一起修改、一起测试。
 - 投注账号页可以独立开发，但不得重新依赖 odds bootstrap；轻量账号与历史接口是该页的固定读取入口。
 - Dashboard Session 使用 `/api/app/security-context` 获取 CSRF，规则页使用 `/api/app/league-options` 获取联赛选项；这两个轻量接口不得重新引入赔率 JSONL 全量读取。
-- 投注账号启用要求单笔上限为大于 0 的整数 CNY；0 值旧账号必须由用户编辑确定限额，程序不得猜测或自动补值。
+- 投注账号启用要求每账户 `perBetLimit` 为大于 0 的整数 CNY；用户可以手工修改，0 值旧账号必须由用户确定限额，程序不得猜测或自动补值。fixture、测试或示例中的 `50 CNY` 只是假数据配置，不是生产默认值或统一硬上限。

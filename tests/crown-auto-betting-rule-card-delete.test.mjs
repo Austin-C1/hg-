@@ -25,8 +25,7 @@ function fixture() {
   handle.db.prepare("INSERT INTO auto_betting_rule_card_leagues VALUES ('card-a','英超',?)").run(NOW)
   const cardSnapshot = { cardId: 'card-a', name: 'Card A', enabled: true,
     targetOddsMin: '0.8', targetOddsMax: '1.05', targetAmountMinor: 100,
-    currency: 'CNY', amountScale: 0, remark: '', realEligible: false,
-    realEligibilityVersion: 1, realEligibilityUpdatedAt: NOW, migrationReviewRequired: false,
+    currency: 'CNY', amountScale: 0, remark: '', migrationReviewRequired: false,
     migrationReviewReason: '', version: 1, createdAt: NOW, updatedAt: NOW, leagueNames: ['英超'] }
   const snapshot = JSON.stringify(cardSnapshot)
   for (const [signalId, status, batchId] of [

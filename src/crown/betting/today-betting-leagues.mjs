@@ -1,20 +1,5 @@
 import { isDefaultLeagueMatched } from '../config/default-leagues.mjs'
 
-const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000
-const DAY_MS = 24 * 60 * 60 * 1000
-
-function shanghaiDayBounds(nowValue) {
-  const now = new Date(nowValue)
-  if (!Number.isFinite(now.getTime())) throw new TypeError('now')
-  const shanghai = new Date(now.getTime() + SHANGHAI_OFFSET_MS)
-  const startUtc = Date.UTC(
-    shanghai.getUTCFullYear(),
-    shanghai.getUTCMonth(),
-    shanghai.getUTCDate(),
-  ) - SHANGHAI_OFFSET_MS
-  return { startUtc, endUtc: startUtc + DAY_MS }
-}
-
 function readEvent(row) {
   try {
     const event = JSON.parse(row.event_json)
@@ -25,15 +10,7 @@ function readEvent(row) {
   }
 }
 
-function canonicalUtcMilliseconds(value) {
-  if (typeof value !== 'string') return null
-  const parsed = Date.parse(value)
-  if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value) return null
-  return parsed
-}
-
-export function buildTodayBettingLeagues({ db, defaultLeagues, now = () => new Date() }) {
-  const { startUtc, endUtc } = shanghaiDayBounds(now())
+export function buildTodayBettingLeagues({ db, defaultLeagues }) {
   const manualKeys = new Set(db.prepare(
     "SELECT event_key FROM tracked_matches WHERE tracking_status='active'",
   ).all().map((row) => row.event_key))
@@ -44,8 +21,6 @@ export function buildTodayBettingLeagues({ db, defaultLeagues, now = () => new D
   ).all()) {
     const event = readEvent(row)
     if (!event) continue
-    const kickoff = canonicalUtcMilliseconds(event.startTimeUtc)
-    if (kickoff === null || kickoff < startUtc || kickoff >= endUtc) continue
     const leagueName = String(event.league || '').trim()
     if (!leagueName) continue
 

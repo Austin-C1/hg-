@@ -13,7 +13,7 @@ const DEFAULT_FORBIDDEN_NAMES = Object.freeze([
   'telegram-settings.json',
 ])
 const DEFAULT_FORBIDDEN_SEGMENTS = Object.freeze([
-  'tests', 'fixtures', 'storage', 'data/runtime', 'session', 'profile', 'logs',
+  'tests', 'fixtures', 'storage', 'data/runtime', 'session', 'profile', 'logs', 'src/crown/update',
 ])
 const DEFAULT_FORBIDDEN_EXTENSIONS = Object.freeze([
   '.env', '.sqlite', '.sqlite3', '.db', '.key', '.pem', '.log',
@@ -184,6 +184,11 @@ function auditPolicy(value) {
     === ALLOWED_SOURCE_STORAGE_MODULES.slice().sort().join('\0')
     ? allowedSourceStorageModules
     : []
+  const requiredArtifactFiles = Array.isArray(source.launcherFiles)
+    ? source.launcherFiles
+      .map((entry) => entry?.target)
+      .filter((target) => typeof target === 'string' && strictManifestPath(target))
+    : []
   return Object.freeze({
     forbiddenArtifactNames: new Set(list('forbiddenArtifactNames', DEFAULT_FORBIDDEN_NAMES).map((item) => item.toLowerCase())),
     forbiddenArtifactSegments: list('forbiddenArtifactSegments', DEFAULT_FORBIDDEN_SEGMENTS)
@@ -192,6 +197,7 @@ function auditPolicy(value) {
       .map((item) => item.toLowerCase()),
     allowedContentLiterals: Object.freeze([...list('allowedContentLiterals', DEFAULT_ALLOWED_LITERALS)]),
     allowedSourceStorageModules: new Set(exactStorageAllowlist),
+    requiredArtifactFiles: new Set(requiredArtifactFiles),
   })
 }
 
@@ -221,9 +227,11 @@ function pathFinding(path, policy) {
       return 'forbidden-artifact-path'
     }
   }
-  if (!inDependency && !inSource) {
+  if (!inDependency) {
     for (const forbidden of policy.forbiddenArtifactSegments) {
       if (appSegments.some((part, index) => forbidden.every((expected, offset) => appSegments[index + offset] === expected))) {
+        if (inSource && forbidden.length === 1 && forbidden[0] === 'storage'
+          && policy.allowedSourceStorageModules.has(appRelative)) continue
         return 'forbidden-artifact-path'
       }
     }
@@ -373,6 +381,15 @@ export async function scanReleaseArtifacts({
       continue
     }
     actualFiles.set(entry.path, entry)
+  }
+  for (const path of resolvedPolicy.requiredArtifactFiles) {
+    const entry = actualFiles.get(path)
+    if (!entry) {
+      addFinding(findings, 'required-artifact-missing', path)
+      continue
+    }
+    const metadata = await lstat(entry.absolute)
+    if (metadata.size === 0) addFinding(findings, 'required-artifact-empty', path)
   }
   const expected = new Map(manifest.files.map((entry) => [entry.path, entry]))
   for (const path of actualFiles.keys()) {

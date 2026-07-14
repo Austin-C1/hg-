@@ -42,7 +42,9 @@ test('one exact league owner yields one immutable mode-free card snapshot', () =
     assert.equal(Object.hasOwn(prematch, 'mode'), false)
     assert.equal(prematch.targetAmountMinor, 100)
     assert.deepEqual(prematch.leagueNames, ['英超'])
-    assert.equal(prematch.realEligibilityUpdatedAt, NOW)
+    assert.equal(Object.hasOwn(prematch, 'realEligible'), false)
+    assert.equal(Object.hasOwn(prematch, 'realEligibilityVersion'), false)
+    assert.equal(Object.hasOwn(prematch, 'realEligibilityUpdatedAt'), false)
     assert.equal(prematch.createdAt, NOW)
     assert.equal(prematch.updatedAt, NOW)
     assert.equal(Object.isFrozen(prematch), true)
@@ -90,10 +92,9 @@ test('manual today catalog names are eligible by exact name without mode filteri
   } finally { handle.close() }
 })
 
-test('snapshot completeness rejects reversed odds and invalid eligibility booleans', () => {
+test('snapshot completeness rejects reversed odds', () => {
   for (const mutation of [
     "UPDATE auto_betting_rule_cards SET target_odds_min='1.1',target_odds_max='0.8'",
-    'UPDATE auto_betting_rule_cards SET real_eligible=2',
   ]) {
     const handle = openAppDatabase({ dbPath: ':memory:' })
     try {
@@ -107,11 +108,24 @@ test('snapshot completeness rejects reversed odds and invalid eligibility boolea
   }
 })
 
-test('snapshot completeness rejects unsafe decimals, malformed timestamps, and non-text fields', () => {
+test('legacy eligibility fields do not enter or gate the executable card snapshot', () => {
+  const handle = openAppDatabase({ dbPath: ':memory:' })
+  try {
+    seedCard(handle.db)
+    handle.db.prepare("UPDATE auto_betting_rule_cards SET real_eligible=1,real_eligibility_version=99,real_eligibility_updated_at='2026-07-12T00:00:01.000Z'").run()
+    const snapshot = matchEnabledRuleCardForSignal(
+      handle.db, signal(), { availableLeagueNames: new Set(['英超']) },
+    )
+    assert.equal(snapshot?.cardId, 'card-a')
+    assert.equal(Object.hasOwn(snapshot, 'realEligible'), false)
+    assert.equal(Object.hasOwn(snapshot, 'realEligibilityVersion'), false)
+    assert.equal(Object.hasOwn(snapshot, 'realEligibilityUpdatedAt'), false)
+  } finally { handle.close() }
+})
+
+test('snapshot completeness rejects unsafe decimals, malformed current timestamps, and non-text fields', () => {
   for (const mutation of [
     "UPDATE auto_betting_rule_cards SET target_odds_max='9007199254740991.1'",
-    "UPDATE auto_betting_rule_cards SET real_eligibility_updated_at=''",
-    "UPDATE auto_betting_rule_cards SET real_eligibility_updated_at='2026-99-99T00:00:00.000Z'",
     "UPDATE auto_betting_rule_cards SET updated_at='2026-07-12 00:00:00'",
     "UPDATE auto_betting_rule_cards SET remark=x'31'",
   ]) {

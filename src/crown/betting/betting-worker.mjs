@@ -19,7 +19,7 @@ export function waitFor(milliseconds, signal) {
 }
 
 export class BettingWorker {
-  constructor({ mode = 'off', db = null, coordinator = null, inboxStore = null, consumer = null, lease = null, processLease = null, realExecutionGate = assertRealBettingRequested, authorizationId = null, b2Executor = null, b2Reconciler = null, accountPauseFinalizer = null, claimLimit = 10, claimLeaseSeconds = 30 } = {}) {
+  constructor({ mode = 'off', db = null, coordinator = null, inboxStore = null, consumer = null, lease = null, processLease = null, realExecutionGate = assertRealBettingRequested, accountPauseFinalizer = null, claimLimit = 10, claimLeaseSeconds = 30 } = {}) {
     if (!MODES.has(mode)) throw new TypeError('betting-worker-mode')
     if (!Number.isSafeInteger(claimLimit) || claimLimit < 1) throw new TypeError('claimLimit')
     if (!Number.isSafeInteger(claimLeaseSeconds) || claimLeaseSeconds < 1) throw new TypeError('claimLeaseSeconds')
@@ -31,9 +31,6 @@ export class BettingWorker {
     this.lease = lease
     this.realExecutionGate = realExecutionGate
     this.processLease = processLease
-    this.authorizationId = authorizationId
-    this.b2Executor = b2Executor
-    this.b2Reconciler = b2Reconciler
     this.accountPauseFinalizer = accountPauseFinalizer
     this.claimLimit = claimLimit
     this.claimLeaseSeconds = claimLeaseSeconds
@@ -44,9 +41,12 @@ export class BettingWorker {
     if (this.mode === 'off') return null
     if (this.started) return { fencingToken: this.lease.fencingToken }
     if (!this.db?.prepare || !this.coordinator || !this.inboxStore?.claimDue
-      || !this.consumer?.process || !this.lease?.acquire) throw new TypeError('betting-worker-dependencies')
+      || !this.consumer?.process || !this.lease?.acquire
+      || (['simulated', 'real'].includes(this.mode) && typeof this.coordinator.recover !== 'function')) {
+      throw new TypeError('betting-worker-dependencies')
+    }
     const acquired = this.lease.acquire()
-    if (this.mode === 'simulated') this.coordinator.recover(acquired.fencingToken)
+    if (['simulated', 'real'].includes(this.mode)) this.coordinator.recover(acquired.fencingToken)
     this.started = true
     return acquired
   }
@@ -56,7 +56,6 @@ export class BettingWorker {
     this.processLease?.assertFence?.(this.processLease.fencingToken)
     if (!this.started) this.start()
     this.lease.assertFence(this.lease.fencingToken)
-    if (this.mode === 'real') await this._recoverRealAttempts()
     if (this.mode === 'real') this._finalizeAccountPauses()
     if (this.mode === 'real') this.realExecutionGate(this.db)
     const results = []
@@ -85,16 +84,8 @@ export class BettingWorker {
     for (const item of items) {
       if (this.mode === 'real') this.realExecutionGate(this.db)
       this.lease.assertFence(this.lease.fencingToken)
-      const authorizationId = this.mode === 'real'
-        ? (this.authorizationId || this.db.prepare(`
-            SELECT authorization_id FROM execution_authorizations
-            WHERE status = 'active'
-            ORDER BY created_at, authorization_id
-            LIMIT 1
-          `).get()?.authorization_id || null)
-        : null
       try {
-        const result = await this.consumer.process(item, { executionMode: this.mode, authorizationId })
+        const result = await this.consumer.process(item, { executionMode: this.mode })
         const inboxIdentity = {
           signalId: item.signalId,
           cardId: item.cardId,
@@ -135,33 +126,6 @@ export class BettingWorker {
     if (this.accountPauseFinalizer === null) return 0
     if (typeof this.accountPauseFinalizer !== 'function') throw new TypeError('account-pause-finalizer')
     return this.accountPauseFinalizer()
-  }
-
-  async _recoverRealAttempts() {
-    const authorizations = this.db.prepare(`
-      SELECT DISTINCT batch.authorization_id
-      FROM bet_batches AS batch
-      JOIN bet_child_orders AS child ON child.batch_id = batch.batch_id
-      WHERE batch.authorization_id IS NOT NULL
-        AND child.status IN ('submit_prepared', 'submit_dispatched', 'unknown')
-      ORDER BY batch.authorization_id
-    `).all()
-    if (authorizations.length > 0 && (!this.b2Executor?.recover || !this.b2Reconciler?.scheduleUnknown || !this.b2Reconciler?.runDue)) {
-      throw new Error('b2-recovery-dependencies-required')
-    }
-    for (const row of authorizations) this.b2Executor.recover(row.authorization_id)
-    const unknown = this.db.prepare(`
-      SELECT attempt.submit_attempt_id, auth.expires_at AS deadline_at
-      FROM bet_submit_attempts AS attempt
-      JOIN execution_authorizations AS auth ON auth.authorization_id = attempt.authorization_id
-      LEFT JOIN bet_reconciliation_state AS state ON state.submit_attempt_id = attempt.submit_attempt_id
-      WHERE attempt.status = 'unknown' AND COALESCE(state.status, '') <> 'resolved'
-      ORDER BY attempt.submit_attempt_id
-    `).all()
-    for (const row of unknown) {
-      this.b2Reconciler.scheduleUnknown({ submitAttemptId: row.submit_attempt_id, deadlineAt: row.deadline_at })
-      await this.b2Reconciler.runDue({ submitAttemptId: row.submit_attempt_id })
-    }
   }
 
   async run({ signal = null, pollIntervalMs = 1000, wait = waitFor } = {}) {

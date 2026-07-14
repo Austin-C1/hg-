@@ -796,7 +796,7 @@ function reserveAuthorizationBudgetOperation(db, input, options) {
     ...input,
     ...(child.card_id !== null ? {
       cardId: child.card_id,
-      eligibilityVersion: JSON.parse(child.card_snapshot_json).realEligibilityVersion,
+      eligibilityVersion: JSON.parse(child.card_snapshot_json).realEligibilityVersion ?? input.eligibilityVersion,
       bettingMode: child.betting_mode,
     } : child.rule_id === null ? { bettingMode: child.betting_mode } : { ruleId: child.rule_id }),
     accountId: child.account_id,

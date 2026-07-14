@@ -94,7 +94,6 @@ function readyBettingSpawn(calls) {
         leases: {
           worker: { leaseKey: worker, ownerId: 'worker-owner', fencingToken: 1 },
           executor: { leaseKey: `betting-executor:${suffix}`, ownerId: 'executor-owner', fencingToken: 1 },
-          reconciler: { leaseKey: `betting-reconciler:${suffix}`, ownerId: 'reconciler-owner', fencingToken: 1 },
         },
       })
     })
@@ -269,6 +268,19 @@ test('ordered shutdown continues every safe stop after an earlier failure', asyn
   assert.deepEqual(events, ['real-intent', 'worker', 'human-login', 'monitor', 'database', 'http'])
   assert.equal(result.ok, false)
   assert.deepEqual(errors, ['intent-failed'])
+})
+
+test('ordered shutdown has no delivery cancellation stage', async () => {
+  const events = []
+  const result = await shutdownDashboardRuntime({
+    disableRealBetting: async () => { events.push('real-intent') },
+    monitorProcess: { stopAndWait: async () => { events.push('monitor') } },
+    closeHttp: async () => { events.push('http') },
+  })
+  assert.equal(result.ok, true)
+  assert.deepEqual(events, ['real-intent', 'monitor', 'http'])
+  assert.equal('createDashboardUpdateService' in dashboardRuntime, false)
+  assert.equal('createDashboardUpdateHealthProvider' in dashboardRuntime, false)
 })
 
 test('ordered shutdown skips SQLite convergence when the watcher remains alive but still closes HTTP', async () => {

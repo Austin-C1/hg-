@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "crown-watcher-execution-evidence-v1",
+  "captureId": "20260714-085221",
+  "capturedAt": "2026-07-14T00:58:55.980Z",
+  "auditId": "snapshot:ce3b51c0729fed4112757cdcf1c360aa00080ef8a7af8e75657a9a83fab306ac",
+  "batchId": "b20cee34f4fef961696a64824bcbd56675e80d3a6c64071fbeee7cf01f2e27eb",
+  "gid": "8903285",
+  "mode": "prematch",
+  "eventStatus": "not_started",
+  "period": "full_time",
+  "marketType": "asian_handicap",
+  "ratioField": "RATIO_R",
+  "line": "0.5 / 1",
+  "side": "away",
+  "oddsField": "IOR_RC",
+  "odds": "0.960",
+  "suspended": false
+}

@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 3,
+  "evidenceStatus": "verified",
+  "evidenceId": "crown-capture-20260714-085221-prematch-full-time-asian-handicap-main-accepted",
+  "captureId": "20260714-085221",
+  "capability": {
+    "mode": "prematch",
+    "period": "full_time",
+    "marketType": "asian_handicap",
+    "lineVariant": "main"
+  },
+  "executionEvidenceSchema": "crown-execution-evidence-candidate-v3",
+  "executionCandidateDigest": "sha256:eff5e36b4eee4dc422c37a5001aba9cf1d9a1508352d8cbf4bdc33786bb1495f",
+  "watcherEvidencePath": "artifacts/20260714-085221-watcher.safe.json",
+  "watcherEvidenceDigest": "sha256:25f70de00c9d9cfbc57aa28edc14ab7d1e67953e20e59f3f3697eb12f212ac68",
+  "requestFieldSet": ["chose_team", "gid", "gtype", "langx", "odd_f_type", "p", "ver", "wtype"],
+  "requestFieldSetFingerprint": "sha256:50a9c1ffe0efeeed144c2c8fb0d027e49856b73caebb89675250caf0994b661e",
+  "responseFieldSet": ["aid", "code", "con", "currency", "currency_value", "dates", "dg", "fast_check", "game_sc", "game_so", "gold_gmax", "gold_gmin", "important", "ioratio", "league_id", "league_name", "ltype", "max_gold", "maxcredit", "mem_sc", "mem_so", "ms", "num_c", "num_h", "pay_type", "ptype", "ratio", "restsinglecredit", "spread", "strong", "systime", "team_id_c", "team_id_h", "team_name_c", "team_name_h", "times", "ts"],
+  "responseFieldSetFingerprint": "sha256:efedaa6220496cc356c24dcd195c85aaf3090cfcd345ffe90da98671e337ebec",
+  "submitRequestFieldSet": ["autoOdd", "chose_team", "con", "f", "gid", "golds", "gtype", "imp", "ioratio", "isRB", "isYesterday", "langx", "odd_f_type", "p", "ptype", "ratio", "rtype", "timestamp", "timestamp2", "ver", "wtype"],
+  "submitRequestFieldSetFingerprint": "sha256:f17f48df8bc9697c033f07450f9d363f4e0934755588854806b3303ae1ebd37a",
+  "submitResponseFieldSet": ["ball_act", "code", "concede", "date", "dg_mode", "gid", "gold", "gtype", "imp", "ioratio", "isyesterday", "league", "league_id", "maxcredit", "ms", "mtype", "nowcredit", "ptype", "ratio", "rtype", "spread", "strong", "systime", "team_c", "team_h", "team_id_c", "team_id_h", "time", "timestamp", "type", "wtype"],
+  "submitResponseFieldSetFingerprint": "sha256:046d372d24a12413fec6298bac72c7d036c7d28ddf0d9e84aad2f139952daf93",
+  "mapperEvidence": {
+    "ratioFields": ["RATIO_R"],
+    "oddsFields": ["IOR_RC", "IOR_RH"],
+    "oddsFieldsBySide": { "away": "IOR_RC", "home": "IOR_RH" },
+    "wtype": "R",
+    "wireDefaults": { "langx": "zh-cn", "odd_f_type": "H", "p": "FT_order_view" },
+    "submitWireDefaults": {
+      "autoOdd": "Y", "f": "1R", "imp": "N", "isRB": "N", "isYesterday": "N",
+      "langx": "zh-cn", "odd_f_type": "H", "p": "FT_bet", "ptype": "", "timestamp2": ""
+    },
+    "submitWireSources": {
+      "con": "preview-response:con", "ratio": "preview-response:ratio", "timestamp": "request-epoch-ms"
+    },
+    "unprovenWireValueSources": []
+  },
+  "artifactPath": "artifacts/20260714-085221-accepted.safe.json",
+  "artifactSafeDigest": "sha256:eff5e36b4eee4dc422c37a5001aba9cf1d9a1508352d8cbf4bdc33786bb1495f",
+  "requestRecordEvidenceId": "hmac-sha256:cf82c7ee24ac1243e7f3fcd1e9ef2ae17305c2223220810714f95e231decdca2",
+  "responseRecordEvidenceId": "hmac-sha256:d94a1ef61f3174a3f0f4ee64707ed9ac634b6eaf491b4e36675cc7c9fa15465e",
+  "submitRequestRecordEvidenceId": "hmac-sha256:1c056229f662268cc816ac1f98602c6628ae03e576da8f7f85285b91d0ac2644",
+  "submitResponseRecordEvidenceId": "hmac-sha256:bc36fdba80ffa3dcbd71e2a3e962efa55e4157d25d7ff15f76f6d6fcc778564e",
+  "previewAllowed": true,
+  "submitAllowed": true,
+  "reconciliationAllowed": false,
+  "blockedReason": "",
+  "submitBlockedReason": ""
+}

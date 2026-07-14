@@ -14,7 +14,6 @@ const AutoBetRules = lazy(() => import('./pages/AutoBetRules'))
 const BettingAccounts = lazy(() => import('./pages/BettingAccounts'))
 const OperationsConsole = lazy(() => import('./pages/OperationsConsole'))
 const Settings = lazy(() => import('./pages/Settings'))
-const SystemUpdate = lazy(() => import('./pages/SystemUpdate'))
 
 function DashboardSessionControl() {
   const [authenticated, setAuthenticated] = useState(false)
@@ -127,7 +126,6 @@ export default function App() {
             <Route path="/betting-accounts" element={<Suspense fallback={<Spin />}><BettingAccounts /></Suspense>} />
             <Route path="/operations" element={<Suspense fallback={<Spin />}><OperationsConsole /></Suspense>} />
             <Route path="/settings" element={<Suspense fallback={<Spin />}><Settings /></Suspense>} />
-            <Route path="/system-update" element={<Suspense fallback={<Spin />}><SystemUpdate /></Suspense>} />
             <Route path="*" element={<Navigate to="/matches" replace />} />
           </Route>
         </Routes>

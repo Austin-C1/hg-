@@ -128,6 +128,10 @@ function previewXml({ odds = '0.83', spread = '-0 / 0.5' } = {}) {
   return `<serverresponse><code>501</code><con>x</con><dates>x</dates><game_sc>x</game_sc><game_so>x</game_so><gold_gmin>10.00</gold_gmin><gold_gmax>500.00</gold_gmax><ioratio>${odds}</ioratio><league_id>x</league_id><maxcredit>999.00</maxcredit><mem_sc>x</mem_sc><mem_so>x</mem_so><num_c>x</num_c><num_h>x</num_h><ratio>x</ratio><restsinglecredit>x</restsinglecredit><spread>${spread}</spread><strong>H</strong><times>x</times></serverresponse>`
 }
 
+function memberXml({ balance = '1950.00', currency = 'RMB' } = {}) {
+  return `<serverresponse><code>get_all_data</code><enable>Y</enable><currency>${currency}</currency><maxcredit>${balance}</maxcredit></serverresponse>`
+}
+
 function setup({
   preview = previewXml(),
   previewCookies = ['SESSION=preview-rotated; Path=/'],
@@ -152,6 +156,7 @@ function setup({
     fetchImpl: fakeFetch([
       response(loginXml(), { cookies: ['SESSION=fresh; Path=/'] }),
       response('<serverresponse></serverresponse>', { cookies: ['SESSION=verified; Path=/'] }),
+      response(memberXml(), { cookies: ['SESSION=balanced; Path=/'] }),
       response(preview, { status: previewStatus, cookies: previewCookies }),
     ], calls),
   })
@@ -221,26 +226,13 @@ test('preview rejects an unproved session protocolVersion before FT_order_view',
   context.handle.close()
 })
 
-test('production submit provider has no injectable transport and canonical submit remains zero-network blocked', async () => {
-  assert.throws(() => new CrownAccountExecutionProvider({ fetchImpl: async () => {} }), /provider-injection-forbidden/)
-  const provider = new CrownAccountExecutionProvider()
-  await assert.rejects(() => provider.submit({
-    capabilityVersion: CROWN_CAPABILITY_MATRIX_VERSION,
-    lockedIdentity: {
-      provider: 'crown', mode: 'live', period: 'full_time',
-      marketType: 'asian_handicap', lineVariant: 'main',
-    },
-  }), /crown-capability-submit-blocked/)
+test('production submit provider requires factory-owned repository, login manager, and executor lease', () => {
+  assert.throws(() => new CrownAccountExecutionProvider({ fetchImpl: async () => {} }), /crown-submit-account-repository/)
+  assert.throws(() => new CrownAccountExecutionProvider(), /crown-submit-account-repository/)
 })
 
-test('provider factory existence never grants submit without exact canonical evidence', async () => {
-  const provider = new CrownAccountExecutionProvider()
-  await assert.rejects(() => provider.submit({
-    capabilityVersion: CROWN_CAPABILITY_MATRIX_VERSION,
-    currentIdentity: {
-      mode: 'live', period: 'full_time', marketType: 'asian_handicap', lineVariant: 'main',
-    },
-  }), /crown-capability-submit-blocked/)
+test('canonical capability version remains an opaque matrix digest', () => {
+  assert.match(CROWN_CAPABILITY_MATRIX_VERSION, /^crown-protocol-capabilities-v2:[a-f0-9]{16}$/)
 })
 
 test('production construction rejects resolver injection and exposes only an origin-confined offline fixture', () => {
@@ -323,9 +315,9 @@ test('verified preview uses the exact betting account and only FT_order_view whi
     batchId: 'batch-preview-1',
     lockedSelection: lockedSelection(),
   })
-  assert.deepEqual(context.calls.map((call) => call.body.p), ['chk_login', 'get_game_list', 'FT_order_view'])
+  assert.deepEqual(context.calls.map((call) => call.body.p), ['chk_login', 'get_game_list', 'get_member_data', 'FT_order_view'])
   assert.equal(context.calls.some((call) => ['FT_bet', 'get_dangerous'].includes(call.body.p)), false)
-  assert.deepEqual(context.calls[2].body, {
+  assert.deepEqual(context.calls[3].body, {
     uid: 'owner-uid',
     langx: 'zh-cn',
     p: 'FT_order_view',
@@ -336,12 +328,14 @@ test('verified preview uses the exact betting account and only FT_order_view whi
     wtype: 'RE',
     chose_team: 'H',
   })
-  assert.equal(context.fenceChecks.length, 7)
+  assert.equal(context.fenceChecks.length, 9)
   assert.equal(result.status, 'previewed')
   assert.equal(result.preview.odds.exact, '0.83')
   assert.equal(result.preview.line.exact, '0 / 0.5')
   assert.equal(result.preview.maxCreditRaw, '999.00')
   assert.equal(result.capacityMinor, null)
+  assert.equal(result.freshBalanceCny, 1950)
+  assert.equal(result.balanceObservedAt.length > 0, true)
   assert.equal(result.currency.verified, false)
   assert.equal(result.stakeStep.verified, false)
   assert.equal(result.realExecutionEligible, false)
@@ -352,7 +346,7 @@ test('verified preview uses the exact betting account and only FT_order_view whi
   ])
   assert.deepEqual(result.lockedIdentity, {
     provider: 'crown', gid: '8878933', mode: 'live', period: 'full_time',
-    market: 'asian_handicap', line: 'ah:ft:-0.25', side: 'home',
+    market: 'asian_handicap', lineVariant: 'main', line: '-0 / 0.5', side: 'home',
   })
   const saved = JSON.parse(fs.readFileSync(path.join(
     context.loginManager.runtimeDir, 'crown-sessions', context.account.id, 'api-session.json',
@@ -401,7 +395,7 @@ test('preview allows odds movement but fails closed when the provider line diffe
     batchId: 'batch-line-change',
     lockedSelection: lockedSelection(),
   }), /crown-preview-line-changed/)
-  assert.deepEqual(context.calls.map((call) => call.body.p), ['chk_login', 'get_game_list', 'FT_order_view'])
+  assert.deepEqual(context.calls.map((call) => call.body.p), ['chk_login', 'get_game_list', 'get_member_data', 'FT_order_view'])
   assert.equal(context.calls.some((call) => ['FT_bet', 'get_dangerous'].includes(call.body.p)), false)
   context.handle.close()
 })
@@ -455,7 +449,7 @@ test('every locked identity component fails closed against trusted capability an
     },
   })
   const cases = [
-    ['mode', lockedSelection({ mode: 'prematch' }), /unsupported-crown-preview-mode/],
+    ['mode', lockedSelection({ mode: 'prematch' }), /crown-preview-capability-mismatch:mode/],
     ['period', lockedSelection({ market: { period: 'first_half' } }), /crown-preview-capability-mismatch:period/],
     ['marketType', lockedSelection({ market: { marketType: 'total' } }), /crown-preview-capability-mismatch:marketType/],
     ['lineVariant', lockedSelection({ market: { lineVariant: 'alternate' } }), /unsupported-crown-preview-line-variant/],
@@ -490,7 +484,7 @@ test('response field-set drift is rejected before result adoption or rotated ses
   const saved = JSON.parse(fs.readFileSync(path.join(
     context.loginManager.runtimeDir, 'crown-sessions', context.account.id, 'api-session.json',
   ), 'utf8'))
-  assert.equal(saved.cookies.SESSION, 'verified')
+  assert.equal(saved.cookies.SESSION, 'balanced')
   context.handle.close()
 })
 
@@ -533,7 +527,7 @@ test('provider sanitizes HTTP failures and never exposes response, uid, cookie, 
   const saved = JSON.parse(fs.readFileSync(path.join(
     context.loginManager.runtimeDir, 'crown-sessions', context.account.id, 'api-session.json',
   ), 'utf8'))
-  assert.equal(saved.cookies.SESSION, 'verified')
+  assert.equal(saved.cookies.SESSION, 'balanced')
   context.handle.close()
 })
 
@@ -566,7 +560,7 @@ test('lease loss immediately after FT_order_view rejects the result and does not
     fencingToken: context.executorLease.fencingToken,
     assertFence() {
       assertions += 1
-      if (assertions === 7) throw new Error('lease-stale-after-preview')
+      if (assertions === 9) throw new Error('lease-stale-after-preview')
       return context.executorLease.assertFence()
     },
   }
@@ -582,12 +576,12 @@ test('lease loss immediately after FT_order_view rejects the result and does not
     batchId: 'batch-stale-after',
     lockedSelection: lockedSelection(),
   }), /lease-stale-after-preview/)
-  assert.equal(assertions, 7)
+  assert.equal(assertions, 9)
   assert.equal(context.calls.at(-1).body.p, 'FT_order_view')
   const saved = JSON.parse(fs.readFileSync(path.join(
     context.loginManager.runtimeDir, 'crown-sessions', context.account.id, 'api-session.json',
   ), 'utf8'))
-  assert.equal(saved.cookies.SESSION, 'verified')
+  assert.equal(saved.cookies.SESSION, 'balanced')
   context.handle.close()
 })
 

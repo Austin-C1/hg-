@@ -1,12 +1,17 @@
 # Betting Architecture
 
-## 2026-07-11 B2 Safety Baseline
+## 2026-07-14 Task 10 Current Capability
+
+- The only enabled row is `prematch/full_time/asian_handicap/main`, with Preview/Submit/Reconciliation `1/1/0`; every other row and production Reconciliation remain closed.
+- This `1/1/0` records strict Provider capability evidence, not completed canonical Worker live acceptance. The real runtime stays off by default, and all rule-card, account, fresh-Preview, lease/fence, and single-Submit gates still apply.
+
+## Historical: 2026-07-11 B2 Safety Baseline
 
 - B1/B2 Task 1–12 are complete in code and independent safety review.
 - The production path is `ExecutionAuthorization -> deterministic batch/child -> durable submit attempt -> definite outcome or unknown -> reconciliation -> notification outbox`.
 - Prepared, dispatched, and unknown attempts are never automatically resubmitted after recovery. A submission-time recovery is scoped to one child; explicit startup recovery is authorization-wide.
 - Provider references use v2 context-bound encryption. Reconciliation evidence is append-only and notifications persist retry/lease state.
-- The canonical Crown capability matrix currently allows neither preview nor submit. Production submit, automatic reconciliation, and manual Crown resolution therefore fail closed; no real `FT_bet` acceptance has been run.
+- At that historical stage, the canonical Crown capability matrix allowed neither preview nor submit. Production submit, automatic reconciliation, and manual Crown resolution therefore failed closed, and no real `FT_bet` acceptance had been run. The current capability is the Task 10 exact row `1/1/0` above.
 - Historical adapter/CLI real entrypoints are disabled and are not a fallback execution route.
 
 Betting execution is split into staged modules. The monitor remains read-only; betting code must live outside the monitor path.

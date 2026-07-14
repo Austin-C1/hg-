@@ -1,5 +1,7 @@
+import fs from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 
 import { watcherLeaseKey } from './watcher-lease-key.mjs'
@@ -7,9 +9,92 @@ import { watcherLeaseKey } from './watcher-lease-key.mjs'
 const DEFAULT_DB_PATH = 'storage/crown.sqlite'
 const DEFAULT_RUNTIME_DIR = 'data/runtime'
 const DEFAULT_APP_DIR = fileURLToPath(new URL('../../../', import.meta.url))
+const RESTART_DELAYS_MS = Object.freeze([2_000, 5_000, 15_000])
+const MAX_STDERR_BYTES = 2_048
+const MAX_CAPTURE_BYTES = 8_192
 
 function isChildRunning(child) {
   return Boolean(child && child.exitCode === null && child.signalCode === null)
+}
+
+function timestamp(value) {
+  const date = value instanceof Date ? value : new Date(value)
+  if (!Number.isFinite(date.getTime())) throw new TypeError('monitor-process-time-invalid')
+  return date.toISOString()
+}
+
+function appendBoundedCapture(existing, chunk) {
+  const combined = Buffer.concat([existing, Buffer.from(chunk)])
+  if (combined.length <= MAX_CAPTURE_BYTES) return combined
+  const half = Math.floor(MAX_CAPTURE_BYTES / 2)
+  return Buffer.concat([combined.subarray(0, half), combined.subarray(combined.length - half)])
+}
+
+function boundedText(text, maxBytes) {
+  const value = String(text || '')
+  const encoded = Buffer.from(value, 'utf8')
+  if (encoded.length <= maxBytes) return encoded.toString('utf8')
+  const headBytes = Math.floor((maxBytes - 3) / 2)
+  const tailBytes = maxBytes - 3 - headBytes
+  let head = ''
+  let headSize = 0
+  for (const character of value) {
+    const size = Buffer.byteLength(character)
+    if (headSize + size > headBytes) break
+    head += character
+    headSize += size
+  }
+  let tail = ''
+  let tailSize = 0
+  for (const character of [...value].reverse()) {
+    const size = Buffer.byteLength(character)
+    if (tailSize + size > tailBytes) break
+    tail = character + tail
+    tailSize += size
+  }
+  return `${head}…${tail}`
+}
+
+function sanitizedStderr(buffer) {
+  const text = Buffer.from(buffer || '').toString('utf8')
+    .replace(/\u001b\[[0-9;]*m/g, '')
+    .replace(/\b(authorization|cookie|password|passwd|secret|session|ticket|token)\b(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1$2[redacted]')
+    .replace(/https?:\/\/[^\s]+/gi, '[url]')
+    .replace(/(?:[A-Za-z]:\\|\\\\)[^\r\n]*/g, '[path]')
+    .replace(/(^|\s)\/(?:[^\s/]+\/)+[^\s]*/g, '$1[path]')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .trim()
+  return boundedText(text, MAX_STDERR_BYTES)
+}
+
+function safeExitCode(value) {
+  return Number.isSafeInteger(value) ? value : null
+}
+
+function safeSignal(value) {
+  const signal = String(value || '')
+  return /^[A-Za-z0-9_-]{1,32}$/.test(signal) ? signal : null
+}
+
+function defaultRestartLeaseAvailability({ dbPath, leaseKey, appDir, now }) {
+  const resolvedDbPath = path.resolve(appDir, dbPath)
+  if (!fs.existsSync(resolvedDbPath)) return true
+  let db
+  try {
+    db = new DatabaseSync(resolvedDbPath, { readOnly: true })
+    const table = db.prepare("SELECT 1 AS present FROM sqlite_schema WHERE type='table' AND name='runtime_leases'").get()
+    if (!table) return true
+    const row = db.prepare('SELECT expires_at FROM runtime_leases WHERE lease_key = ? LIMIT 1').get(leaseKey)
+    if (!row) return true
+    const nowMs = new Date(now).getTime()
+    const expiresAt = Date.parse(String(row.expires_at || ''))
+    if (!Number.isFinite(expiresAt) || expiresAt <= nowMs) return true
+    return { available: false, retryAfterMs: Math.max(250, expiresAt - nowMs + 25) }
+  } catch {
+    return { available: false, retryAfterMs: 1_000 }
+  } finally {
+    db?.close()
+  }
 }
 
 export function createMonitorProcessController({
@@ -23,9 +108,37 @@ export function createMonitorProcessController({
   watchScriptPath = path.join(cwd || DEFAULT_APP_DIR, 'scripts', 'crown-watch.mjs'),
   appDir = cwd || path.dirname(path.dirname(watchScriptPath)),
   spawnCommand = spawn,
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout,
+  now = () => new Date(),
+  isRestartLeaseAvailable = defaultRestartLeaseAvailability,
+  stableRunMs = 60_000,
 } = {}) {
+  if (typeof setTimeoutFn !== 'function' || typeof clearTimeoutFn !== 'function') {
+    throw new TypeError('monitor-process-timer-invalid')
+  }
+  if (typeof now !== 'function' || typeof isRestartLeaseAvailable !== 'function') {
+    throw new TypeError('monitor-process-dependency-invalid')
+  }
+  if (!Number.isSafeInteger(stableRunMs) || stableRunMs < 0) {
+    throw new TypeError('monitor-process-stable-window-invalid')
+  }
+
   let child = null
   let childLeaseKey = ''
+  let generation = 0
+  let desiredRunning = false
+  let processState = 'manually-stopped'
+  let lastExit = null
+  let restartAttempt = 0
+  let nextRestartAt = null
+  let restartTimer = null
+  let stableTimer = null
+  let lastLaunch = null
+
+  function nowIso() {
+    return timestamp(now())
+  }
 
   function watchArgs({ action = 'start', dbPath: actionDbPath = dbPath, runtimeDir: actionRuntimeDir = runtimeDir, maxSeconds = 0 } = {}) {
     const args = [
@@ -51,6 +164,143 @@ export function createMonitorProcessController({
     return args
   }
 
+  function clearRestartTimer() {
+    if (restartTimer !== null) clearTimeoutFn(restartTimer)
+    restartTimer = null
+    nextRestartAt = null
+  }
+
+  function clearStableTimer() {
+    if (stableTimer !== null) clearTimeoutFn(stableTimer)
+    stableTimer = null
+  }
+
+  function normalizeLeaseAvailability(value) {
+    if (value === true) return { available: true, retryAfterMs: 0 }
+    if (value === false) return { available: false, retryAfterMs: 1_000 }
+    const retryAfterMs = Number(value?.retryAfterMs || 1_000)
+    return {
+      available: value?.available === true,
+      retryAfterMs: Number.isSafeInteger(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : 1_000,
+    }
+  }
+
+  function scheduleRestartTimer(expectedGeneration, delayMs) {
+    clearRestartTimer()
+    processState = 'waiting-restart'
+    nextRestartAt = new Date(Date.parse(nowIso()) + delayMs).toISOString()
+    restartTimer = setTimeoutFn(() => {
+      restartTimer = null
+      nextRestartAt = null
+      if (!desiredRunning || generation !== expectedGeneration || !lastLaunch) return
+      let availability
+      try {
+        availability = normalizeLeaseAvailability(isRestartLeaseAvailable({
+          dbPath: lastLaunch.dbPath,
+          runtimeDir: lastLaunch.runtimeDir,
+          leaseKey: lastLaunch.leaseKey,
+          appDir,
+          now: nowIso(),
+        }))
+      } catch {
+        availability = { available: false, retryAfterMs: 1_000 }
+      }
+      if (!availability.available) {
+        scheduleRestartTimer(expectedGeneration, availability.retryAfterMs)
+        return
+      }
+      try {
+        spawnManaged(lastLaunch, { recovery: true, expectedGeneration })
+      } catch (error) {
+        lastExit = {
+          exitCode: null,
+          signal: null,
+          exitedAt: nowIso(),
+          stderrSummary: sanitizedStderr(Buffer.from(String(error?.message || 'watcher-spawn-failed'))),
+        }
+        scheduleRecovery(expectedGeneration)
+      }
+    }, delayMs)
+    restartTimer?.unref?.()
+  }
+
+  function scheduleRecovery(failedGeneration) {
+    if (!desiredRunning || generation !== failedGeneration) return
+    if (restartAttempt >= RESTART_DELAYS_MS.length) {
+      clearRestartTimer()
+      processState = 'stopped-after-retries'
+      return
+    }
+    restartAttempt += 1
+    scheduleRestartTimer(failedGeneration, RESTART_DELAYS_MS[restartAttempt - 1])
+  }
+
+  function spawnManaged(launch, { recovery = false, expectedGeneration = generation } = {}) {
+    if (recovery && (!desiredRunning || generation !== expectedGeneration)) return null
+    const nextChild = spawnCommand(nodeExe, watchArgs(launch), {
+      cwd: appDir,
+      env,
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true,
+    })
+    const nextGeneration = generation + 1
+    generation = nextGeneration
+    child = nextChild
+    childLeaseKey = launch.leaseKey
+    processState = 'running'
+    nextRestartAt = null
+    let stderrCapture = Buffer.alloc(0)
+    nextChild.stderr?.on?.('data', (chunk) => {
+      stderrCapture = appendBoundedCapture(stderrCapture, chunk)
+    })
+
+    clearStableTimer()
+    if (recovery && restartAttempt > 0 && stableRunMs > 0) {
+      stableTimer = setTimeoutFn(() => {
+        stableTimer = null
+        if (desiredRunning && generation === nextGeneration && child === nextChild && isChildRunning(nextChild)) {
+          restartAttempt = 0
+        }
+      }, stableRunMs)
+      stableTimer?.unref?.()
+    }
+
+    let finalized = false
+    const finalizeExit = (code, signal, error = null) => {
+      if (finalized) return
+      finalized = true
+      if (generation !== nextGeneration || child !== nextChild) return
+      clearStableTimer()
+      child = null
+      childLeaseKey = ''
+      if (error) stderrCapture = appendBoundedCapture(stderrCapture, Buffer.from(String(error?.message || 'watcher-process-error')))
+      lastExit = {
+        exitCode: safeExitCode(code),
+        signal: safeSignal(signal),
+        exitedAt: nowIso(),
+        stderrSummary: sanitizedStderr(stderrCapture),
+      }
+      if (!desiredRunning) {
+        processState = 'manually-stopped'
+        nextRestartAt = null
+        return
+      }
+      scheduleRecovery(nextGeneration)
+    }
+    nextChild.once('error', (error) => finalizeExit(null, null, error))
+    nextChild.once('exit', (code, signal) => finalizeExit(code, signal))
+
+    return {
+      running: true,
+      pid: nextChild.pid,
+      reused: false,
+      alreadyRunning: false,
+      restarted: recovery,
+      previousPid: null,
+      leaseKey: launch.leaseKey,
+    }
+  }
+
   function start({ action = 'start', dbPath: actionDbPath = dbPath, runtimeDir: actionRuntimeDir = runtimeDir, maxSeconds = 0, restart = false } = {}) {
     const requestedLeaseKey = watcherLeaseKey({
       dbPath: actionDbPath || DEFAULT_DB_PATH,
@@ -65,6 +315,8 @@ export function createMonitorProcessController({
         error.requestedLeaseKey = requestedLeaseKey
         throw error
       }
+      desiredRunning = true
+      processState = 'running'
       return {
         running: true,
         pid: child.pid,
@@ -76,29 +328,19 @@ export function createMonitorProcessController({
       }
     }
 
-    const nextChild = spawnCommand(nodeExe, watchArgs({ action, dbPath: actionDbPath, runtimeDir: actionRuntimeDir, maxSeconds }), {
-      cwd: appDir,
-      env,
-      stdio: 'ignore',
-      windowsHide: true,
-    })
-    child = nextChild
-    childLeaseKey = requestedLeaseKey
-    nextChild.once('exit', () => {
-      if (child === nextChild) {
-        child = null
-        childLeaseKey = ''
-      }
-    })
-    return {
-      running: true,
-      pid: nextChild.pid,
-      reused: false,
-      alreadyRunning: false,
-      restarted: false,
-      previousPid: null,
+    void restart
+    clearRestartTimer()
+    clearStableTimer()
+    desiredRunning = true
+    restartAttempt = 0
+    lastLaunch = {
+      action,
+      dbPath: actionDbPath || DEFAULT_DB_PATH,
+      runtimeDir: actionRuntimeDir || DEFAULT_RUNTIME_DIR,
+      maxSeconds,
       leaseKey: requestedLeaseKey,
     }
+    return spawnManaged(lastLaunch)
   }
 
   function runLoginTest({ dbPath: actionDbPath = dbPath, runtimeDir: actionRuntimeDir = runtimeDir, maxSeconds = 120, timeoutMs = 0 } = {}) {
@@ -117,7 +359,7 @@ export function createMonitorProcessController({
 
     return new Promise((resolve) => {
       let settled = false
-      const timer = setTimeout(() => {
+      const timer = setTimeoutFn(() => {
         if (settled) return
         settled = true
         nextChild.kill?.()
@@ -126,17 +368,30 @@ export function createMonitorProcessController({
       nextChild.once('exit', (code, signal) => {
         if (settled) return
         settled = true
-        clearTimeout(timer)
+        clearTimeoutFn(timer)
         resolve({ ok: code === 0, pid: nextChild.pid, code, signal, timedOut: false })
       })
     })
   }
 
+  function markStoppedIntent() {
+    desiredRunning = false
+    restartAttempt = 0
+    clearRestartTimer()
+    clearStableTimer()
+    processState = isChildRunning(child) ? 'stopping' : 'manually-stopped'
+  }
+
   function stop() {
+    markStoppedIntent()
     if (!isChildRunning(child)) return { stopped: false }
     const pid = child.pid
     child.kill()
     return { stopped: true, pid }
+  }
+
+  function reset() {
+    return stop()
   }
 
   function signalAndWait(target, signal, timeoutMs) {
@@ -147,7 +402,7 @@ export function createMonitorProcessController({
       const finish = (exited) => {
         if (settled) return
         settled = true
-        clearTimeout(timer)
+        clearTimeoutFn(timer)
         target.removeListener('exit', onExit)
         resolve(exited)
       }
@@ -155,12 +410,13 @@ export function createMonitorProcessController({
       target.once('exit', onExit)
       try { target.kill(signal) } catch { return finish(false) }
       if (!isChildRunning(target)) return finish(true)
-      timer = setTimeout(() => finish(false), Math.max(1, Number(timeoutMs || 1)))
+      timer = setTimeoutFn(() => finish(false), Math.max(1, Number(timeoutMs || 1)))
     })
   }
 
   async function stopAndWait({ timeoutMs = 10_000, forceTimeoutMs = 2_000 } = {}) {
-    if (!isChildRunning(child)) return Promise.resolve({ stopped: false })
+    markStoppedIntent()
+    if (!isChildRunning(child)) return { stopped: false }
     const stopping = child
     const pid = stopping.pid
     const graceful = await signalAndWait(stopping, 'SIGTERM', timeoutMs)
@@ -179,14 +435,27 @@ export function createMonitorProcessController({
       child = null
       childLeaseKey = ''
     }
+    processState = 'manually-stopped'
     return { stopped: true, pid, forced }
+  }
+
+  function getStatus() {
+    return {
+      desiredRunning,
+      processState,
+      lastExit: lastExit ? { ...lastExit } : null,
+      restartAttempt,
+      nextRestartAt,
+    }
   }
 
   return {
     isRunning: () => isChildRunning(child),
+    getStatus,
     start,
     runLoginTest,
     stop,
     stopAndWait,
+    reset,
   }
 }

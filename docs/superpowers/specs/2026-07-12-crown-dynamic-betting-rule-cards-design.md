@@ -224,4 +224,4 @@ contract-version-mismatch
 
 必须覆盖：schema/迁移幂等、赔率 TEXT 精度、联赛必选、今日选项、手动联赛、停用卡片占用、并发唯一抢占、删除释放、Signal 单卡匹配、mode 透传、上涨/下降门禁、card-scoped market-once、删除竞态、不可变快照、清理边界、Operations 投影、API 安全与字段脱敏、桌面/移动端弹窗和卡片浏览器验收。
 
-最终运行完整 backend、syntax、frontend、production build、Compose config。真实 Crown capability 继续保持 0/0/0；本次不自动开启真实投注，不执行 Crown/TG 网络或真实订单。
+本设计的历史验收轮次最终运行完整 backend、syntax、frontend、production build、Compose config；真实 Crown capability 当时为 `0/0/0`，该轮未自动开启真实投注，也未执行 Crown/TG 网络或真实订单。当前 capability 以 Task 10 的 exact row `prematch/full_time/asian_handicap/main` Preview/Submit/Reconciliation `1/1/0` 为准；其他 row 与 Reconciliation 关闭，真实 runtime 默认 off。

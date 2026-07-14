@@ -197,6 +197,65 @@ test('manual betting access fails closed with a stable code when member balance 
   })
 })
 
+test('execution balance refresh uses the current betting session and returns exact integer CNY', async () => {
+  const calls = []
+  const manager = new CrownApiLoginManager({
+    runtimeDir: tempRuntimeDir(),
+    bettingAllowedOrigins: BETTING_ALLOWED_ORIGINS,
+    now: () => new Date('2026-07-13T08:00:00.000Z'),
+    fetchImpl: fakeFetch([
+      response(loginXml(), { cookies: ['SESSION=fresh; Path=/'] }),
+      response(gameListXml(), { cookies: ['SESSION=verified; Path=/'] }),
+      response('<serverresponse><code>get_all_data</code><enable>Y</enable><currency>RMB</currency><maxcredit>1950.00</maxcredit></serverresponse>', {
+        cookies: ['SESSION=balanced; Path=/'],
+      }),
+    ], calls),
+  })
+  const account = {
+    id: 'bet-execution-balance', accountId: 'bet-execution-balance', username: 'bet-user', password: 'bet-password',
+    loginUrl: BETTING_ALLOWED_ORIGINS, currency: 'CNY',
+  }
+
+  const result = await manager.fetchFreshExecutionBalance({ account })
+
+  assert.deepEqual({
+    balanceCny: result.balanceCny,
+    currency: result.currency,
+    observedAt: result.observedAt,
+    accountId: result.session.accountId,
+  }, {
+    balanceCny: 1950,
+    currency: 'CNY',
+    observedAt: '2026-07-13T08:00:00.000Z',
+    accountId: account.id,
+  })
+  assert.deepEqual(calls.map((call) => call.body.p), ['chk_login', 'get_game_list', 'get_member_data'])
+  assert.equal(result.session.cookies.SESSION, 'balanced')
+  assert.doesNotMatch(JSON.stringify(result), /bet-password|owner-uid/)
+})
+
+for (const [name, memberXml] of [
+  ['non-CNY currency', '<serverresponse><code>get_all_data</code><enable>Y</enable><currency>USD</currency><maxcredit>10</maxcredit></serverresponse>'],
+  ['fractional CNY', '<serverresponse><code>get_all_data</code><enable>Y</enable><currency>RMB</currency><maxcredit>10.5</maxcredit></serverresponse>'],
+  ['unsafe integer', `<serverresponse><code>get_all_data</code><enable>Y</enable><currency>RMB</currency><maxcredit>${Number.MAX_SAFE_INTEGER + 1}</maxcredit></serverresponse>`],
+]) {
+  test(`execution balance refresh rejects ${name}`, async () => {
+    const manager = new CrownApiLoginManager({
+      runtimeDir: tempRuntimeDir(),
+      bettingAllowedOrigins: BETTING_ALLOWED_ORIGINS,
+      fetchImpl: fakeFetch([
+        response(loginXml()),
+        response(gameListXml()),
+        response(memberXml),
+      ]),
+    })
+    await assert.rejects(() => manager.fetchFreshExecutionBalance({ account: {
+      id: 'bet-invalid-balance', accountId: 'bet-invalid-balance', username: 'bet-user', password: 'bet-password',
+      loginUrl: BETTING_ALLOWED_ORIGINS, currency: 'CNY',
+    } }), /betting-execution-balance-unavailable/)
+  })
+}
+
 test('Crown API login posts chk_login, verifies XML, and saves an API session', async () => {
   const calls = []
   const runtimeDir = tempRuntimeDir()

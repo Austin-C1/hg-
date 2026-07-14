@@ -139,6 +139,7 @@ export default function OperationsConsole() {
   const startSafe = Boolean(data && !offline && !stale && !hasRisk
     && verifiedRuleCards && data.readiness.monitor.ready && data.readiness.rules.ready && data.readiness.accounts.ready)
   const realRequested = Boolean(data?.runtime.requested || ['running', 'armed_waiting', 'stopping'].includes(data?.runtime.state || ''))
+  const watcherProcess = data?.watcher.process
 
   async function monitorAction(action: 'start' | 'stop') {
     if (pending) return
@@ -209,6 +210,22 @@ export default function OperationsConsole() {
 
       {offline ? <Alert type="error" showIcon message="连接中断，正在显示最后一次数据" /> : null}
       {!offline && stale && data ? <Alert type="warning" showIcon message="赔率数据未就绪，真实投注保持阻断" /> : null}
+      {!offline && watcherProcess?.processState === 'waiting-restart' ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={`Watcher 正在等待第 ${watcherProcess.restartAttempt} 次恢复`}
+          description={`${watcherProcess.nextRestartAt ? `计划时间：${timeText(watcherProcess.nextRestartAt)}。` : ''}${watcherProcess.lastExit?.stderrSummary || ''}`}
+        />
+      ) : null}
+      {!offline && watcherProcess?.processState === 'stopped-after-retries' ? (
+        <Alert
+          type="error"
+          showIcon
+          message="Watcher 连续恢复失败，已停止自动重启"
+          description={watcherProcess.lastExit?.stderrSummary || '请检查原因后手工启动监控。'}
+        />
+      ) : null}
 
       <section className="readiness-panel" aria-label="下注准备链路">
         <div className="section-header"><div><h2>下注准备链路</h2><p>四层全部就绪后，运维总开关才允许提交真实订单。</p></div></div>

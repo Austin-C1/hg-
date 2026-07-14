@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -12,7 +13,8 @@ function parseRoot(argv) {
 
 const root = parseRoot(process.argv.slice(2))
 const sourceRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const report = await auditReleaseArtifacts({ root, sourceRoot })
+const policy = JSON.parse(await readFile(resolve(sourceRoot, 'release/windows-production-allowlist.json'), 'utf8'))
+const report = await auditReleaseArtifacts({ root, sourceRoot, policy })
 process.stdout.write(`${JSON.stringify({
   ok: report.ok,
   version: report.version,

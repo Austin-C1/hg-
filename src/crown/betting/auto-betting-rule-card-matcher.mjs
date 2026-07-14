@@ -37,9 +37,6 @@ export function completeRuleCardSnapshot(row, leagueNames) {
     || !Number.isSafeInteger(row.target_amount_minor) || row.target_amount_minor < 1
     || row.currency !== 'CNY' || row.amount_scale !== 0
     || typeof row.remark !== 'string' || typeof row.migration_review_reason !== 'string'
-    || (row.real_eligible !== 0 && row.real_eligible !== 1)
-    || !Number.isSafeInteger(row.real_eligibility_version) || row.real_eligibility_version < 1
-    || !canonicalTimestamp(row.real_eligibility_updated_at)
     || !Number.isSafeInteger(row.version) || row.version < 1
     || !canonicalTimestamp(row.created_at) || !canonicalTimestamp(row.updated_at)
     || !Array.isArray(leagueNames) || leagueNames.length === 0
@@ -55,9 +52,6 @@ export function completeRuleCardSnapshot(row, leagueNames) {
     currency: 'CNY',
     amountScale: 0,
     remark: row.remark,
-    realEligible: row.real_eligible === 1,
-    realEligibilityVersion: row.real_eligibility_version,
-    realEligibilityUpdatedAt: row.real_eligibility_updated_at,
     migrationReviewRequired: false,
     migrationReviewReason: row.migration_review_reason,
     version: row.version,

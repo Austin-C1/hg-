@@ -1,6 +1,6 @@
 export const REAL_BETTING_REASON_CODES = new Set([
   'watcher-not-fresh', 'watcher-lease-not-unique', 'monitor-login-not-fresh',
-  'betting-account-login-not-fresh', 'betting-account-balance-not-fresh',
+  'betting-rule-card-not-enabled', 'betting-account-unavailable',
   'capability-evidence-not-exact', 'authorization-not-active', 'schema-not-current',
   'environment-not-exact', 'fence-not-fresh', 'executor-lease-not-fresh',
   'reconciler-lease-not-fresh', 'executor-reconciler-lease-not-distinct',

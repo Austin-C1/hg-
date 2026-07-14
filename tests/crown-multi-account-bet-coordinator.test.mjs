@@ -9,8 +9,7 @@ import { BetBatchStore } from '../src/crown/betting/bet-batch-store.mjs'
 import { MultiAccountBetCoordinator } from '../src/crown/betting/multi-account-bet-coordinator.mjs'
 import { SimulatedBetProvider } from '../src/crown/betting/simulated-bet-provider.mjs'
 import { BettingWorker } from '../src/crown/betting/betting-worker.mjs'
-import { authorizeExecution } from '../src/crown/betting/execution-gate.mjs'
-import { prepareAuthorizedSubmit, recordAuthorizedDispatch, recordAuthorizedOutcome, recoverAuthorizedAttempts } from '../src/crown/betting/b2-executor.mjs'
+import { prepareSubmitAttempt, recordSubmitDispatch, recordSubmitOutcome } from '../src/crown/betting/b2-executor.mjs'
 import { collectRealBettingPreflight, requestRealBettingStart, requestRealBettingStop } from '../src/crown/betting/real-betting-runtime.mjs'
 
 const NOW = '2026-07-11T02:01:00.000Z'
@@ -52,7 +51,7 @@ function latestSelection(overrides = {}) {
   const base = {
     provider: 'crown', mode: 'prematch', capturedAt: NOW,
     event: { eventKey: signal().target.eventIdentity, livePhase: null },
-    market: { marketIdentity, period: 'full_time', marketType: 'asian_handicap', lineKey: 'RATIO_RE', handicap: -0.5, handicapRaw: '-0.50' },
+    market: { marketIdentity, period: 'full_time', marketType: 'asian_handicap', lineVariant: 'main', lineKey: 'RATIO_RE', handicap: -0.5, handicapRaw: '-0.50' },
     selection: { selectionIdentity: `${marketIdentity}|away`, side: 'away', odds: 0.88, suspended: false },
   }
   return {
@@ -174,6 +173,38 @@ function fixture(options = {}) {
   return { handle, store, provider, lease, coordinator }
 }
 
+function coordinatorContractDependencies() {
+  const lease = {
+    leaseKey: 'betting-executor:contract',
+    assertFence: () => 1,
+  }
+  return {
+    db: { prepare() {} },
+    store: { leaseKey: lease.leaseKey },
+    lease,
+    findLatestSelection: () => null,
+  }
+}
+
+test('accepts a preview-only provider when B2 owns the submit contract', () => {
+  const dependencies = coordinatorContractDependencies()
+
+  assert.doesNotThrow(() => new MultiAccountBetCoordinator({
+    ...dependencies,
+    provider: { async preview() {} },
+    b2Executor: { async submit() {} },
+  }))
+})
+
+test('rejects a coordinator when neither provider nor B2 can submit', () => {
+  const dependencies = coordinatorContractDependencies()
+
+  assert.throws(() => new MultiAccountBetCoordinator({
+    ...dependencies,
+    provider: { async preview() {} },
+  }), /coordinator-provider/)
+})
+
 test('canonical claim allocation rollback leaves no batch children or locks and records stable failure', async () => {
   let injected = false
   const context = fixture({
@@ -276,7 +307,7 @@ test('claim update failure preserves the original allocation error and attaches 
   }
 })
 
-test('canonical allocation reserves ordered accounts once and never redistributes a rejection', async () => {
+test('canonical allocation is sequential, honors each configured per-account limit, and continues after rejection', async () => {
   const provider = new ConcurrentProvider({ submitByAccount: {
     'account-a': [{ status: 'rejected', errorCode: 'sim-rejected' }],
     'account-b': [{ status: 'accepted' }],
@@ -296,8 +327,10 @@ test('canonical allocation reserves ordered accounts once and never redistribute
     assert.equal(result.status, 'partial')
     assert.deepEqual(provider.submitCalls.map(({ accountId, amountMinor }) => ({ accountId, amountMinor })), [
       { accountId: 'account-a', amountMinor: 60 },
-      { accountId: 'account-b', amountMinor: 40 },
+      { accountId: 'account-b', amountMinor: 50 },
     ])
+    assert.equal(provider.maxActivePreview, 1)
+    assert.equal(provider.maxActiveSubmit, 1)
     assert.equal(context.handle.db.prepare('SELECT COUNT(*) AS count FROM bet_child_orders').get().count, 2)
     assert.deepEqual({ ...context.handle.db.prepare(`
       SELECT claim_status, failure_reason FROM bet_market_once_claims
@@ -420,7 +453,7 @@ test('real worker without mode inbox performs no preview, batch creation, or net
   }
 })
 
-test('real Coordinator atomically binds authorization and delegates the reserved child only to B2', async () => {
+test('real Coordinator creates no authorization budget and delegates the reserved child only to B2', async () => {
   const context = fixture({ target: 50, accounts: [{ id: 'account-a', limit: 50 }] })
   const env = {
     CROWN_REAL_CURRENCY: 'CNY',
@@ -430,14 +463,6 @@ test('real Coordinator atomically binds authorization and delegates the reserved
   context.handle.db.prepare(`
     UPDATE betting_rules SET execution_mode = 'real_eligible' WHERE id = 'rule-a'
   `).run()
-  const authorization = authorizeExecution(context.handle.db, {
-    authorizationId: 'authorization-coordinator-b2',
-    currency: 'CNY',
-    amountScale: 0,
-    ruleIds: ['rule-a'],
-    maxTotalAmountMinor: 50,
-    confirmation: 'OFFLINE COORDINATOR B2 INTEGRATION',
-  }, { env, now: () => new Date(NOW) })
   context.handle.db.prepare(`
     UPDATE runtime_leases SET expires_at = '2099-07-11T02:10:00.000Z'
     WHERE lease_key = ?
@@ -448,9 +473,8 @@ test('real Coordinator atomically binds authorization and delegates the reserved
     ) VALUES ('real-b2-claim', 'rule-a', ?, 'claimed', ?, ?)
   `).run(SIGNAL_ID, NOW, NOW)
   const ready = Object.fromEntries([
-    'watcherFresh', 'watcherLeaseUnique', 'monitorLoginFresh', 'bettingAccountFresh', 'balanceFresh',
-    'capabilityExact', 'authorizationActive', 'schemaCurrent', 'environmentExact', 'fenceFresh',
-    'executorLeaseFresh', 'reconcilerLeaseFresh', 'executorReconcilerDistinct',
+    'ruleCardsEnabled', 'bettingAccountAvailable', 'capabilityExact',
+    'schemaCurrent', 'fenceFresh', 'executorLeaseFresh',
   ].map((field) => [field, true]))
   requestRealBettingStart(context.handle.db, ready, { now: () => new Date(NOW) })
   const processLease = {
@@ -472,15 +496,15 @@ test('real Coordinator atomically binds authorization and delegates the reserved
                budget.status AS binding_status, budget.amount_minor
         FROM bet_child_orders AS child
         JOIN bet_batches AS batch ON batch.batch_id = child.batch_id
-        JOIN execution_authorization_child_budgets AS budget ON budget.child_order_id = child.child_order_id
+        LEFT JOIN execution_authorization_child_budgets AS budget ON budget.child_order_id = child.child_order_id
         WHERE child.child_order_id = ?
       `).get(input.childOrderId)
       assert.deepEqual({ ...child }, {
         status: 'reserved',
         submit_attempt_id: '',
-        authorization_id: authorization.authorizationId,
-        binding_status: 'reserved',
-        amount_minor: 50,
+        authorization_id: null,
+        binding_status: null,
+        amount_minor: null,
       })
       throw new Error('offline-b2-stop-after-authority-check')
     },
@@ -502,10 +526,10 @@ test('real Coordinator atomically binds authorization and delegates the reserved
   })
   try {
     await assert.rejects(
-      coordinator.processSignal(signal(), { mode: 'real', authorizationId: authorization.authorizationId }),
+      coordinator.processSignal(signal(), { mode: 'real' }),
       /offline-b2-stop-after-authority-check/,
     )
-    assert.equal(b2Input.authorizationId, authorization.authorizationId)
+    assert.equal(Object.hasOwn(b2Input, 'authorizationId'), false)
     assert.equal(b2Input.ruleId, 'rule-a')
     assert.equal(b2Input.accountId, 'account-a')
     assert.equal(b2Input.amountMinor, 50)
@@ -514,12 +538,14 @@ test('real Coordinator atomically binds authorization and delegates the reserved
     assert.equal(b2Input.lockedSelection.selectionIdentity, latestSelection().selection.selectionIdentity)
     assert.equal(context.provider.submitCalls.length, 0)
     assert.equal(context.handle.db.prepare('SELECT COUNT(*) AS count FROM bet_submit_attempts').get().count, 0)
+    assert.equal(context.handle.db.prepare('SELECT COUNT(*) AS count FROM execution_authorizations').get().count, 0)
+    assert.equal(context.handle.db.prepare('SELECT COUNT(*) AS count FROM execution_authorization_child_budgets').get().count, 0)
   } finally {
     context.handle.close()
   }
 })
 
-test('temp-file real Coordinator reaches the immutable fixture B2 ledger, bypasses legacy Store submit, and reopens unknown without resubmit', async () => {
+test('temp-file real Coordinator reaches the neutral immutable B2 ledger and reopens unknown without resubmit', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-real-shaped-'))
   const dbPath = path.join(dir, 'app.sqlite')
   const env = { CROWN_REAL_CURRENCY: 'CNY', CROWN_REAL_AMOUNT_SCALE: '0', CROWN_REAL_MAX_TOTAL_MINOR: '50' }
@@ -538,19 +564,14 @@ test('temp-file real Coordinator reaches the immutable fixture B2 ledger, bypass
       INSERT INTO runtime_leases (lease_key,owner_id,pid,acquired_at,heartbeat_at,expires_at,fencing_token)
       VALUES (?,?,1,?,?,'2099-01-01T00:00:00.000Z',?)
     `).run(item.leaseKey, item.ownerId, NOW, NOW, item.fencingToken)
-    const authorization = authorizeExecution(handle.db, {
-      authorizationId: 'auth-real-shaped', currency: 'CNY', amountScale: 0,
-      ruleIds: ['rule-a'], maxTotalAmountMinor: 50, confirmation: 'FIXTURE REAL SHAPED',
-    }, { env, now: () => new Date(NOW) })
     handle.db.prepare(`INSERT INTO bet_market_once_claims
       (market_once_key,rule_id,signal_id,claim_status,created_at,updated_at)
       VALUES ('real-shaped-claim','rule-a',?,'claimed',?,?)`).run(SIGNAL_ID, NOW, NOW)
     const productionChecks = collectRealBettingPreflight(handle, { env, now: () => new Date(NOW) })
     assert.equal(productionChecks.capabilityExact, false)
     const ready = Object.fromEntries([
-      'watcherFresh','watcherLeaseUnique','monitorLoginFresh','bettingAccountFresh','balanceFresh',
-      'capabilityExact','authorizationActive','schemaCurrent','environmentExact','fenceFresh',
-      'executorLeaseFresh','reconcilerLeaseFresh','executorReconcilerDistinct',
+      'ruleCardsEnabled','bettingAccountAvailable','capabilityExact',
+      'schemaCurrent','fenceFresh','executorLeaseFresh',
     ].map((field) => [field, true]))
     requestRealBettingStart(handle.db, ready, { now: () => new Date(NOW) })
     const store = new BetBatchStore(handle.db, { leaseKey: lease.leaseKey, now: () => NOW })
@@ -562,22 +583,22 @@ test('temp-file real Coordinator reaches the immutable fixture B2 ledger, bypass
       fixtureSubmits += 1
       const fixtureIdentity = {
         provider: 'fixture', gid: '8878931', mode: 'prematch', period: 'full_time',
-        market: 'asian_handicap', line: 'RATIO_RE', side: 'away',
+        market: 'asian_handicap', lineVariant: 'main', line: '-0.50', side: 'away',
       }
       const gate = {
-        authorizationId: input.authorizationId, ruleId: input.ruleId, batchId: input.batchId,
+        ruleId: input.ruleId, batchId: input.batchId,
         childOrderId: input.childOrderId, accountId: input.accountId,
         leaseKey: lease.leaseKey, executorOwnerId: lease.ownerId, fencingToken: lease.fencingToken,
         submitAttemptId: input.submitAttemptId,
       }
-      prepareAuthorizedSubmit(handle.db, {
+      prepareSubmitAttempt(handle.db, {
         ...gate, attemptOrdinal: input.attemptOrdinal,
         capabilityVersion: 'b2-ledger-fixture-v1', capabilityEvidenceId: 'fixture:b2-ledger:offline:v1',
         lockedIdentity: fixtureIdentity, currentIdentity: fixtureIdentity,
         preview: { minStakeMinor: 10, maxStakeMinor: 50, balanceMinor: 100, stakeStepMinor: 10, odds: '0.88', line: fixtureIdentity.line },
       }, options)
-      recordAuthorizedDispatch(handle.db, gate, options)
-      return recordAuthorizedOutcome(handle.db, { ...gate, outcome: { kind: 'pending' }, hasFutureCapacity: false }, options)
+      recordSubmitDispatch(handle.db, gate, options)
+      return recordSubmitOutcome(handle.db, { ...gate, outcome: { kind: 'pending' }, hasFutureCapacity: false }, options)
     } }
     const provider = new ConcurrentProvider()
     const coordinator = new MultiAccountBetCoordinator({
@@ -585,7 +606,7 @@ test('temp-file real Coordinator reaches the immutable fixture B2 ledger, bypass
       findLatestSelection: () => latestSelection(), currentLeagueNames: [signal().evidence.league],
       now: () => NOW, realExecutionGate: () => true, executionEnvironment: env,
     })
-    const result = await coordinator.processSignal(signal(), { mode: 'real', authorizationId: authorization.authorizationId })
+    const result = await coordinator.processSignal(signal(), { mode: 'real' })
     assert.equal(result.status, 'waiting_result', JSON.stringify({
       result,
       children: handle.db.prepare('SELECT status,error_code,error_message FROM bet_child_orders').all(),
@@ -598,19 +619,25 @@ test('temp-file real Coordinator reaches the immutable fixture B2 ledger, bypass
     ])
     handle.close()
     handle = openAppDatabase({ dbPath })
-    recoverAuthorizedAttempts(handle.db, {
-      authorizationId: authorization.authorizationId, leaseKey: lease.leaseKey,
-      executorOwnerId: lease.ownerId, fencingToken: lease.fencingToken,
-    }, options)
+    const reopenedStore = new BetBatchStore(handle.db, { leaseKey: lease.leaseKey, now: () => NOW })
+    const reopened = new MultiAccountBetCoordinator({
+      db: handle.db, store: reopenedStore, provider, b2Executor, lease, processLease,
+      findLatestSelection: () => latestSelection(), currentLeagueNames: [signal().evidence.league],
+      now: () => NOW, realExecutionGate: () => true,
+    })
+    const reopenedBatchId = handle.db.prepare('SELECT batch_id FROM bet_batches').get().batch_id
+    assert.equal((await reopened.runBatch(reopenedBatchId, { mode: 'real' })).status, 'waiting_result')
     assert.equal(handle.db.prepare("SELECT COUNT(*) count FROM bet_submit_attempts WHERE status='unknown'").get().count, 1)
     assert.equal(fixtureSubmits, 1)
+    assert.equal(handle.db.prepare('SELECT COUNT(*) count FROM execution_authorizations').get().count, 0)
+    assert.equal(handle.db.prepare('SELECT COUNT(*) count FROM execution_authorization_child_budgets').get().count, 0)
   } finally {
     try { handle.close() } catch {}
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
 
-test('real Coordinator derives ordinal two and a new deterministic id after odds_changed_unsent', async () => {
+test('real Coordinator refuses a second submit after a dispatched attempt has an uncertain result', async () => {
   let submitted = null
   const db = {
     prepare(sql) {
@@ -633,14 +660,11 @@ test('real Coordinator derives ordinal two and a new deterministic id after odds
     findLatestSelection: () => null,
     realExecutionGate: () => true,
   })
-  const result = await coordinator._submitChild({
+  await assert.rejects(coordinator._submitChild({
     authorizationId: 'auth-ordinal', ruleId: 'rule-a', batchId: 'batch-a',
     childOrderId: 'child-a', accountId: 'account-a', amountMinor: 20, attempt: 1,
-  }, { provider: 'fixture' }, 4, 'real')
-  assert.equal(result.status, 'accepted')
-  assert.equal(submitted.attemptOrdinal, 2)
-  assert.notEqual(submitted.submitAttemptId, 'first-id')
-  assert.match(submitted.submitAttemptId, /^[a-f0-9]{64}$/)
+  }, { provider: 'fixture' }, 4, 'real'), /submit-attempt-uncertain/)
+  assert.equal(submitted, null)
 })
 
 test('real child preview identity drift stops the whole batch before legacy submit', async () => {
@@ -739,7 +763,7 @@ function lockAccountForAnotherBatch(context, accountId) {
   }], { fencingToken: 7 })
 }
 
-test('a persisted rejection is terminal and never retries the rejected account after restart', async () => {
+test('a persisted rejection never retries the rejected account while a locked unused account waits', async () => {
   const provider = new ConcurrentProvider({ submitByAccount: {
     'account-a': [{ status: 'rejected', errorCode: 'sim-rejected' }],
   } })
@@ -747,10 +771,10 @@ test('a persisted rejection is terminal and never retries the rejected account a
   try {
     lockAccountForAnotherBatch(context, 'account-b')
     const first = await context.coordinator.processSignal(signal())
-    assert.equal(first.status, 'failed')
+    assert.equal(first.status, 'waiting_capacity')
     assert.deepEqual(provider.submitCalls.map((call) => call.accountId), ['account-a'])
     const replay = await context.coordinator.processSignal(signal())
-    assert.equal(replay.status, 'failed')
+    assert.equal(replay.status, 'waiting_capacity')
     assert.deepEqual(provider.submitCalls.map((call) => call.accountId), ['account-a'])
   } finally {
     context.handle.close()
@@ -776,6 +800,36 @@ test('temporary preview failure waits for capacity while definitively having no 
     assert.equal((await failed.coordinator.processSignal(signal())).status, 'failed')
   } finally {
     failed.handle.close()
+  }
+})
+
+test('a fresh Preview outside the frozen rule odds range is never reserved or submitted', async () => {
+  let submitCalls = 0
+  const provider = {
+    networkCallCount: 0,
+    async preview() {
+      return {
+        ok: true,
+        minStakeMinor: 10,
+        maxStakeMinor: 100,
+        stakeStepMinor: 10,
+        balanceMinor: 100,
+        odds: '1.19',
+      }
+    },
+    async submit() { submitCalls += 1; return { status: 'accepted' } },
+  }
+  const context = fixture({ target: 60, accounts: [{ id: 'account-a', limit: 60 }], provider })
+  try {
+    context.handle.db.prepare(`UPDATE betting_rules
+      SET target_odds_min='0.75', target_odds_max='1.18'
+      WHERE id='rule-a'`).run()
+    const result = await context.coordinator.processSignal(signal())
+    assert.equal(result.status, 'waiting_capacity')
+    assert.equal(submitCalls, 0)
+    assert.equal(context.handle.db.prepare('SELECT COUNT(*) count FROM bet_child_orders').get().count, 0)
+  } finally {
+    context.handle.close()
   }
 })
 
@@ -1006,7 +1060,12 @@ for (const resolvedStatus of ['accepted', 'unknown']) {
     })
     try {
       await assert.rejects(context.coordinator.processSignal(signal()), /crash:afterReserve/)
-      const [resolved, unsent] = context.store.listChildOrders(context.handle.db.prepare('SELECT batch_id FROM bet_batches').get().batch_id)
+      const batchId = context.handle.db.prepare('SELECT batch_id FROM bet_batches').get().batch_id
+      context.store.reserveRound(batchId, [{
+        accountId: 'account-b', amountMinor: 50, previewMinStakeMinor: 10, previewMaxStakeMinor: 50,
+        previewBalanceMinor: 1000, previewStakeStepMinor: 10, previewOdds: '0.88',
+      }], { fencingToken: 7 })
+      const [resolved, unsent] = context.store.listChildOrders(batchId)
       context.store.prepareSubmit(resolved.childOrderId, { submitAttemptId: 'manual-result', fencingToken: 7, at: NOW })
       context.store.markDispatched(resolved.childOrderId, { fencingToken: 7, at: NOW })
       context.store.resolveChildOrder(resolved.childOrderId, { status: resolvedStatus, fencingToken: 7, at: NOW })
@@ -1045,7 +1104,12 @@ test('worker audits an expired waiting_result batch, cancels its reserved siblin
   })
   try {
     await assert.rejects(context.coordinator.processSignal(signal()), /crash:afterReserve/)
-    const [unknown, reserved] = context.store.listChildOrders(context.handle.db.prepare('SELECT batch_id FROM bet_batches').get().batch_id)
+    const batchId = context.handle.db.prepare('SELECT batch_id FROM bet_batches').get().batch_id
+    context.store.reserveRound(batchId, [{
+      accountId: 'account-b', amountMinor: 50, previewMinStakeMinor: 10, previewMaxStakeMinor: 50,
+      previewBalanceMinor: 1000, previewStakeStepMinor: 10, previewOdds: '0.88',
+    }], { fencingToken: 7 })
+    const [unknown, reserved] = context.store.listChildOrders(batchId)
     context.store.prepareSubmit(unknown.childOrderId, { submitAttemptId: 'unknown-result', fencingToken: 7, at: NOW })
     context.store.markDispatched(unknown.childOrderId, { fencingToken: 7, at: NOW })
     context.store.resolveChildOrder(unknown.childOrderId, { status: 'unknown', fencingToken: 7, at: NOW })
@@ -1105,15 +1169,15 @@ test('waiting_result keeps its first manual stop intent when a later audit reach
   }
 })
 
-test('preview script exhaustion leaves the idempotent batch queued with no child mutations', async () => {
+test('preview script exhaustion before a usable account leaves the idempotent batch queued with no child mutations', async () => {
   const provider = new SimulatedBetProvider({ script: [{
     operation: 'preview',
-    result: { ok: true, minStakeMinor: 10, maxStakeMinor: 50, stakeStepMinor: 10, balanceMinor: 1000 },
+    result: { ok: false },
   }] })
   const context = fixture({ provider })
   try {
     await assert.rejects(context.coordinator.processSignal(signal()), /simulated-script-exhausted/)
-    assert.equal(provider.calls.length, 0)
+    assert.deepEqual(provider.calls.map((call) => call.operation), ['preview'])
     assert.deepEqual({ ...context.handle.db.prepare('SELECT status FROM bet_batches').get() }, { status: 'queued' })
     assert.equal(context.handle.db.prepare('SELECT COUNT(*) AS count FROM bet_child_orders').get().count, 0)
   } finally {
@@ -1122,34 +1186,38 @@ test('preview script exhaustion leaves the idempotent batch queued with no child
 })
 
 test('submit script exhaustion leaves children reserved and succeeds after script repair without duplicate preview', async () => {
-  const preview = { ok: true, minStakeMinor: 10, maxStakeMinor: 50, stakeStepMinor: 10, balanceMinor: 1000 }
+  const preview = { ok: true, minStakeMinor: 10, maxStakeMinor: 50, stakeStepMinor: 10, balanceMinor: 1000, odds: '0.88' }
   const provider = new SimulatedBetProvider({ script: [
     { operation: 'preview', result: preview },
-    { operation: 'preview', result: preview },
-    { operation: 'submit', result: { status: 'accepted' } },
   ] })
   const context = fixture({ provider })
   try {
     await assert.rejects(context.coordinator.processSignal(signal()), /simulated-script-exhausted/)
-    assert.deepEqual(provider.calls.map((call) => call.operation), ['preview', 'preview'])
-    assert.deepEqual(context.handle.db.prepare('SELECT status FROM bet_child_orders ORDER BY child_order_id').all().map((row) => row.status), ['reserved', 'reserved'])
+    assert.deepEqual(provider.calls.map((call) => call.operation), ['preview'])
+    assert.deepEqual(context.handle.db.prepare('SELECT status FROM bet_child_orders ORDER BY child_order_id').all().map((row) => row.status), ['reserved'])
 
-    provider.script.push({ operation: 'submit', result: { status: 'accepted' } })
+    provider.script.push(
+      { operation: 'submit', result: { status: 'accepted' } },
+      { operation: 'preview', result: preview },
+      { operation: 'submit', result: { status: 'accepted' } },
+    )
     const result = await context.coordinator.processSignal(signal())
     assert.equal(result.status, 'completed')
-    assert.deepEqual(provider.calls.map((call) => call.operation), ['preview', 'preview', 'submit', 'submit'])
+    assert.deepEqual(provider.calls.map((call) => call.operation), ['preview', 'submit', 'preview', 'submit'])
   } finally {
     context.handle.close()
   }
 })
 
-test('previews and submits different accounts concurrently and replays one Signal idempotently', async () => {
+test('previews and submits accounts strictly in order and replays one Signal idempotently', async () => {
   const context = fixture()
   try {
     const first = await context.coordinator.processSignal(signal())
     assert.equal(first.status, 'completed')
-    assert.equal(context.provider.maxActivePreview, 2)
-    assert.equal(context.provider.maxActiveSubmit, 2)
+    assert.equal(context.provider.maxActivePreview, 1)
+    assert.equal(context.provider.maxActiveSubmit, 1)
+    assert.deepEqual(context.provider.submitCalls.map((call) => call.accountId), ['account-a', 'account-b'])
+    assert.deepEqual(context.provider.submitCalls.map((call) => call.amountMinor), [50, 50])
     assert.equal(context.provider.submitCalls.length, 2)
     assert.equal(context.provider.submitCalls.reduce((sum, call) => sum + call.amountMinor, 0), 100)
     assert.equal(context.provider.networkCallCount, 0)
@@ -1163,14 +1231,14 @@ test('previews and submits different accounts concurrently and replays one Signa
   }
 })
 
-test('preview mode performs concurrent read-only previews without creating a batch or submitting', async () => {
+test('preview mode performs ordered read-only previews without creating a batch or submitting', async () => {
   const context = fixture()
   try {
     const result = await context.coordinator.processSignal(signal(), { mode: 'preview' })
     assert.equal(result.mode, 'preview')
     assert.equal(result.status, 'preview_only')
     assert.equal(result.allocations.reduce((sum, item) => sum + item.amountMinor, 0), 100)
-    assert.equal(context.provider.maxActivePreview, 2)
+    assert.equal(context.provider.maxActivePreview, 1)
     assert.equal(context.provider.submitCalls.length, 0)
     assert.equal(context.handle.db.prepare('SELECT COUNT(*) AS count FROM bet_batches').get().count, 0)
   } finally {
@@ -1195,19 +1263,56 @@ test('passes the Signal to the current whitelist source and fails closed on a mo
   }
 })
 
-test('uses one account serially across multiple accepted rounds', async () => {
+test('uses one account at most once per batch and leaves the remainder unfilled', async () => {
   const context = fixture({ target: 100, accounts: [{ id: 'account-a', limit: 60 }] })
   try {
     const result = await context.coordinator.processSignal(signal())
-    assert.equal(result.status, 'completed')
-    assert.deepEqual(context.provider.submitCalls.map((call) => call.amountMinor), [60, 40])
+    assert.equal(result.status, 'partial')
+    assert.equal(result.unfilledAmountMinor, 40)
+    assert.deepEqual(context.provider.submitCalls.map((call) => call.amountMinor), [60])
     assert.equal(context.provider.maxActiveSubmit, 1)
   } finally {
     context.handle.close()
   }
 })
 
-test('never redistributes a rejected amount to another account', async () => {
+test('per-account limit is editable configuration rather than a fixed 50 CNY ceiling', async () => {
+  const context = fixture({ target: 80, accounts: [{ id: 'account-a', limit: 80 }] })
+  try {
+    const result = await context.coordinator.processSignal(signal())
+    assert.equal(result.status, 'completed')
+    assert.deepEqual(context.provider.submitCalls.map((call) => call.amountMinor), [80])
+  } finally {
+    context.handle.close()
+  }
+})
+
+test('skips an account when the exact remaining amount violates Preview minimum or step', async () => {
+  for (const target of [5, 15]) {
+    const provider = new ConcurrentProvider()
+    provider.preview = async function preview(input) {
+      this.previewCalls.push(structuredClone(input))
+      return input.accountId === 'account-a'
+        ? { ok: true, minStakeMinor: 10, maxStakeMinor: 100, stakeStepMinor: 10, balanceMinor: 1000, odds: '0.88' }
+        : { ok: true, minStakeMinor: 5, maxStakeMinor: 100, stakeStepMinor: 5, balanceMinor: 1000, odds: '0.88' }
+    }
+    const context = fixture({
+      target,
+      accounts: [{ id: 'account-a', limit: 100 }, { id: 'account-b', limit: 100 }],
+      provider,
+    })
+    try {
+      const result = await context.coordinator.processSignal(signal())
+      assert.equal(result.status, 'completed')
+      assert.deepEqual(provider.previewCalls.map((call) => call.accountId), ['account-a', 'account-b'])
+      assert.deepEqual(provider.submitCalls.map((call) => [call.accountId, call.amountMinor]), [['account-b', target]])
+    } finally {
+      context.handle.close()
+    }
+  }
+})
+
+test('releases a rejected amount and offers it to the next unused account', async () => {
   const provider = new ConcurrentProvider({ submitByAccount: {
     'account-a': [{ status: 'rejected', errorCode: 'sim-rejected' }],
     'account-b': [{ status: 'accepted' }],
@@ -1215,9 +1320,11 @@ test('never redistributes a rejected amount to another account', async () => {
   const context = fixture({ target: 60, accounts: [{ id: 'account-a', limit: 60 }, { id: 'account-b', limit: 60 }], provider })
   try {
     const result = await context.coordinator.processSignal(signal())
-    assert.equal(result.status, 'failed')
-    assert.deepEqual(provider.submitCalls.map((call) => call.accountId), ['account-a'])
-    assert.deepEqual(context.handle.db.prepare('SELECT status FROM bet_child_orders ORDER BY created_at, child_order_id').all().map((row) => row.status), ['rejected'])
+    assert.equal(result.status, 'completed')
+    assert.equal(result.acceptedAmountMinor, 60)
+    assert.equal(result.unfilledAmountMinor, 0)
+    assert.deepEqual(provider.submitCalls.map((call) => call.accountId), ['account-a', 'account-b'])
+    assert.deepEqual(context.handle.db.prepare('SELECT status FROM bet_child_orders ORDER BY created_at, child_order_id').all().map((row) => row.status), ['rejected', 'accepted'])
   } finally {
     context.handle.close()
   }

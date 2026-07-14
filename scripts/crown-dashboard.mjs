@@ -10,7 +10,6 @@ import { createBettingProcessController } from '../src/crown/app/betting-process
 import { CrownHumanLoginController } from '../src/crown/app/crown-human-login-controller.mjs'
 import { createMonitorProcessController } from '../src/crown/app/monitor-process.mjs'
 import { createAppRepository } from '../src/crown/app/app-repository.mjs'
-import { listCrownCapabilities } from '../src/crown/betting/crown-capability-matrix.mjs'
 import {
   collectRealBettingPreflight,
   getRealBettingStatus,
@@ -20,10 +19,6 @@ import {
 } from '../src/crown/betting/real-betting-runtime.mjs'
 import { startDashboardServer } from '../src/crown/dashboard/static-server.mjs'
 import { portableEnvironment, resolvePortablePaths } from '../src/crown/runtime/portable-paths.mjs'
-import { RELEASE_CONFIG } from '../src/crown/update/release-config.mjs'
-import { updateError } from '../src/crown/update/update-error.mjs'
-import { createUpdateService } from '../src/crown/update/update-service.mjs'
-import { createWindowsUpdateHandoff } from '../src/crown/update/windows-update-handoff.mjs'
 
 const APP_DIR = fileURLToPath(new URL('../', import.meta.url))
 const INSTALLATION_ID = /^[A-Za-z0-9_-]{8,128}$/
@@ -69,15 +64,12 @@ export function resolveDashboardRuntime({ env = process.env } = {}) {
     sessionDir: absoluteFromApp(runtimeDir, runtimeEnv.CROWN_SESSION_DIR, 'crown-sessions'),
     profileDir: absoluteFromApp(runtimeDir, runtimeEnv.CROWN_BROWSER_PROFILE_DIR, 'browser-profiles'),
     logDir: absoluteFromApp(appDir, runtimeEnv.CROWN_LOG_DIR, 'logs'),
-    updateDir: absoluteFromApp(appDir, runtimeEnv.CROWN_UPDATE_DIR, 'updates'),
-    backupDir: absoluteFromApp(appDir, runtimeEnv.CROWN_BACKUP_DIR, 'backups'),
     staticDir: absoluteFromApp(appDir, runtimeEnv.CROWN_STATIC_DIR, 'frontend/dist'),
   }
   return { portable: false, env: runtimeEnv, paths }
 }
 
 export async function shutdownDashboardRuntime({
-  updateService,
   disableRealBetting,
   bettingProcess,
   humanLoginController,
@@ -98,11 +90,6 @@ export async function shutdownDashboardRuntime({
       return false
     }
   }
-  await step('update-download', async () => {
-    if (!updateService) return
-    const status = updateService.getStatus()
-    if (status?.state !== 'applying' && status?.cancellable === true) await updateService.cancel()
-  })
   await step('real-intent', disableRealBetting)
   await step('betting-worker', () => bettingProcess?.stop?.())
   await step('human-login', () => humanLoginController?.shutdown?.())
@@ -120,96 +107,6 @@ export async function shutdownDashboardRuntime({
   }
   await step('http', closeHttp)
   return { ok: errors.length === 0, errors: errors.map(({ stage, error }) => ({ stage, message: error?.message || String(error) })) }
-}
-
-function unavailableUpdateService(currentVersion) {
-  const status = Object.freeze({
-    state: 'unavailable',
-    currentVersion,
-    availableVersion: '',
-    progress: 0,
-    errorCode: 'update-unavailable',
-    cancellable: false,
-    releaseNotes: '',
-    rollbackReason: '',
-  })
-  return Object.freeze({
-    getStatus: () => status,
-    async check() { throw updateError('update-unavailable') },
-    async install() { throw updateError('update-unavailable') },
-    async cancel() { return { cancelled: false, code: 'update-not-cancellable' } },
-  })
-}
-
-export function createDashboardUpdateService({
-  config = RELEASE_CONFIG,
-  currentVersion = APP_VERSION,
-  paths = {},
-  monitorProcess,
-  bettingProcess,
-  launchApplier,
-  fetchImpl,
-} = {}) {
-  const trustedKeys = config?.trustedKeys
-  const enabled = trustedKeys && typeof trustedKeys === 'object' && !Array.isArray(trustedKeys)
-    && Object.keys(trustedKeys).length > 0
-    && typeof launchApplier === 'function'
-  if (!enabled) return unavailableUpdateService(currentVersion)
-  return createUpdateService({
-    config,
-    currentVersion,
-    appRoot: paths.appRoot,
-    dataRoot: paths.dataRoot,
-    dbPath: paths.dbPath,
-    updateDir: paths.updateDir,
-    versionsDir: paths.versionsDir || path.join(paths.appRoot, 'versions'),
-    monitorController: monitorProcess,
-    bettingController: bettingProcess,
-    launchApplier,
-    ...(fetchImpl ? { fetchImpl } : {}),
-  })
-}
-
-export function createDashboardUpdateHealthProvider({
-  dbPath,
-  env,
-  monitorProcess,
-  bettingProcess,
-  openDatabase = openRuntimeDatabase,
-  readRealBetting = getRealBettingStatus,
-  readCapabilities = listCrownCapabilities,
-} = {}) {
-  if (typeof monitorProcess?.isRunning !== 'function'
-    || typeof bettingProcess?.isRunning !== 'function'
-    || typeof openDatabase !== 'function'
-    || typeof readRealBetting !== 'function'
-    || typeof readCapabilities !== 'function') {
-    throw new Error('update-health-provider-invalid')
-  }
-  return async () => {
-    const watcherRunning = monitorProcess.isRunning()
-    const workerRunning = bettingProcess.isRunning()
-    if (typeof watcherRunning !== 'boolean' || typeof workerRunning !== 'boolean') {
-      throw new Error('update-health-runtime-state-invalid')
-    }
-    const handle = openDatabase({ dbPath, env })
-    let realBetting
-    try { realBetting = readRealBetting(handle.db) } finally { handle.close() }
-    const capabilities = readCapabilities()
-    if (!Array.isArray(capabilities)) throw new Error('update-health-capability-invalid')
-    return {
-      watcher: { state: watcherRunning ? 'running' : 'stopped' },
-      realBetting: {
-        requested: realBetting?.requested === true || workerRunning,
-        state: workerRunning ? 'running' : String(realBetting?.state || ''),
-      },
-      capability: {
-        preview: capabilities.filter((item) => item?.previewAllowed === true).length,
-        submit: capabilities.filter((item) => item?.submitAllowed === true).length,
-        reconciliation: capabilities.filter((item) => item?.reconciliationAllowed === true).length,
-      },
-    }
-  }
 }
 
 export function createSingleFlightRunner(run) {
@@ -241,10 +138,6 @@ function closeServer(server) {
 export async function startCrownDashboard({
   env = process.env,
   registerSignals = false,
-  updateService: injectedUpdateService,
-  launchUpdateApplier,
-  updateConfig = RELEASE_CONFIG,
-  fetchImpl,
 } = {}) {
   const runtime = resolveDashboardRuntime({ env })
   const { paths } = runtime
@@ -277,38 +170,6 @@ export async function startCrownDashboard({
       try { recordRealBettingWorkerExit(exitDatabase.db, event) } finally { exitDatabase.close() }
     },
   })
-  const hasTrustedUpdateKey = updateConfig?.trustedKeys
-    && typeof updateConfig.trustedKeys === 'object'
-    && !Array.isArray(updateConfig.trustedKeys)
-    && Object.keys(updateConfig.trustedKeys).length > 0
-  const hasLauncherUpdateIdentity = typeof runtimeEnv.CROWN_LAUNCHER_PROCESS_START_TIME === 'string'
-    && runtimeEnv.CROWN_LAUNCHER_PROCESS_START_TIME.length > 0
-  const portableUpdateHandoff = runtime.portable && hasTrustedUpdateKey && hasLauncherUpdateIdentity
-    ? createWindowsUpdateHandoff({
-        appRoot: paths.appRoot,
-        dataRoot: paths.dataRoot,
-        runtimeDir: paths.runtimeDir,
-        updateDir: paths.updateDir,
-        backupDir: paths.backupDir,
-        dbPath: paths.dbPath,
-        currentPath: path.join(paths.appRoot, 'current.json'),
-        statePath: path.join(paths.runtimeDir, 'launcher-state.json'),
-        bootstrapPath: path.join(paths.appRoot, 'launcher', 'update-bootstrap.ps1'),
-        installationId: runtimeEnv.CROWN_INSTALLATION_ID,
-        currentVersion: runtimeEnv.CROWN_APP_VERSION,
-        processStartTime: runtimeEnv.CROWN_LAUNCHER_PROCESS_START_TIME,
-      })
-    : undefined
-  const updateService = injectedUpdateService || createDashboardUpdateService({
-    config: updateConfig,
-    currentVersion: runtimeEnv.CROWN_APP_VERSION || APP_VERSION,
-    paths,
-    monitorProcess,
-    bettingProcess,
-    launchApplier: launchUpdateApplier || portableUpdateHandoff,
-    fetchImpl,
-  })
-
   const startupDatabase = openAppDatabase({ dbPath: paths.dbPath, env: runtimeEnv })
   try {
     getRealBettingStatus(startupDatabase.db, { initialize: true })
@@ -369,13 +230,6 @@ export async function startCrownDashboard({
     installationId: runtimeEnv.CROWN_INSTALLATION_ID || '',
     version: runtimeEnv.CROWN_APP_VERSION || APP_VERSION,
     appContractVersion: APP_CONTRACT_VERSION,
-    updateService,
-    updateHealthProvider: createDashboardUpdateHealthProvider({
-      dbPath: paths.dbPath,
-      env: runtimeEnv,
-      monitorProcess,
-      bettingProcess,
-    }),
   }
   const server = await startDashboardServer({ host, port, staticDir: paths.staticDir, dataOptions, appOptions })
 
@@ -407,7 +261,6 @@ export async function startCrownDashboard({
     clearInterval(tickTimer)
     for (const [signal, handler] of signalHandlers) process.off(signal, handler)
     shutdownPromise = shutdownDashboardRuntime({
-      updateService,
       disableRealBetting: async () => {
         const handle = openRuntimeDatabase({ dbPath: paths.dbPath, env: runtimeEnv })
         try { requestRealBettingStop(handle.db) } finally { handle.close() }
@@ -433,7 +286,7 @@ export async function startCrownDashboard({
     }
   }
 
-  return { ...runtime, server, monitorProcess, bettingProcess, humanLoginController, updateService, shutdown }
+  return { ...runtime, server, monitorProcess, bettingProcess, humanLoginController, shutdown }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

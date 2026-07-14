@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import test from 'node:test'
 
-import { bettingWorkerLeaseKey, createBettingProcessController } from '../src/crown/app/betting-process.mjs'
+import { bettingRoleLeaseKeys, bettingWorkerLeaseKey, createBettingProcessController } from '../src/crown/app/betting-process.mjs'
 
 function fakeSpawn(calls, { ready = true, exitOnKill = true } = {}) {
   return (command, args, options) => {
@@ -28,7 +28,6 @@ function fakeSpawn(calls, { ready = true, exitOnKill = true } = {}) {
         leases: {
           worker: { leaseKey: workerKey, ownerId: 'worker-owner', fencingToken: 1 },
           executor: { leaseKey: `betting-executor:${suffix}`, ownerId: 'executor-owner', fencingToken: 1 },
-          reconciler: { leaseKey: `betting-reconciler:${suffix}`, ownerId: 'reconciler-owner', fencingToken: 1 },
         },
       })
     })
@@ -48,7 +47,8 @@ test('betting process commits start only after canonical worker ready handshake'
   assert.deepEqual(calls[0].child.sent, [{ type: 'go', generation: started.readyTicket.generation, nonce: started.readyTicket.nonce }])
   assert.match(started.leaseKey, /^betting-worker:/)
   assert.notEqual(started.leaseKey, `betting-executor:${started.leaseKey.slice('betting-worker:'.length)}`)
-  assert.notEqual(started.leaseKey, `betting-reconciler:${started.leaseKey.slice('betting-worker:'.length)}`)
+  assert.deepEqual(Object.keys(bettingRoleLeaseKeys({ cwd: process.cwd(), dbPath: 'storage/test.sqlite' })), ['worker', 'executor'])
+  assert.equal(Object.hasOwn(started.readyTicket.leases, 'reconciler'), false)
   assert.equal(calls[0].args[calls[0].args.indexOf('--mode') + 1], 'real')
   assert.equal(calls[0].args[calls[0].args.indexOf('--worker-lease-key') + 1], started.leaseKey)
   assert.deepEqual(calls[0].options.stdio, ['ignore', 'ignore', 'ignore', 'ipc'])

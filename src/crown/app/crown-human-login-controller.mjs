@@ -9,7 +9,7 @@ import {
 import { normalizePublicHttpsExactOrigin } from '../login/crown-origin.mjs'
 import { launchPortableChromium } from '../login/portable-chromium.mjs'
 import { assertPathWithin, normalizeFullyQualifiedWindowsPath } from '../runtime/portable-paths.mjs'
-import { writeAtomicJson } from '../update/atomic-json-file.mjs'
+import { writeAtomicJson } from '../runtime/atomic-json-file.mjs'
 
 const SAFE_STATES = new Set(['idle', 'opening', 'awaiting-user', 'verifying', 'verified', 'failed'])
 

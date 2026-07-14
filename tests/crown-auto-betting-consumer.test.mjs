@@ -27,7 +27,7 @@ function selection(input, overrides = {}) {
 }
 
 function item(input = signal(), settings = {}) {
-  const snapshot = { mode: input.evidence.mode, enabled: true, targetOddsMin: '0.8', targetOddsMax: '1.05', targetAmountMinor: 20, currency: 'CNY', amountScale: 0, realEligible: true, realEligibilityVersion: 2, migrationReviewRequired: false, version: 7, ...settings }
+  const snapshot = { mode: input.evidence.mode, enabled: true, targetOddsMin: '0.8', targetOddsMax: '1.05', targetAmountMinor: 20, currency: 'CNY', amountScale: 0, migrationReviewRequired: false, version: 7, ...settings }
   return { signalId: input.signalId, bettingMode: snapshot.mode, settingsVersion: snapshot.version, settingsSnapshot: snapshot, signal: input }
 }
 
@@ -121,7 +121,6 @@ test('a snapshot from the other prematch/live mode is rejected before market cla
 for (const [name, settings, executionMode, global, reason] of [
   ['disabled', { enabled: false }, 'simulated', true, 'betting-mode-disabled'],
   ['review', { migrationReviewRequired: true }, 'simulated', true, 'migration-review-required'],
-  ['real eligibility', { realEligible: false }, 'real', true, 'real-eligibility-required'],
   ['global intent', {}, 'real', false, 'global-real-betting-off'],
 ]) {
   test(`${name} skips before selection and market ownership`, async () => {
@@ -131,7 +130,20 @@ for (const [name, settings, executionMode, global, reason] of [
   })
 }
 
-test('preview and simulated do not require global real intent or real eligibility', async () => {
+test('real execution ignores legacy eligibility fields and creates no authorization binding', async () => {
+  const { consumer, calls, inboxItem } = harness({
+    settings: { realEligible: false, realEligibilityVersion: 99 },
+    global: true,
+  })
+  assert.deepEqual(await consumer.process(inboxItem, {
+    executionMode: 'real',
+    authorizationId: 'legacy-auth-must-be-ignored',
+  }), { status: 'batch_created', batchId: 'batch-1' })
+  const payload = calls.find(([name]) => name === 'atomic')[1]
+  assert.equal(Object.hasOwn(payload, 'authorizationId'), false)
+})
+
+test('preview and simulated do not require global real intent', async () => {
   for (const executionMode of ['preview', 'simulated']) {
     const { consumer, calls, inboxItem } = harness({ settings: { realEligible: false }, global: false })
     assert.equal((await consumer.process(inboxItem, { executionMode })).status, 'batch_created')

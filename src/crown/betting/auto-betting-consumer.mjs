@@ -5,7 +5,7 @@ const MODES = new Set(['prematch', 'live'])
 const EXECUTION_MODES = new Set(['preview', 'simulated', 'real'])
 const BATCH_SKIP_REASONS = new Set([
   'preview-incomplete', 'no-account-capacity', 'rule-deleted', 'betting-mode-disabled',
-  'migration-review-required', 'real-eligibility-required', 'card-version-changed',
+  'migration-review-required', 'card-version-changed',
   'card-snapshot-changed', 'signal-invalid',
 ])
 
@@ -36,9 +36,7 @@ function coherent(item) {
     && Number.isSafeInteger(item.settingsVersion) && item.settingsVersion >= 1
     && settings.mode === item.bettingMode && settings.version === item.settingsVersion
     && typeof settings.enabled === 'boolean'
-    && typeof settings.realEligible === 'boolean'
     && typeof settings.migrationReviewRequired === 'boolean'
-    && Number.isSafeInteger(settings.realEligibilityVersion) && settings.realEligibilityVersion >= 1
 }
 
 function coherentCard(item) {
@@ -50,9 +48,8 @@ function coherentCard(item) {
     && typeof item.cardId === 'string' && item.cardId.trim() !== '' && card.cardId === item.cardId
     && Number.isSafeInteger(item.cardVersion) && item.cardVersion >= 1 && card.version === item.cardVersion
     && MODES.has(signal.evidence?.mode)
-    && typeof card.enabled === 'boolean' && typeof card.realEligible === 'boolean'
+    && typeof card.enabled === 'boolean'
     && typeof card.migrationReviewRequired === 'boolean'
-    && Number.isSafeInteger(card.realEligibilityVersion) && card.realEligibilityVersion >= 1
 }
 
 function validConfiguration(settings) {
@@ -95,7 +92,7 @@ export class AutoBettingConsumer {
     return (this.claimAndCreateCardScopedBatch || this.claimAndCreateModeScopedBatch)?.ready === true
   }
 
-  async process(item, { executionMode, authorizationId = null } = {}) {
+  async process(item, { executionMode } = {}) {
     if (!EXECUTION_MODES.has(executionMode)) throw new TypeError('executionMode')
     if (!this.canProcess()) {
       throw Object.assign(new Error('mode-scoped-batch-adapter-unavailable'), {
@@ -112,7 +109,6 @@ export class AutoBettingConsumer {
     if (settings.enabled !== true) return skip('betting-mode-disabled')
     if (settings.migrationReviewRequired === true) return skip('migration-review-required')
     if (!validConfiguration(settings)) return skip('signal-invalid')
-    if (executionMode === 'real' && settings.realEligible !== true) return skip('real-eligibility-required')
     if (executionMode === 'real' && this.isGlobalRealBettingRequested() !== true) return skip('global-real-betting-off')
 
     const lockedSelection = lockReverseSelection(item.signal, this.findLatestSelection)
@@ -138,7 +134,6 @@ export class AutoBettingConsumer {
         : { settingsSnapshot: settings, settingsVersion: item.settingsVersion }),
       bettingMode,
       executionMode,
-      authorizationId,
       marketOnceKey: key,
       inboxLease: item.inboxLease,
     })

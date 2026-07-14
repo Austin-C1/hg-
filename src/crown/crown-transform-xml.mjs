@@ -333,6 +333,11 @@ function makeRecord({ fields, metadata, mode, period, marketType, ratioField = n
   const canonicalSelectionIdentity = selectionIdentity(identityRecord)
   const suspended = marketClosed(fields, period) || !isDecimal(oddsRaw)
   const warnings = baseWarnings()
+  const isVerifiedPrematchMain = mode === 'prematch'
+    && period === 'full_time'
+    && marketType === 'asian_handicap'
+    && upper(ratioField) === 'RATIO_R'
+    && ['IOR_RH', 'IOR_RC'].includes(upper(oddsField))
   if (suspended) warnings.push('market-suspended')
   if (marketClosed(fields, period)) warnings.push('market-closed')
   if (ratioField && !handicapRaw) warnings.push('missing-ratio-field')
@@ -357,7 +362,8 @@ function makeRecord({ fields, metadata, mode, period, marketType, ratioField = n
       handicap,
       ratioField: ratioField ? upper(ratioField) : null,
       lineKey: marketLineKey,
-      isMainMarket: 'unknown',
+      lineVariant: isVerifiedPrematchMain ? 'main' : 'unknown',
+      isMainMarket: isVerifiedPrematchMain ? true : 'unknown',
       crownStrong: field(fields, 'strong') || null,
     },
     selection: {

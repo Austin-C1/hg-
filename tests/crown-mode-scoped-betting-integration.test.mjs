@@ -5,7 +5,14 @@ import { openAppDatabase } from '../src/crown/app/app-db.mjs'
 import { RuntimeLease } from '../src/crown/app/runtime-lease.mjs'
 import { BetBatchStore } from '../src/crown/betting/bet-batch-store.mjs'
 import { MultiAccountBetCoordinator } from '../src/crown/betting/multi-account-bet-coordinator.mjs'
-import { prepareAuthorizedSubmit, recordAuthorizedDispatch, recordAuthorizedOutcome } from '../src/crown/betting/b2-executor.mjs'
+import {
+  prepareAuthorizedSubmit,
+  prepareSubmitAttempt,
+  recordAuthorizedDispatch,
+  recordAuthorizedOutcome,
+  recordSubmitDispatch,
+  recordSubmitOutcome,
+} from '../src/crown/betting/b2-executor.mjs'
 import { encryptSecret } from '../src/crown/app/app-secret.mjs'
 import { lockReverseSelection } from '../src/crown/betting/locked-selection.mjs'
 import { CROWN_CAPABILITY_MATRIX_VERSION } from '../src/crown/betting/crown-capability-matrix.mjs'
@@ -75,7 +82,7 @@ function executionSelection(signal = executionSignal()) {
     provider: 'crown', mode: 'prematch', capturedAt: '2026-07-12T00:00:01.000Z',
     event: { eventKey: signal.target.eventIdentity, mode: 'prematch', livePhase: null },
     market: { marketIdentity: signal.target.marketIdentity, period: 'full_time', marketType: 'asian_handicap',
-      lineKey: 'RATIO_RE', handicap: -0.5, handicapRaw: '-0.5' },
+      lineVariant: 'main', lineKey: 'RATIO_RE', handicap: -0.5, handicapRaw: '-0.5' },
     selection: { selectionIdentity: `${signal.target.marketIdentity}|away`, side: 'away', odds: '0.96', suspended: false },
   }
 }
@@ -199,7 +206,7 @@ test('mode authorization is isolated from legacy rule scope and requires current
   handle.close()
 })
 
-test('real preflight recognizes pure mode authorization scope while capability remains blocked', () => {
+test('real preflight ignores legacy mode authorization and hard-cap settings', () => {
   const handle = openAppDatabase({ dbPath: ':memory:' })
   enableSetting(handle.db)
   enableSetting(handle.db, 'live')
@@ -217,31 +224,32 @@ test('real preflight recognizes pure mode authorization scope while capability r
   const checks = collectRealBettingPreflight(handle.db, {
     env: ENV, dbPath: ':memory:', now: () => new Date(NOW), runtimeDir: 'missing-runtime-dir',
   })
-  assert.equal(checks.authorizationActive, true)
+  assert.equal(Object.hasOwn(checks, 'authorizationActive'), false)
+  assert.equal(Object.hasOwn(checks, 'environmentExact'), false)
+  assert.equal(checks.ruleCardsEnabled, false)
   assert.equal(checks.capabilityExact, false)
   handle.db.prepare("UPDATE auto_betting_settings SET target_amount_minor=1000 WHERE mode='prematch'").run()
   assert.equal(collectRealBettingPreflight(handle.db, {
     env: ENV, dbPath: ':memory:', now: () => new Date(NOW), runtimeDir: 'missing-runtime-dir',
-  }).authorizationActive, true)
+  }).ruleCardsEnabled, false)
   handle.db.prepare("UPDATE auto_betting_settings SET target_amount_minor=1001 WHERE mode='prematch'").run()
-  const overCap = collectRealBettingPreflight(handle.db, {
+  const legacyOverCap = collectRealBettingPreflight(handle.db, {
     env: ENV, dbPath: ':memory:', now: () => new Date(NOW), runtimeDir: 'missing-runtime-dir',
   })
-  assert.equal(overCap.authorizationActive, false)
-  assert.equal(evaluateRealBettingPreflight(overCap).blockingReasons.includes('authorization-not-active'), true)
+  assert.equal(Object.hasOwn(legacyOverCap, 'authorizationActive'), false)
+  assert.equal(evaluateRealBettingPreflight(legacyOverCap).blockingReasons.includes('authorization-not-active'), false)
   handle.close()
 })
 
-test('pure mode preflight evaluator accepts valid subsets and rejects capability or scope mismatch', () => {
-  const settings = [
-    { mode: 'prematch', realEligibilityVersion: 2, targetAmountMinor: 100 },
-    { mode: 'live', realEligibilityVersion: 4, targetAmountMinor: 100 },
-  ]
-  const verified = [{ mode: 'prematch', evidenceStatus: 'verified', previewAllowed: true, submitAllowed: true, reconciliationAllowed: true }]
-  assert.deepEqual(evaluatePureModePreflight({ authorizedModes: ['prematch'], eligibilityVersions: { prematch: 2 }, settings, capabilities: verified, hardCapAmountMinor: 1000 }),
+test('pure capability evaluator ignores eligibility, hard cap, and reconciliation while remaining mode-exact', () => {
+  const settings = [{ mode: 'prematch', enabled: true }]
+  const verified = [{ mode: 'prematch', evidenceStatus: 'verified', previewAllowed: true, submitAllowed: true, reconciliationAllowed: false }]
+  assert.deepEqual(evaluatePureModePreflight({
+    authorizedModes: ['live'], eligibilityVersions: { live: 999 }, settings, capabilities: verified, hardCapAmountMinor: 0,
+  }),
     { scopeExact: true, capabilityExact: true })
-  assert.equal(evaluatePureModePreflight({ authorizedModes: ['prematch'], eligibilityVersions: { prematch: 4 }, settings, capabilities: verified, hardCapAmountMinor: 1000 }).scopeExact, false)
-  assert.equal(evaluatePureModePreflight({ authorizedModes: ['live'], eligibilityVersions: { live: 4 }, settings, capabilities: verified, hardCapAmountMinor: 1000 }).capabilityExact, false)
+  assert.equal(evaluatePureModePreflight({ settings: [{ ...settings[0], enabled: false }], capabilities: verified }).scopeExact, false)
+  assert.equal(evaluatePureModePreflight({ settings: [...settings, { mode: 'live', enabled: true }], capabilities: verified }).capabilityExact, false)
 })
 
 test('mode batch identity and reservations are atomic without a synthetic rule', () => {
@@ -258,7 +266,7 @@ test('mode batch identity and reservations are atomic without a synthetic rule',
   })
   const input = {
     signalId: 'signal-mode', bettingMode: 'prematch', settingsVersion: 3,
-    settingsSnapshot: { mode: 'prematch', version: 3, enabled: true, targetAmountMinor: 100, currency: 'CNY', amountScale: 0 },
+    settingsSnapshot: { mode: 'prematch', version: 3, enabled: true, targetOddsMin: '0.8', targetOddsMax: '1.2', targetAmountMinor: 100, currency: 'CNY', amountScale: 0 },
     eventKey: 'event', lockedSelectionIdentity: 'selection', sourceLeague: 'League',
     sourceOdds: '0.95', observedAt: NOW, currency: 'CNY', amountScale: 0,
     targetAmountMinor: 100, createdAt: NOW,
@@ -311,12 +319,12 @@ test('authorized mode reservations bind budget atomically without legacy rule sc
     marketType: 'asian_handicap', lineKey: 'line', side: 'away',
     selectionIdentity: 'crown|football|gid=1|full_time|asian_handicap|line|away',
     snapshot: { provider: 'crown', mode: 'prematch', event: { eventKey: 'crown|football|gid=1', ids: { gid: '1' } },
-      market: { period: 'full_time', marketType: 'asian_handicap', lineKey: 'line' },
+      market: { period: 'full_time', marketType: 'asian_handicap', lineVariant: 'main', lineKey: 'line', handicap: -0.5, handicapRaw: '-0.5' },
       selection: { side: 'away', selectionIdentity: 'crown|football|gid=1|full_time|asian_handicap|line|away' } },
   }
   const created = store.createAuthorizedModeScopedBatchWithReservations({
     signalId: 'signal-auth-mode', bettingMode: 'prematch', settingsVersion: 3,
-    settingsSnapshot: { mode: 'prematch', version: 3, enabled: true, targetAmountMinor: 100, currency: 'CNY', amountScale: 0 },
+    settingsSnapshot: { mode: 'prematch', version: 3, enabled: true, targetOddsMin: '0.8', targetOddsMax: '1.2', targetAmountMinor: 100, currency: 'CNY', amountScale: 0 },
     authorizationId: authorization.authorizationId, eventKey: 'event', lockedSelectionIdentity: JSON.stringify(persistedEnvelope),
     currency: 'CNY', amountScale: 0, targetAmountMinor: 100, createdAt: NOW,
   }, [{ accountId: 'account-a', amountMinor: 100, previewMinStakeMinor: 10,
@@ -327,7 +335,7 @@ test('authorized mode reservations bind budget atomically without legacy rule sc
   assert.equal(created.children.length, 1)
   assert.equal(handle.db.prepare('SELECT reserved_amount_minor FROM execution_authorizations').get().reserved_amount_minor, 100)
   assert.equal(handle.db.prepare('SELECT COUNT(*) AS count FROM execution_authorization_child_budgets').get().count, 1)
-  const identity = { provider: 'fixture', gid: '1', mode: 'prematch', period: 'full_time', market: 'asian_handicap', line: 'line', side: 'away' }
+  const identity = { provider: 'fixture', gid: '1', mode: 'prematch', period: 'full_time', market: 'asian_handicap', lineVariant: 'main', line: '-0.5', side: 'away' }
   const prepareInput = {
     authorizationId: authorization.authorizationId, bettingMode: 'prematch',
     leaseKey: lease.leaseKey, executorOwnerId: lease.ownerId, fencingToken: lease.fencingToken,
@@ -335,7 +343,7 @@ test('authorized mode reservations bind budget atomically without legacy rule sc
     submitAttemptId: 'mode-submit-attempt-1', attemptOrdinal: 1,
     capabilityEvidenceId: 'fixture:b2-ledger:offline:v1', capabilityVersion: 'b2-ledger-fixture-v1',
     lockedIdentity: identity, currentIdentity: identity,
-    preview: { minStakeMinor: 10, maxStakeMinor: 1000, balanceMinor: 1000, stakeStepMinor: 10, odds: '0.96', line: 'line' },
+    preview: { minStakeMinor: 10, maxStakeMinor: 1000, balanceMinor: 1000, stakeStepMinor: 10, odds: '0.96', line: '-0.5' },
   }
   assert.throws(() => prepareAuthorizedSubmit(handle.db, prepareInput, { env: ENV, now: () => new Date(NOW) }), /settings-version/)
   const prepared = prepareAuthorizedSubmit(handle.db, { ...prepareInput, settingsVersion: 3 }, { env: ENV, now: () => new Date(NOW) })
@@ -362,7 +370,7 @@ test('coordinator refuses mode creation when latest DB selection cannot be reval
   const coordinator = new MultiAccountBetCoordinator({
     db: handle.db, store, provider, lease, findLatestSelection: () => null, now: () => NOW,
   })
-  const settingsSnapshot = { mode: 'prematch', version: 3, enabled: true, targetAmountMinor: 100, currency: 'CNY', amountScale: 0 }
+  const settingsSnapshot = { mode: 'prematch', version: 3, enabled: true, targetOddsMin: '0.8', targetOddsMax: '1.2', targetAmountMinor: 100, currency: 'CNY', amountScale: 0 }
   const payload = {
     signalId: 'signal-adapter', bettingMode: 'prematch', settingsVersion: 3,
     settingsSnapshot, marketOnceKey: 'mode-once-key', executionMode: 'simulated',
@@ -475,27 +483,21 @@ test('atomic mode batch persists locked evidence and completes through coordinat
   handle.close()
 })
 
-test('real mode batch reaches fake B2 prepare, dispatch, and accepted result without live I/O', async () => {
+test('real mode batch reaches neutral B2 prepare, dispatch, and accepted result without live I/O', async () => {
   const handle = openAppDatabase({ dbPath: ':memory:' })
   enableSetting(handle.db)
-  upgradeAutoBettingModeEligibility(handle.db, { mode: 'prematch', confirmation: eligibilityConfirmation(), expectedEligibilityVersion: 1 }, { env: ENV, now: () => new Date(NOW) })
   const signal = executionSignal('signal-real-e2e')
   const selection = executionSelection(signal)
   insertSignal(handle.db, signal.signalId, signal)
   persistSelection(handle.db, selection)
   insertAccount(handle.db)
-  const settingsSnapshot = { mode: 'prematch', version: 3, enabled: true, realEligible: true, realEligibilityVersion: 2, migrationReviewRequired: false, targetOddsMin: '0.8', targetOddsMax: '1.2', targetAmountMinor: 100, currency: 'CNY', amountScale: 0 }
+  const settingsSnapshot = { mode: 'prematch', version: 3, enabled: true, migrationReviewRequired: false, targetOddsMin: '0.8', targetOddsMax: '1.2', targetAmountMinor: 100, currency: 'CNY', amountScale: 0 }
   const inboxLease = processingInbox(handle.db, signal.signalId, settingsSnapshot)
   const executorLease = new RuntimeLease({ db: handle.db, leaseKey: 'betting-executor:mode-real-e2e', ownerId: 'executor', pid: 1, ttlMs: 60_000, now: () => new Date(NOW) })
   const workerLease = new RuntimeLease({ db: handle.db, leaseKey: 'betting-worker:mode-real-e2e', ownerId: 'worker', pid: 2, ttlMs: 60_000, now: () => new Date(NOW) })
   executorLease.acquire(); workerLease.acquire()
   handle.db.prepare("UPDATE runtime_leases SET expires_at='2099-01-01T00:00:00.000Z'").run()
   handle.db.prepare("UPDATE real_betting_runtime SET requested=1,runtime_state='running',reason_code='' WHERE singleton_id=1").run()
-  const authorization = authorizeExecution(handle.db, {
-    authorizationId: 'auth-real-mode-e2e', currency: 'CNY', amountScale: 0,
-    bettingModes: ['prematch'], eligibilityVersions: { prematch: 2 }, maxTotalAmountMinor: 100,
-    confirmation: 'AUTHORIZE REAL MODE E2E',
-  }, { env: ENV, now: () => new Date(NOW) })
   const secretKey = 'mode-real-e2e-provider-reference-key'
   let b2Calls = 0
   const b2Executor = { async submit(input) {
@@ -503,18 +505,19 @@ test('real mode batch reaches fake B2 prepare, dispatch, and accepted result wit
     assert.equal(Object.hasOwn(input, 'ruleId'), false)
     assert.equal(input.bettingMode, 'prematch')
     assert.equal(input.settingsVersion, 3)
-    const scope = { authorizationId: input.authorizationId, bettingMode: input.bettingMode, settingsVersion: input.settingsVersion,
+    assert.equal(Object.hasOwn(input, 'authorizationId'), false)
+    const scope = { bettingMode: input.bettingMode, settingsVersion: input.settingsVersion,
       leaseKey: executorLease.leaseKey, executorOwnerId: executorLease.ownerId, fencingToken: executorLease.fencingToken,
       batchId: input.batchId, childOrderId: input.childOrderId, accountId: input.accountId }
-    const identity = { provider: 'fixture', gid: 'mode-1', mode: 'prematch', period: 'full_time', market: 'asian_handicap', line: 'RATIO_RE', side: 'away' }
+    const identity = { provider: 'fixture', gid: 'mode-1', mode: 'prematch', period: 'full_time', market: 'asian_handicap', lineVariant: 'main', line: '-0.5', side: 'away' }
     const options = { env: ENV, now: () => new Date(NOW), secretKey }
-    prepareAuthorizedSubmit(handle.db, { ...scope, submitAttemptId: input.submitAttemptId, attemptOrdinal: input.attemptOrdinal,
+    prepareSubmitAttempt(handle.db, { ...scope, submitAttemptId: input.submitAttemptId, attemptOrdinal: input.attemptOrdinal,
       capabilityEvidenceId: 'fixture:b2-ledger:offline:v1', capabilityVersion: 'b2-ledger-fixture-v1',
       lockedIdentity: identity, currentIdentity: identity,
-      preview: { minStakeMinor: 10, maxStakeMinor: 1000, balanceMinor: 1000, stakeStepMinor: 10, odds: '0.96', line: 'RATIO_RE' } }, options)
-    recordAuthorizedDispatch(handle.db, { ...scope, submitAttemptId: input.submitAttemptId }, options)
+      preview: { minStakeMinor: 10, maxStakeMinor: 1000, balanceMinor: 1000, stakeStepMinor: 10, odds: '0.96', line: '-0.5' } }, options)
+    recordSubmitDispatch(handle.db, { ...scope, submitAttemptId: input.submitAttemptId }, options)
     const providerReferenceCiphertext = encryptSecret('fixture-reference', { secretKey, context: { purpose: 'crown-provider-reference', childOrderId: input.childOrderId, submitAttemptId: input.submitAttemptId } })
-    return recordAuthorizedOutcome(handle.db, { ...scope, submitAttemptId: input.submitAttemptId,
+    return recordSubmitOutcome(handle.db, { ...scope, submitAttemptId: input.submitAttemptId,
       outcome: { kind: 'accepted', providerReferenceCiphertext }, hasFutureCapacity: false }, options)
   } }
   const coordinator = new MultiAccountBetCoordinator({
@@ -525,11 +528,14 @@ test('real mode batch reaches fake B2 prepare, dispatch, and accepted result wit
   })
   const created = await coordinator.claimAndCreateModeScopedBatch({ signalId: signal.signalId, signal, bettingMode: 'prematch', settingsVersion: 3,
     settingsSnapshot, inboxLease, lockedSelection: lockReverseSelection(signal, () => selection), marketOnceKey: 'mode-real-e2e-once',
-    executionMode: 'real', authorizationId: authorization.authorizationId })
+    executionMode: 'real' })
   const result = await coordinator.runBatch(created.batchId, { mode: 'real' })
   assert.equal(result.status, 'completed')
   assert.equal(result.finishReason, 'all_accepted')
   assert.equal(b2Calls, 1)
+  assert.equal(handle.db.prepare('SELECT authorization_id FROM bet_submit_attempts').get().authorization_id, null)
+  assert.equal(handle.db.prepare('SELECT COUNT(*) AS count FROM execution_authorizations').get().count, 0)
+  assert.equal(handle.db.prepare('SELECT COUNT(*) AS count FROM execution_authorization_child_budgets').get().count, 0)
   assert.equal(handle.db.prepare("SELECT COUNT(*) AS count FROM bet_notification_outbox WHERE final_status='accepted'").get().count, 1)
   handle.close()
 })

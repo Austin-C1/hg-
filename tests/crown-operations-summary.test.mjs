@@ -262,13 +262,19 @@ test('operations rule readiness validates every enabled card and fails closed on
     ['noncanonical odds', () => db.exec("UPDATE auto_betting_rule_cards SET target_odds_min='0.80' WHERE card_id='validated'")],
     ['inverse odds', () => db.exec("UPDATE auto_betting_rule_cards SET target_odds_min='2',target_odds_max='1' WHERE card_id='validated'")],
     ['unsafe amount', () => db.exec("UPDATE auto_betting_rule_cards SET target_amount_minor=9007199254740992.0 WHERE card_id='validated'")],
-    ['invalid eligibility', () => db.exec("UPDATE auto_betting_rule_cards SET real_eligibility_version=0 WHERE card_id='validated'")],
-    ['invalid eligibility boolean', () => db.exec("UPDATE auto_betting_rule_cards SET real_eligible=2 WHERE card_id='validated'")],
-    ['invalid eligibility timestamp', () => db.exec("UPDATE auto_betting_rule_cards SET real_eligibility_updated_at='bad' WHERE card_id='validated'")],
     ['unsafe review flag', () => db.exec("UPDATE auto_betting_rule_cards SET migration_review_required=9007199254740992 WHERE card_id='validated'")],
   ]) {
     mutate()
     assert.deepEqual(readiness(), { state: 'action-required', ready: false, reason: 'rule-cards-not-ready' }, name)
+    reset()
+  }
+  for (const mutate of [
+    () => db.exec("UPDATE auto_betting_rule_cards SET real_eligibility_version=0 WHERE card_id='validated'"),
+    () => db.exec("UPDATE auto_betting_rule_cards SET real_eligible=2 WHERE card_id='validated'"),
+    () => db.exec("UPDATE auto_betting_rule_cards SET real_eligibility_updated_at='bad' WHERE card_id='validated'"),
+  ]) {
+    mutate()
+    assert.deepEqual(readiness(), { state: 'ready', ready: true, reason: '' })
     reset()
   }
   db.exec("DELETE FROM auto_betting_rule_card_leagues WHERE card_id='validated'")
@@ -361,6 +367,21 @@ test('runtime DTO normalizes invalid boundaries and operations summary cannot le
   close()
 })
 
+test('runtime DTO drops deprecated account freshness reasons and preserves current configuration reasons', () => {
+  for (const reasonCode of [
+    'betting-account-login-not-fresh',
+    'betting-account-balance-not-fresh',
+  ]) {
+    assert.equal(realBettingStatusCoreDto({ requested: true, state: 'armed_waiting', reasonCode }).reasonCode, '')
+  }
+  for (const reasonCode of [
+    'betting-rule-card-not-enabled',
+    'betting-account-unavailable',
+  ]) {
+    assert.equal(realBettingStatusCoreDto({ requested: true, state: 'armed_waiting', reasonCode }).reasonCode, reasonCode)
+  }
+})
+
 test('operations summary preserves allowlisted pure-mode armed waiting reasons and filters raw pollution', () => {
   const { db, close, repo } = fixture()
   const stableReasons = [
@@ -393,7 +414,7 @@ test('operations summary preserves allowlisted pure-mode armed waiting reasons a
   close()
 })
 
-async function callEndpoint({ dbPath, method }) {
+async function callEndpoint({ dbPath, method, monitorProcess }) {
   const req = Readable.from([])
   req.method = method
   let status = 0
@@ -405,6 +426,7 @@ async function callEndpoint({ dbPath, method }) {
   await handleAppApi(req, res, new URL('/api/app/operations-summary', 'http://127.0.0.1'), {
     dbPath,
     now: () => new Date(NOW),
+    monitorProcess,
   })
   return { status, payload: JSON.parse(body) }
 }
@@ -422,4 +444,29 @@ test('operations summary endpoint is GET-only and returns the bounded safe DTO',
 
   const post = await callEndpoint({ dbPath, method: 'POST' })
   assert.deepEqual(post, { status: 405, payload: { error: 'method-not-allowed' } })
+})
+
+test('operations summary projects bounded Watcher recovery diagnostics from the process controller', async () => {
+  const { dbPath, close } = fixture()
+  close()
+  const monitorProcess = {
+    getStatus() {
+      return {
+        desiredRunning: true,
+        processState: 'waiting-restart',
+        restartAttempt: 2,
+        nextRestartAt: '2026-07-11T12:00:05.000Z',
+        lastExit: {
+          exitCode: 1,
+          signal: null,
+          exitedAt: '2026-07-11T12:00:00.000Z',
+          stderrSummary: 'watcher transport failed',
+        },
+      }
+    },
+  }
+
+  const result = await callEndpoint({ dbPath, method: 'GET', monitorProcess })
+  assert.equal(result.status, 200)
+  assert.deepEqual(result.payload.item.watcher.process, monitorProcess.getStatus())
 })

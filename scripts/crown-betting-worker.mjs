@@ -119,21 +119,17 @@ async function main() {
   }
   const leaseKey = roleKeys.executor
   const lease = new RuntimeLease({ db: handle.db, leaseKey })
-  const reconcilerLease = new RuntimeLease({ db: handle.db, leaseKey: roleKeys.reconciler })
   const store = new BetBatchStore(handle.db, { leaseKey })
   let provider
   let b2Executor = null
-  let b2Reconciler = null
   let realWorker = null
   if (options.mode === 'real') {
     realWorker = createRealWorkerProvider({
       database: handle.db,
       executorLease: lease,
-      reconcilerLease,
       env: process.env,
     })
     ;({ provider, b2Executor } = realCoordinatorDependencies(realWorker))
-    b2Reconciler = realWorker.b2Reconciler
   } else provider = new SimulatedBetProvider({ script: providerScript })
   let readyTicket = null
   const exactRealGate = () => {
@@ -146,7 +142,6 @@ async function main() {
       if (status.state !== 'running') throw new Error('real-betting-exact-preflight')
       workerLease.assertFence(workerLease.fencingToken)
       lease.assertFence(lease.fencingToken)
-      reconcilerLease.assertFence(reconcilerLease.fencingToken)
       return true
     } catch (error) {
       blockRealBettingRuntime(handle.db, 'collector-failed')
@@ -187,8 +182,6 @@ async function main() {
     lease,
     processLease: workerLease,
     realExecutionGate: exactRealGate,
-    b2Executor,
-    b2Reconciler,
     accountPauseFinalizer: realWorker?.finalizeAccountPauses || null,
   })
   let stopHeartbeat = null
@@ -199,8 +192,7 @@ async function main() {
   try {
     workerLease.acquire()
     worker.start()
-    reconcilerLease.acquire()
-    stopHeartbeat = startRoleLeaseHeartbeat({ leases: [workerLease, lease, reconcilerLease], controller })
+    stopHeartbeat = startRoleLeaseHeartbeat({ leases: [workerLease, lease], controller })
     if (options.mode === 'real') {
       if (!options.generation || !options.readyNonce || typeof process.send !== 'function') throw new Error('betting-worker-ready-channel-required')
       readyTicket = {
@@ -208,7 +200,6 @@ async function main() {
         leases: {
           worker: { leaseKey: roleKeys.worker, ownerId: workerLease.ownerId, fencingToken: workerLease.fencingToken },
           executor: { leaseKey: roleKeys.executor, ownerId: lease.ownerId, fencingToken: lease.fencingToken },
-          reconciler: { leaseKey: roleKeys.reconciler, ownerId: reconcilerLease.ownerId, fencingToken: reconcilerLease.fencingToken },
         },
       }
       process.send(readyTicket)
@@ -228,7 +219,6 @@ async function main() {
     process.removeListener('SIGINT', abort)
     process.removeListener('SIGTERM', abort)
     worker.stop()
-    reconcilerLease.release()
     workerLease.release()
     handle.close()
   }

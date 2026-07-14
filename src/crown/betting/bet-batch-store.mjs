@@ -119,8 +119,11 @@ export class BetBatchStore {
     for (const role of ['worker', 'executor']) {
       const expected = evidence[role]
       const lease = this.db.prepare('SELECT owner_id,fencing_token,expires_at FROM runtime_leases WHERE lease_key=?').get(expected.leaseKey)
+      const nowValue = this.now()
+      const nowMs = nowValue instanceof Date ? nowValue.getTime() : Date.parse(nowValue)
+      if (!Number.isFinite(nowMs)) throw new TypeError('now')
       if (!lease || lease.owner_id !== expected.ownerId || Number(lease.fencing_token) !== expected.fencingToken
-        || Date.parse(lease.expires_at) <= Date.now()) throw new Error(`real-betting-${role}-fence-stale`)
+        || Date.parse(lease.expires_at) <= nowMs) throw new Error(`real-betting-${role}-fence-stale`)
     }
   }
 
@@ -487,11 +490,12 @@ export class BetBatchStore {
           throw new Error(`account-locked:${item.accountId}`)
         }
         const previous = this.db.prepare(`
-          SELECT COALESCE(MAX(attempt), 0) AS attempt
-          FROM bet_child_orders
+          SELECT child_order_id
+          FROM bet_batch_account_usage
           WHERE batch_id = ? AND account_id = ?
         `).get(id, item.accountId)
-        const attempt = positiveInteger(previous.attempt + 1, 'attempt')
+        if (previous) throw new Error(`account-already-used:${item.accountId}`)
+        const attempt = 1
         const childOrderId = stableId(id, item.accountId, String(attempt))
         const createdAt = timestamp()
         this.db.prepare(`
@@ -513,6 +517,11 @@ export class BetBatchStore {
           item.previewOdds,
           createdAt,
         )
+        this.db.prepare(`
+          INSERT INTO bet_batch_account_usage (
+            batch_id, account_id, child_order_id, first_used_at
+          ) VALUES (?, ?, ?, ?)
+        `).run(id, item.accountId, childOrderId, createdAt)
         this._fault('reserve:after-child-insert', { childOrderId, batchId: id, accountId: item.accountId })
         this.db.prepare(`
           INSERT INTO betting_account_locks (
@@ -659,20 +668,6 @@ export class BetBatchStore {
         WHERE card_id=? ORDER BY league_name`).all(input.cardId).map((row) => row.league_name) : []
       const currentSnapshot = reason ? null : completeRuleCardSnapshot(current, leagues)
       if (!reason && !currentSnapshot) reason = 'signal-invalid'
-      if (!reason && requireRealRuntime) {
-        let authorizedScope = null
-        try {
-          const authorization = this.db.prepare(`SELECT card_scopes_json FROM execution_authorizations
-            WHERE authorization_id=?`).get(authorizationId)
-          authorizedScope = JSON.parse(authorization?.card_scopes_json || '[]')
-            .find((scope) => scope?.cardId === input.cardId)
-        } catch {}
-        if (current.real_eligible !== 1
-          || current.real_eligibility_version !== input.cardSnapshot?.realEligibilityVersion
-          || authorizedScope?.eligibilityVersion !== input.cardSnapshot?.realEligibilityVersion) {
-          reason = 'real-eligibility-required'
-        }
-      }
       if (!reason && !isDeepStrictEqual(currentSnapshot, input.cardSnapshot)) {
         reason = 'card-snapshot-changed'
       }
@@ -701,7 +696,7 @@ export class BetBatchStore {
         realLeaseEvidence, [IN_TRANSACTION]: true })
       if (authorizationId) {
         for (const child of children) reserveAuthorizationBudgetInTransaction(this.db, {
-          authorizationId, cardId: input.cardId, eligibilityVersion: input.cardSnapshot.realEligibilityVersion,
+          authorizationId, cardId: input.cardId, eligibilityVersion: Number(current.real_eligibility_version),
           bettingMode: input.bettingMode, leaseKey: this.leaseKey, executorOwnerId, fencingToken: token,
           childOrderId: child.childOrderId, batchId: batch.batchId, accountId: child.accountId,
           amountMinor: child.amountMinor,
@@ -977,7 +972,7 @@ export class BetBatchStore {
         this.db.prepare('DELETE FROM betting_account_locks WHERE child_order_id = ? AND fencing_token = ?').run(id, token)
       }
       this._reconcileAggregates(child.batch_id, {
-        hasFutureCapacity: status === 'rejected' ? false : (options.hasFutureCapacity ?? true),
+        hasFutureCapacity: options.hasFutureCapacity ?? true,
         at: changedAt,
       })
       return childResult(this._requireChild(id))
@@ -1104,20 +1099,47 @@ export class BetBatchStore {
     const token = this._token(fencingToken)
     return runImmediate(this.db, () => {
       this._assertTransactionFence(token)
-      if (this.db.prepare(`
-        SELECT 1
-        FROM execution_authorization_child_budgets AS budget
-        JOIN bet_child_orders AS child ON child.child_order_id = budget.child_order_id
-        WHERE child.status IN ('submit_prepared', 'submit_dispatched')
-        LIMIT 1
-      `).get()) {
-        throw new Error('authorized-child-store-bypass')
-      }
       const uncertain = this.db.prepare(`
         SELECT child_order_id
         FROM bet_child_orders
         WHERE status IN ('submit_prepared', 'submit_dispatched')
       `).all()
+      const legacyAuthorizationReservations = this.db.prepare(`
+        SELECT budget.authorization_id, SUM(budget.amount_minor) AS amount_minor
+        FROM execution_authorization_child_budgets AS budget
+        JOIN bet_child_orders AS child ON child.child_order_id = budget.child_order_id
+        WHERE child.status IN ('submit_prepared', 'submit_dispatched')
+          AND budget.status = 'reserved'
+        GROUP BY budget.authorization_id
+      `).all()
+      this.db.prepare(`
+        UPDATE bet_submit_attempts
+        SET status = 'unknown',
+            result_at = ?,
+            error_code = CASE WHEN error_code = '' THEN 'recovery-uncertain' ELSE error_code END,
+            updated_at = ?
+        WHERE status IN ('submit_prepared', 'submit_dispatched')
+      `).run(changedAt, changedAt)
+      this.db.prepare(`
+        UPDATE execution_authorization_child_budgets
+        SET status = 'unknown', updated_at = ?
+        WHERE status = 'reserved'
+          AND child_order_id IN (
+            SELECT child_order_id FROM bet_child_orders
+            WHERE status IN ('submit_prepared', 'submit_dispatched')
+          )
+      `).run(changedAt)
+      for (const reservation of legacyAuthorizationReservations) {
+        const amount = Number(reservation.amount_minor)
+        const changed = this.db.prepare(`
+          UPDATE execution_authorizations
+          SET reserved_amount_minor = reserved_amount_minor - ?,
+              unknown_amount_minor = unknown_amount_minor + ?,
+              updated_at = ?
+          WHERE authorization_id = ? AND reserved_amount_minor >= ?
+        `).run(amount, amount, changedAt, reservation.authorization_id, amount)
+        if (changed.changes !== 1) throw new Error('authorization-ledger-invariant')
+      }
       this.db.prepare(`
         UPDATE bet_child_orders
         SET status = 'unknown', error_code = CASE WHEN error_code = '' THEN 'recovery-uncertain' ELSE error_code END
@@ -1136,24 +1158,22 @@ export class BetBatchStore {
         SELECT child_order_id, batch_id, account_id, status, created_at
         FROM bet_child_orders
         WHERE status IN ('previewing', 'reserved', 'submit_prepared', 'submit_dispatched', 'unknown')
-        ORDER BY created_at, child_order_id
+        ORDER BY account_id,
+          CASE WHEN status = 'unknown' THEN 0 ELSE 1 END,
+          created_at, child_order_id
       `).all()
+      this.db.prepare('DELETE FROM betting_account_locks').run()
+      const lockedAccounts = new Set()
       for (const child of active) {
+        if (lockedAccounts.has(child.account_id)) continue
+        lockedAccounts.add(child.account_id)
         const expectedLockStatus = child.status === 'unknown'
           ? 'unknown'
           : (child.status === 'submit_prepared' || child.status === 'submit_dispatched' ? 'submitting' : 'reserved')
-        const existing = this.db.prepare('SELECT child_order_id FROM betting_account_locks WHERE account_id = ?').get(child.account_id)
-        if (existing && existing.child_order_id !== child.child_order_id) throw new Error('recovery-lock-conflict')
         this.db.prepare(`
           INSERT INTO betting_account_locks (
             account_id, child_order_id, batch_id, status, fencing_token, acquired_at, updated_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(account_id) DO UPDATE SET
-            child_order_id = excluded.child_order_id,
-            batch_id = excluded.batch_id,
-            status = excluded.status,
-            fencing_token = excluded.fencing_token,
-            updated_at = excluded.updated_at
         `).run(child.account_id, child.child_order_id, child.batch_id, expectedLockStatus, token, child.created_at || changedAt, changedAt)
       }
 
@@ -1170,7 +1190,7 @@ export class BetBatchStore {
           preserveQueued: true,
         })
       }
-      return { unknownCount: uncertain.length, activeLockCount: active.length, batchCount: batches.length }
+      return { unknownCount: uncertain.length, activeLockCount: lockedAccounts.size, batchCount: batches.length }
     })
   }
 

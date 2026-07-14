@@ -206,6 +206,23 @@ function updateRuntimeMonitorAccountLoginResult(args, account, result) {
   }
 }
 
+function recordTrustedLoginProof({ stateStore, source, account, observedAt, logger } = {}) {
+  if (typeof stateStore?.recordTrustedLoginProof !== 'function') return null
+  const accountId = String(account?.accountId || account?.id || '').trim()
+  if (!accountId) return null
+  try {
+    return stateStore.recordTrustedLoginProof({ source, accountId, observedAt })
+  } catch (error) {
+    logger?.error?.({
+      stage: 'direct-api',
+      phase: 'login-proof',
+      endpointKind: source,
+      message: 'trusted-login-proof-write-failed',
+    })
+    return null
+  }
+}
+
 function errorMessage(error) {
   return String(error?.message || error || '')
 }
@@ -1773,6 +1790,17 @@ export async function runDirectApiPollOnce(args, {
       return { ok: false, reason: loginExpired ? 'login_expired' : 'data_quality', pollId, list, details: [], stats }
     }
 
+    if (fetchResult?.requestScope?.endpointKind === 'get_game_list'
+      && fetchResult.session && typeof fetchResult.session === 'object') {
+      recordTrustedLoginProof({
+        stateStore,
+        source: 'get_game_list',
+        account: currentAccount,
+        observedAt: at,
+        logger,
+      })
+    }
+
     let detailNormalizedCount = 0
     let detailFailures = 0
     let pollSession = fetchResult.session
@@ -1940,6 +1968,16 @@ export async function runDirectApiWatch(args, { stats, configState, logger, moni
     }
     const loginResult = await apiLoginManager.ensureLogin({ account: monitorAccount, logger })
     updateLoginResult(args, monitorAccount, loginResult)
+    if (loginResult.ok === true && loginResult.xmlVerified === true && loginResult.sessionVerified === true) {
+      const proofAt = typeof loginResult.finishedAt === 'string' && loginResult.finishedAt
+        ? loginResult.finishedAt
+        : (typeof dependencies.now === 'function' ? dependencies.now() : new Date().toISOString())
+      if (loginResult.loginMethod === '接口登录') {
+        recordTrustedLoginProof({ stateStore, source: 'login', account: monitorAccount, observedAt: proofAt, logger })
+        recordTrustedLoginProof({ stateStore, source: 'chk_login', account: monitorAccount, observedAt: proofAt, logger })
+      }
+      recordTrustedLoginProof({ stateStore, source: 'get_game_list', account: monitorAccount, observedAt: proofAt, logger })
+    }
     if (args.loginTest || !loginResult.ok) return stats
     if (dependencies.signal?.aborted) return stats
     if (typeof dispatcher?.start === 'function') {

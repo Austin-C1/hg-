@@ -52,7 +52,8 @@ function fixtureAllowlist() {
       { source: 'packaging/windows/首次使用说明.txt', target: '首次使用说明.txt' },
       { source: 'packaging/windows/launcher/start.ps1', target: 'launcher/start.ps1' },
       { source: 'packaging/windows/launcher/stop.ps1', target: 'launcher/stop.ps1' },
-      { source: 'packaging/windows/launcher/update-bootstrap.ps1', target: 'launcher/update-bootstrap.ps1' },
+      { source: 'packaging/windows/launcher/ensure-desktop-shortcut.ps1', target: 'launcher/ensure-desktop-shortcut.ps1' },
+      { source: 'packaging/windows/皇冠抓水投注.ico', target: '皇冠抓水投注.ico' },
     ],
     appFiles: [
       'package.json',
@@ -63,7 +64,6 @@ function fixtureAllowlist() {
       'scripts/crown-dashboard.mjs',
       'scripts/crown-watch.mjs',
       'scripts/crown-betting-worker.mjs',
-      'scripts/crown-update-apply.mjs',
     ],
     appTrees: ['src', 'frontend/dist'],
     allowedSourceStorageModules: [
@@ -135,7 +135,6 @@ async function createSourceFixture() {
   await write(root, 'scripts/crown-dashboard.mjs', 'export const dashboard = true\n')
   await write(root, 'scripts/crown-watch.mjs', 'export const watcher = true\n')
   await write(root, 'scripts/crown-betting-worker.mjs', 'export const worker = true\n')
-  await write(root, 'scripts/crown-update-apply.mjs', 'export const updater = true\n')
   await write(root, 'src/crown/main.mjs', "export const loopback = '127.0.0.1'\n")
   await write(root, 'src/crown/storage/jsonl-store.mjs', 'export const storageModule = true\n')
   await write(root, 'src/crown/storage/jsonl-candidate-store.mjs', 'export const candidateStoreModule = true\n')
@@ -188,7 +187,10 @@ test('portable release stages only the explicit production allowlist and the 118
   const appRoot = join(result.root, 'versions', VERSION, 'app')
   assert.equal(existsSync(join(appRoot, 'scripts/crown-watch.mjs')), true)
   assert.equal(existsSync(join(appRoot, 'scripts/crown-betting-worker.mjs')), true)
-  assert.equal(existsSync(join(appRoot, 'scripts/crown-update-apply.mjs')), true)
+  assert.equal(existsSync(join(result.root, 'launcher/ensure-desktop-shortcut.ps1')), true)
+  assert.equal(existsSync(join(result.root, '皇冠抓水投注.ico')), true)
+  assert.equal(existsSync(join(result.root, 'launcher/update-bootstrap.ps1')), false)
+  assert.equal(existsSync(join(appRoot, 'scripts/crown-update-apply.mjs')), false)
   assert.equal(existsSync(join(appRoot, 'frontend/dist/index.html')), true)
   assert.equal(existsSync(join(appRoot, 'src/crown/storage/jsonl-store.mjs')), true)
   assert.equal(existsSync(join(appRoot, 'src/crown/telegram/index.mjs')), true)
@@ -418,8 +420,14 @@ test('production allowlist pins Playwright and excludes superseded and private a
   assert.equal(runtimeLock.platform, 'win32')
   assert.equal(runtimeLock.arch, 'x64')
   assert.deepEqual(allowlist.productionDependencies.map((entry) => entry.name).sort(), [
-    'iconv-lite', 'pend', 'playwright', 'playwright-core', 'safer-buffer', 'yauzl',
+    'iconv-lite', 'playwright', 'playwright-core', 'safer-buffer',
   ])
+  assert.equal(pkg.dependencies.yauzl, undefined)
+  assert.equal(pkg.scripts['release:manifest'], undefined)
+  assert.equal(allowlist.launcherFiles.some((entry) => entry.target === 'launcher/update-bootstrap.ps1'), false)
+  assert.equal(allowlist.launcherFiles.some((entry) => entry.target === 'launcher/ensure-desktop-shortcut.ps1'), true)
+  assert.equal(allowlist.launcherFiles.some((entry) => entry.target === '皇冠抓水投注.ico'), true)
+  assert.equal(allowlist.appFiles.includes('scripts/crown-update-apply.mjs'), false)
   assert.deepEqual(allowlist.allowedSourceStorageModules, [
     'src/crown/storage/jsonl-store.mjs',
     'src/crown/storage/jsonl-candidate-store.mjs',

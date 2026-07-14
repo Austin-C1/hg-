@@ -119,6 +119,7 @@ function normalizedRecord({
     market: {
       period: 'full_time',
       marketType: 'asian_handicap',
+      lineVariant: 'main',
       lineKey: 'RATIO_R',
       marketIdentity: `${eventKey}|full_time|asian_handicap|RATIO_R`,
       handicap,
@@ -246,12 +247,14 @@ test('authoritative list followed by details preserves active events and emits o
   assert.equal(change.observedAt, '2026-07-10T01:02:00.000Z')
   assert.equal(change.event.eventKey, 'crown|football|gid=3001')
   assert.equal(change.market.marketIdentity, 'crown|football|gid=3001|full_time|asian_handicap|RATIO_R')
+  assert.equal(change.market.lineVariant, 'main')
   assert.equal(change.selection.selectionIdentity, 'crown|football|gid=3001|full_time|asian_handicap|RATIO_R|home')
   assert.equal(change.eventIdentity, 'crown|football|gid=3001')
   assert.equal(change.marketIdentity, 'crown|football|gid=3001|full_time|asian_handicap|RATIO_R')
   assert.equal(change.selectionIdentity, 'crown|football|gid=3001|full_time|asian_handicap|RATIO_R|home')
   assert.equal(change.old.selection.odds, 0.92)
   assert.equal(change.next.selection.odds, 0.96)
+  assert.equal(store.getSelection(change.selectionIdentity).snapshot.market.lineVariant, 'main')
   assert.deepEqual(change.source, normalizedRecord().source)
   assert.equal(change.confidence, 'unknown')
   assert.deepEqual(change.warnings, [])
@@ -1456,4 +1459,62 @@ test('persisted Signal payload is complete and strips sensitive or non-Signal fi
   assert.equal(persisted.evidence.changeId, signal.evidence.changeId)
   assert.equal(persisted.target.selectionIdentity, signal.target.selectionIdentity)
   store.close()
+})
+
+test('trusted login proof advances only the success timestamp and preserves the latest failure diagnostics', () => {
+  const handle = openAppDatabase({ dbPath: ':memory:' })
+  const store = new MonitorStateStore({ db: handle.db })
+  const failure = {
+    ok: false,
+    status: '登录失效',
+    message: 'sanitized failure',
+    finishedAt: '2026-07-13T00:00:00.000Z',
+  }
+  handle.db.prepare(`
+    INSERT INTO monitor_accounts (
+      id, label, username, status, enabled,
+      last_login_result_json, last_login_result_at, last_login_diagnostics_path,
+      created_at, updated_at
+    ) VALUES ('mon_primary', 'monitor', 'owner', 'enabled', 1, ?, ?, ?, ?, ?)
+  `).run(
+    JSON.stringify(failure),
+    '2026-07-13T00:00:00.000Z',
+    'diagnostics/latest-failure',
+    '2026-07-13T00:00:00.000Z',
+    '2026-07-13T00:00:00.000Z',
+  )
+
+  assert.deepEqual(store.recordTrustedLoginProof({
+    source: 'get_game_list',
+    accountId: 'mon_primary',
+    observedAt: '2026-07-13T00:01:00.000Z',
+  }), {
+    recorded: true,
+    source: 'get_game_list',
+    accountId: 'mon_primary',
+    observedAt: '2026-07-13T00:01:00.000Z',
+  })
+
+  const row = handle.db.prepare(`
+    SELECT last_login_result_json, last_login_result_at, last_login_diagnostics_path
+    FROM monitor_accounts WHERE id = 'mon_primary'
+  `).get()
+  assert.equal(row.last_login_result_at, '2026-07-13T00:01:00.000Z')
+  assert.deepEqual(JSON.parse(row.last_login_result_json), failure)
+  assert.equal(row.last_login_diagnostics_path, 'diagnostics/latest-failure')
+
+  assert.equal(store.recordTrustedLoginProof({
+    source: 'chk_login',
+    accountId: 'mon_primary',
+    observedAt: '2026-07-12T23:59:00.000Z',
+  }).recorded, false)
+  assert.equal(handle.db.prepare("SELECT last_login_result_at FROM monitor_accounts WHERE id='mon_primary'").get().last_login_result_at, '2026-07-13T00:01:00.000Z')
+  assert.throws(() => store.recordTrustedLoginProof({
+    source: 'get_game_more', accountId: 'mon_primary', observedAt: '2026-07-13T00:02:00.000Z',
+  }), /source/)
+  assert.throws(() => store.recordTrustedLoginProof({
+    source: 'login', accountId: 'mon_primary', observedAt: '2026-07-13 00:02:00',
+  }), /canonical UTC timestamp/)
+  store.close()
+  handle.close()
 })

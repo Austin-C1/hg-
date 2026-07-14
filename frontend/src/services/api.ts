@@ -30,8 +30,6 @@ import type {
   RuleCardMutation,
   RuleCardUpdate,
   RuntimeCleanupPreview,
-  SystemUpdateCancelResult,
-  SystemUpdateStatus,
   TelegramSettingsPayload,
   TrackedMatch,
   TodayBettingLeague,
@@ -314,18 +312,6 @@ export const api = {
   },
   async runRuntimeCleanup() {
     return (await apiClient.post<{ item: RuntimeCleanupPreview }>('/app/runtime-cache-cleanup', {})).data
-  },
-  async getSystemUpdate(signal?: AbortSignal) {
-    return (await apiClient.get<{ item: SystemUpdateStatus }>('/app/system-update', { signal })).data
-  },
-  async checkSystemUpdate() {
-    return (await apiClient.post<{ item: SystemUpdateStatus }>('/app/system-update/check', {}, { timeout: 0 })).data
-  },
-  async installSystemUpdate(expectedVersion: string) {
-    return (await apiClient.post<{ item: SystemUpdateStatus }>('/app/system-update/install', { expectedVersion }, { timeout: 0 })).data
-  },
-  async cancelSystemUpdate() {
-    return (await apiClient.post<{ item: SystemUpdateCancelResult }>('/app/system-update/cancel', {})).data
   },
   async startRealBetting() {
     return (await apiClient.post<{ item: RealBettingStatus }>('/app/real-betting/start', {})).data

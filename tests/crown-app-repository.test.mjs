@@ -879,3 +879,48 @@ test('repository projects recent batches and children as decimal strings without
   assert.equal(JSON.stringify(children).includes('secret-provider-reference'), false)
   assert.equal(Object.hasOwn(children[0], 'providerReferenceCiphertext'), false)
 })
+
+test('repository returns only an unsuspended selection from the latest Crown response for its event', () => {
+  const { handle, repo } = createRepository()
+  const eventKey = 'crown|football|gid=event-safe'
+  const selectionIdentity = `${eventKey}|full_time|asian_handicap|RATIO_R|home`
+  const snapshot = {
+    provider: 'crown', mode: 'prematch',
+    event: { eventKey, ids: { gid: 'event-safe' } },
+    market: {
+      period: 'full_time', marketType: 'asian_handicap', lineVariant: 'main',
+      lineKey: 'RATIO_R', ratioField: 'RATIO_R', handicapRaw: '0.5 / 1',
+    },
+    selection: {
+      selectionIdentity, side: 'home', oddsField: 'IOR_RH', oddsRaw: '0.96', suspended: false,
+    },
+  }
+  const envelope = {
+    provider: 'crown', eventKey, period: 'full_time', marketType: 'asian_handicap',
+    lineKey: 'RATIO_R', side: 'home', selectionIdentity, snapshot,
+  }
+  handle.db.prepare(`
+    INSERT INTO monitor_selection_state (selection_identity,event_key,captured_at,snapshot_json)
+    VALUES (?,?,?,?)
+  `).run(selectionIdentity, eventKey, '2026-07-14T00:00:00.000Z', JSON.stringify(snapshot))
+
+  assert.deepEqual(repo.getCurrentCrownSelectionForExecution(envelope), envelope)
+
+  handle.db.prepare(`
+    UPDATE monitor_selection_state SET snapshot_json=? WHERE selection_identity=?
+  `).run(JSON.stringify({
+    ...snapshot,
+    selection: { ...snapshot.selection, suspended: true },
+  }), selectionIdentity)
+  assert.throws(() => repo.getCurrentCrownSelectionForExecution(envelope), /crown-current-selection-invalid/)
+  handle.db.prepare(`
+    UPDATE monitor_selection_state SET snapshot_json=? WHERE selection_identity=?
+  `).run(JSON.stringify(snapshot), selectionIdentity)
+
+  handle.db.prepare(`
+    INSERT INTO monitor_selection_state (selection_identity,event_key,captured_at,snapshot_json)
+    VALUES (?,?,?,?)
+  `).run(`${eventKey}|newer`, eventKey, '2026-07-14T00:00:01.000Z', JSON.stringify(snapshot))
+  assert.throws(() => repo.getCurrentCrownSelectionForExecution(envelope), /crown-current-selection-stale/)
+  handle.close()
+})

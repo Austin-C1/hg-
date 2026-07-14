@@ -19,6 +19,38 @@ function safeMinor(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null
 }
 
+function exactDecimal(value) {
+  const source = typeof value === 'number' && Number.isFinite(value) ? String(value) : value
+  if (typeof source !== 'string' || !/^\d+(?:\.\d+)?$/.test(source)) return null
+  const [whole, fraction = ''] = source.split('.')
+  return { coefficient: BigInt(`${whole}${fraction}`), scale: fraction.length }
+}
+
+function compareDecimal(left, right) {
+  const scale = Math.max(left.scale, right.scale)
+  const a = left.coefficient * 10n ** BigInt(scale - left.scale)
+  const b = right.coefficient * 10n ** BigInt(scale - right.scale)
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+function frozenOddsRange(batch) {
+  let source = batch
+  if (batch.rule_id) source = parseJson(batch.rule_snapshot_json, {}).rule
+  else if (batch.card_id) source = parseJson(batch.card_snapshot_json, {})
+  else if (batch.settings_version) source = parseJson(batch.settings_snapshot_json, {})
+  const minimum = exactDecimal(source?.changedOddsMin ?? source?.targetOddsMin ?? source?.target_odds_min)
+  const maximum = exactDecimal(source?.changedOddsMax ?? source?.targetOddsMax ?? source?.target_odds_max)
+  return minimum && maximum && compareDecimal(minimum, maximum) <= 0 ? { minimum, maximum } : null
+}
+
+function oddsInFrozenRange(batch, value) {
+  const range = frozenOddsRange(batch)
+  const odds = exactDecimal(value)
+  return Boolean(range && odds
+    && compareDecimal(odds, range.minimum) >= 0
+    && compareDecimal(odds, range.maximum) <= 0)
+}
+
 function submitAttemptId(childOrderId) {
   return createHash('sha256').update(`simulated-submit\n${childOrderId}`, 'utf8').digest('hex')
 }
@@ -103,7 +135,11 @@ export class MultiAccountBetCoordinator {
     if (!db?.prepare) throw new TypeError('coordinator-db')
     if (!store) throw new TypeError('coordinator-store')
     if (typeof store.leaseKey !== 'string' || store.leaseKey === '') throw new TypeError('coordinator-store-lease')
-    if (!provider?.preview || !provider?.submit) throw new TypeError('coordinator-provider')
+    if (typeof provider?.preview !== 'function') throw new TypeError('coordinator-provider')
+    if (b2Executor !== null && typeof b2Executor?.submit !== 'function') throw new TypeError('coordinator-b2-executor')
+    if (typeof provider?.submit !== 'function' && typeof b2Executor?.submit !== 'function') {
+      throw new TypeError('coordinator-provider')
+    }
     if (!lease?.assertFence) throw new TypeError('coordinator-lease')
     if (store.leaseKey !== lease.leaseKey) throw new TypeError('coordinator-store-lease')
     if (typeof findLatestSelection !== 'function') throw new TypeError('findLatestSelection')
@@ -121,7 +157,6 @@ export class MultiAccountBetCoordinator {
     this.maxRounds = maxRounds
     this.realExecutionGate = realExecutionGate
     this.processLease = processLease
-    if (b2Executor !== null && typeof b2Executor?.submit !== 'function') throw new TypeError('coordinator-b2-executor')
     this.b2Executor = b2Executor
     this.executionEnvironment = executionEnvironment
     this.claimAndCreateModeScopedBatch = this._claimAndCreateModeScopedBatch.bind(this)
@@ -141,17 +176,17 @@ export class MultiAccountBetCoordinator {
     if (!['simulated', 'preview', 'real'].includes(input.executionMode)) throw new TypeError('coordinator-mode')
     if (input.executionMode === 'real') {
       this.realExecutionGate(this.db)
-      if (!String(input.authorizationId || '')) throw new Error('authorization-required')
     }
     const existingClaim = this.db.prepare('SELECT batch_id FROM bet_market_once_claims WHERE market_once_key=?')
       .get(input.marketOnceKey)
     if (existingClaim) return { status: 'already-claimed', batchId: existingClaim.batch_id || null }
     const fencingToken = this._fence()
     const previewBatch = { batch_id: `card-preview:${input.signalId}:${input.cardId}:${input.cardVersion}`,
-      currency: card.currency, amount_scale: card.amountScale, unfilled_amount_minor: card.targetAmountMinor }
+      currency: card.currency, amount_scale: card.amountScale, unfilled_amount_minor: card.targetAmountMinor,
+      targetOddsMin: card.targetOddsMin, targetOddsMax: card.targetOddsMax }
     const accounts = this._accounts(previewBatch, new Set())
     if (accounts.length === 0) return { status: 'skipped', reason: 'no-account-capacity' }
-    const previews = await this._previewAccounts(previewBatch, input.lockedSelection, accounts)
+    const previews = await this._firstUsablePreview(previewBatch, input.lockedSelection, accounts)
     this._fence()
     if (previews.length === 0) return { status: 'skipped', reason: 'preview-incomplete' }
     const allocation = allocateStake(card.targetAmountMinor, previews.map((item) => item.capability))
@@ -169,7 +204,7 @@ export class MultiAccountBetCoordinator {
       signalId: input.signalId, signalSnapshot: input.signal, inboxLease: input.inboxLease,
       lockedSelection: input.lockedSelection, cardId: input.cardId, cardVersion: input.cardVersion,
       cardSnapshot: card, bettingMode: input.bettingMode,
-      authorizationId: input.executionMode === 'real' ? input.authorizationId : null,
+      authorizationId: null,
       eventKey: input.lockedSelection?.eventKey, lockedSelectionIdentity: JSON.stringify(input.lockedSelection || {}),
       sourceLeague: input.signal?.evidence?.leagueName || '',
       sourceOdds: String(input.lockedSelection?.snapshot?.selection?.oddsRaw ?? input.lockedSelection?.snapshot?.selection?.odds ?? ''),
@@ -178,9 +213,7 @@ export class MultiAccountBetCoordinator {
     }
     return this.store.claimAndCreateCardScopedBatch(batchInput, reservations, {
       fencingToken, marketOnceKey: input.marketOnceKey, requireRealRuntime: input.executionMode === 'real',
-      realLeaseEvidence: this._realLeaseEvidence(input.executionMode), authorizationId: input.authorizationId,
-      executorOwnerId: this.lease.ownerId,
-      authorizationOptions: { env: this.executionEnvironment, now: () => new Date(this.now()) },
+      realLeaseEvidence: this._realLeaseEvidence(input.executionMode),
     })
   }
 
@@ -195,7 +228,6 @@ export class MultiAccountBetCoordinator {
     if (!['simulated', 'preview', 'real'].includes(input.executionMode)) throw new TypeError('coordinator-mode')
     if (input.executionMode === 'real') {
       this.realExecutionGate(this.db)
-      if (!String(input.authorizationId || '')) throw new Error('authorization-required')
     }
     const current = this.db.prepare('SELECT * FROM auto_betting_settings WHERE mode=?').get(input.bettingMode)
     if (!current || Number(current.version) !== input.settingsVersion) throw new Error('settings-version-changed')
@@ -215,10 +247,12 @@ export class MultiAccountBetCoordinator {
       currency: settings.currency,
       amount_scale: settings.amountScale,
       unfilled_amount_minor: settings.targetAmountMinor,
+      targetOddsMin: settings.targetOddsMin,
+      targetOddsMax: settings.targetOddsMax,
     }
     const accounts = this._accounts(previewBatch, new Set())
     if (accounts.length === 0) return { status: 'skipped', reason: 'no-account-capacity' }
-    const previews = await this._previewAccounts(previewBatch, input.lockedSelection, accounts)
+    const previews = await this._firstUsablePreview(previewBatch, input.lockedSelection, accounts)
     this._fence()
     if (previews.length === 0) return { status: 'skipped', reason: 'preview-incomplete' }
     const allocation = allocateStake(settings.targetAmountMinor, previews.map((item) => item.capability))
@@ -243,7 +277,7 @@ export class MultiAccountBetCoordinator {
       bettingMode: input.bettingMode,
       settingsVersion: input.settingsVersion,
       settingsSnapshot: settings,
-      authorizationId: input.executionMode === 'real' ? input.authorizationId : null,
+      authorizationId: null,
       eventKey: input.lockedSelection?.eventKey,
       lockedSelectionIdentity: JSON.stringify(input.lockedSelection || {}),
       sourceLeague: input.signal?.evidence?.leagueName || '',
@@ -254,19 +288,9 @@ export class MultiAccountBetCoordinator {
       targetAmountMinor: settings.targetAmountMinor,
       createdAt: this.now(),
     }
-    if (input.executionMode === 'real') {
-      return this.store.createAuthorizedModeScopedBatchWithReservations(batchInput, reservations, {
-        fencingToken,
-        marketOnceKey: input.marketOnceKey,
-        requireRealRuntime: true,
-        realLeaseEvidence: this._realLeaseEvidence('real'),
-        authorizationId: input.authorizationId,
-        executorOwnerId: this.lease.ownerId,
-        authorizationOptions: { env: this.executionEnvironment, now: () => new Date(this.now()) },
-      })
-    }
     return this.store.claimAndCreateModeScopedBatch(batchInput, reservations, {
-      fencingToken, marketOnceKey: input.marketOnceKey, requireRealRuntime: false,
+      fencingToken, marketOnceKey: input.marketOnceKey, requireRealRuntime: input.executionMode === 'real',
+      realLeaseEvidence: this._realLeaseEvidence(input.executionMode),
     })
   }
 
@@ -334,7 +358,7 @@ export class MultiAccountBetCoordinator {
     throw allocationError
   }
 
-  _batchInput(match, rule, lockedSelection, authorizationId = null) {
+  _batchInput(match, rule, lockedSelection) {
     return {
       signalId: match.signalId,
       ruleId: match.ruleId,
@@ -349,7 +373,7 @@ export class MultiAccountBetCoordinator {
       amountScale: rule.amountScale,
       targetAmountMinor: rule.targetAmountMinor,
       createdAt: this.now(),
-      authorizationId,
+      authorizationId: null,
     }
   }
 
@@ -402,6 +426,9 @@ export class MultiAccountBetCoordinator {
     if (!lockedSelection || !sameLockedIdentity(lockedSelection, originalLock, batch)) {
       return { stopReason: 'market_changed' }
     }
+    const latestOdds = String(lockedSelection.snapshot?.selection?.oddsRaw
+      ?? lockedSelection.snapshot?.selection?.odds ?? '')
+    if (!oddsInFrozenRange(batch, latestOdds)) return { stopReason: 'market_changed' }
     return { signal, lockedSelection, stopReason: '' }
   }
 
@@ -439,7 +466,7 @@ export class MultiAccountBetCoordinator {
     return this.store.recover({ fencingToken, at: this.now() })
   }
 
-  async processSignal(signal, { mode = 'simulated', authorizationId = null } = {}) {
+  async processSignal(signal, { mode = 'simulated' } = {}) {
     if (!['simulated', 'preview', 'real'].includes(mode)) throw new TypeError('coordinator-mode')
     if (mode === 'real') this.realExecutionGate(this.db)
     const fencingToken = this._fence()
@@ -471,6 +498,8 @@ export class MultiAccountBetCoordinator {
         currency: rule.currency,
         amount_scale: rule.amountScale,
         unfilled_amount_minor: rule.targetAmountMinor,
+        targetOddsMin: rule.changedOddsMin,
+        targetOddsMax: rule.changedOddsMax,
       }
       const previews = await this._previewAccounts(previewBatch, lockedSelection, this._accounts(previewBatch, new Set()))
       this._fence()
@@ -486,18 +515,19 @@ export class MultiAccountBetCoordinator {
         unfilledMinor: allocation.unfilledMinor,
       }
     }
-    if (mode === 'real' && !String(authorizationId || '')) throw new Error('authorization-required')
-    const batchInput = this._batchInput(match, rule, lockedSelection, mode === 'real' ? authorizationId : null)
+    const batchInput = this._batchInput(match, rule, lockedSelection)
     if (claim?.claim_status === 'claimed') {
       const previewBatch = {
         batch_id: match.batchId,
         currency: rule.currency,
         amount_scale: rule.amountScale,
         unfilled_amount_minor: rule.targetAmountMinor,
+        targetOddsMin: rule.changedOddsMin,
+        targetOddsMax: rule.changedOddsMax,
       }
       let created
       try {
-        const previews = await this._previewAccounts(previewBatch, lockedSelection, this._accounts(previewBatch, new Set()))
+        const previews = await this._firstUsablePreview(previewBatch, lockedSelection, this._accounts(previewBatch, new Set()))
         if (mode === 'real') this.realExecutionGate(this.db)
         this._fence()
         const allocation = allocateStake(rule.targetAmountMinor, previews.map((item) => item.capability))
@@ -520,17 +550,7 @@ export class MultiAccountBetCoordinator {
           requireRealRuntime: mode === 'real',
           realLeaseEvidence: this._realLeaseEvidence(mode),
         }
-        created = mode === 'real'
-          ? this.store.createAuthorizedBatchWithReservations(batchInput, reservations, {
-              ...allocationOptions,
-              authorizationId,
-              executorOwnerId: this.lease.ownerId,
-              authorizationOptions: {
-                env: this.executionEnvironment,
-                now: () => new Date(this.now()),
-              },
-            })
-          : this.store.createBatchWithReservations(batchInput, reservations, allocationOptions)
+        created = this.store.createBatchWithReservations(batchInput, reservations, allocationOptions)
       } catch (error) {
         return this._recordAllocationFailure(claim, error)
       }
@@ -590,27 +610,36 @@ export class MultiAccountBetCoordinator {
       .filter((accountId) => !excludedAccounts.has(accountId)))
   }
 
-  _persistedRejectedAccounts(batchId) {
+  _persistedUsedAccounts(batchId) {
     return new Set(this.db.prepare(`
-      SELECT DISTINCT account_id
-      FROM bet_child_orders
-      WHERE batch_id = ? AND status = 'rejected'
+      SELECT account_id
+      FROM bet_batch_account_usage
+      WHERE batch_id = ?
     `).all(batchId).map((row) => row.account_id))
   }
 
   async _previewAccounts(batch, lockedSelection, accounts) {
     this.provider.assertNextOperations?.(accounts.map(() => 'preview'))
-    const settled = await Promise.allSettled(accounts.map(async (account) => ({
-      account,
-      preview: await this.provider.preview({
-        accountId: account.id,
-        batchId: batch.batch_id,
-        lockedSelection,
-      }),
-    })))
+    const settled = []
+    for (const account of accounts) {
+      try {
+        settled.push({ status: 'fulfilled', value: {
+          account,
+          preview: await this.provider.preview({
+            accountId: account.id,
+            batchId: batch.batch_id,
+            lockedSelection,
+          }),
+        } })
+      } catch (reason) {
+        settled.push({ status: 'rejected', reason })
+      }
+    }
     return settled.flatMap((entry) => {
       if (entry.status !== 'fulfilled' || entry.value.preview?.ok !== true) return []
       const { account, preview } = entry.value
+      const previewOdds = String(preview.odds ?? preview.oddsRaw ?? '')
+      if (!oddsInFrozenRange(batch, previewOdds)) return []
       const minStakeMinor = safeMinor(preview.minStakeMinor)
       const maxStakeMinor = safeMinor(preview.maxStakeMinor)
       const stakeStepMinor = safeMinor(preview.stakeStepMinor)
@@ -620,7 +649,14 @@ export class MultiAccountBetCoordinator {
       const currency = preview.currency || account.currency
       const amountScale = preview.amountScale ?? account.amount_scale
       if (currency !== batch.currency || amountScale !== batch.amount_scale) return []
-      const capacityMinor = Math.min(account.per_bet_limit_minor, maxStakeMinor, previewBalance, batch.unfilled_amount_minor)
+      const capacityMinor = Math.min(
+        account.per_bet_limit_minor,
+        maxStakeMinor,
+        previewBalance,
+        batch.unfilled_amount_minor,
+      )
+      if (capacityMinor < minStakeMinor
+        || (capacityMinor - minStakeMinor) % stakeStepMinor !== 0) return []
       return [{
         account,
         preview,
@@ -628,7 +664,7 @@ export class MultiAccountBetCoordinator {
             accountId: account.id,
             betOrder: account.bet_order,
             createdAt: account.created_at,
-            perBetLimitMinor: account.per_bet_limit_minor,
+            perBetLimitMinor: capacityMinor,
             confirmedBalanceMinor: previewBalance,
             reservedUnknownMinor: 0,
             currency,
@@ -642,12 +678,19 @@ export class MultiAccountBetCoordinator {
     })
   }
 
+  async _firstUsablePreview(batch, lockedSelection, accounts) {
+    for (const account of accounts) {
+      const previews = await this._previewAccounts(batch, lockedSelection, [account])
+      if (previews.length > 0) return previews
+    }
+    return []
+  }
+
   async _submitChild(child, lockedSelection, fencingToken, mode = 'simulated') {
     if (mode === 'real') this.realExecutionGate(this.db)
     this._fence()
     if (mode === 'real') {
       if (!this.b2Executor) throw new Error('b2-executor-required')
-      if (!child.authorizationId) throw new Error('authorization-required')
       const previous = this.db.prepare(`
         SELECT attempt_ordinal, status, submit_attempt_id
         FROM bet_submit_attempts
@@ -655,10 +698,8 @@ export class MultiAccountBetCoordinator {
         ORDER BY attempt_ordinal DESC
         LIMIT 1
       `).get(child.childOrderId)
-      const attemptOrdinal = previous === undefined ? 1 : Number(previous.attempt_ordinal) + 1
-      if (previous && (previous.status !== 'odds_changed_unsent' || attemptOrdinal !== 2)) {
-        throw new Error('submit-attempt-uncertain')
-      }
+      if (previous) throw new Error('submit-attempt-uncertain')
+      const attemptOrdinal = 1
       const attemptId = deterministicSubmitAttemptId(child.childOrderId, attemptOrdinal)
       let outcome
       try {
@@ -668,7 +709,6 @@ export class MultiAccountBetCoordinator {
             ? { bettingMode: child.bettingMode, settingsVersion: child.settingsVersion }
           : { ruleId: child.ruleId }
         outcome = await this.b2Executor.submit({
-          authorizationId: child.authorizationId,
           ...executionScope,
           submitAttemptId: attemptId,
           attemptOrdinal,
@@ -683,7 +723,7 @@ export class MultiAccountBetCoordinator {
             childAttempt: child.attempt,
           },
           lockedSelection,
-          hasFutureCapacity: false,
+          hasFutureCapacity: true,
         })
       } catch (error) {
         const code = String(error?.code || error?.message || '')
@@ -742,6 +782,7 @@ export class MultiAccountBetCoordinator {
       errorCode: String(result?.errorCode || ''),
       fencingToken,
       at: this.now(),
+      hasFutureCapacity: true,
     })
     return { accountId: child.accountId, status }
   }
@@ -749,7 +790,7 @@ export class MultiAccountBetCoordinator {
   async runBatch(batchId, { mode = 'simulated' } = {}) {
     if (mode === 'real') this.realExecutionGate(this.db)
     const fencingToken = this._fence()
-    const rejectedThisRun = this._persistedRejectedAccounts(batchId)
+    const usedAccounts = this._persistedUsedAccounts(batchId)
     for (let round = 0; round < this.maxRounds; round += 1) {
       if (mode === 'real') this.realExecutionGate(this.db)
       const batch = this._batchRow(batchId)
@@ -763,12 +804,9 @@ export class MultiAccountBetCoordinator {
 
       let children = this._reservedChildren(batchId)
       if (children.length === 0) {
-        if (this._canonicalBatch(batchId)) {
-          return this.store.reconcileAggregates(batchId, { hasFutureCapacity: false, fencingToken, at: this.now() })
-        }
-        const potentialAccountIds = this._potentialAccountIds(batch, rejectedThisRun)
-        const accounts = this._accounts(batch, rejectedThisRun)
-        const previews = await this._previewAccounts(batch, lockedSelection, accounts)
+        const potentialAccountIds = this._potentialAccountIds(batch, usedAccounts)
+        const accounts = this._accounts(batch, usedAccounts)
+        const previews = await this._firstUsablePreview(batch, lockedSelection, accounts)
         if (mode === 'real') this.realExecutionGate(this.db)
         const allocation = allocateStake(batch.unfilled_amount_minor, previews.map((item) => item.capability))
         if (allocation.allocations.length === 0) {
@@ -786,6 +824,7 @@ export class MultiAccountBetCoordinator {
             previewOdds: String(item.preview.odds ?? item.preview.oddsRaw ?? ''),
           }
         }), { fencingToken, requireRealRuntime: mode === 'real', realLeaseEvidence: this._realLeaseEvidence(mode) })
+        for (const child of children) usedAccounts.add(child.accountId)
         this._fault('afterReserve', { batchId, children })
       }
 
@@ -795,18 +834,14 @@ export class MultiAccountBetCoordinator {
       if (beforeSubmitAudit.stopReason) return this._stopBatch(batchId, beforeSubmitAudit.stopReason, fencingToken)
       lockedSelection = beforeSubmitAudit.lockedSelection
 
-      this.provider.assertNextOperations?.(children.map(() => 'submit'))
-      const settled = await Promise.allSettled(children.map((child) => this._submitChild(child, lockedSelection, fencingToken, mode)))
-      const results = settled.filter((entry) => entry.status === 'fulfilled').map((entry) => entry.value)
-      const firstFailure = settled.find((entry) => entry.status === 'rejected')
-      for (const result of results) if (result.status === 'rejected') rejectedThisRun.add(result.accountId)
-      const current = this.store.getBatch(batchId)
-      if (TERMINAL_BATCH.has(current.status) || current.status === 'waiting_result' || current.finishReason) return current
-      if (firstFailure) throw firstFailure.reason
-      if (results.some((result) => result.status === 'rejected')) {
-        return this.store.reconcileAggregates(batchId, { hasFutureCapacity: false, fencingToken, at: this.now() })
+      for (const child of children) {
+        usedAccounts.add(child.accountId)
+        this.provider.assertNextOperations?.(['submit'])
+        await this._submitChild(child, lockedSelection, fencingToken, mode)
+        const current = this.store.getBatch(batchId)
+        if (TERMINAL_BATCH.has(current.status) || current.status === 'waiting_result' || current.finishReason) return current
       }
     }
-    return this.store.reconcileAggregates(batchId, { hasFutureCapacity: true, fencingToken, at: this.now() })
+    return this.store.reconcileAggregates(batchId, { hasFutureCapacity: false, fencingToken, at: this.now() })
   }
 }

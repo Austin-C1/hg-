@@ -9,6 +9,10 @@ const EVIDENCE_SENSITIVE_KEY_PARTS = [
   'cookie', 'authorization', 'auth', 'token', 'session', 'secret', 'password', 'passwd',
   'uid', 'csrf', 'xsrf', 'jwt', 'signature', 'setcookie', 'ticket', 'ticketid', 'orderid',
 ]
+const EVIDENCE_HMAC_BINDING_KEYS = new Set([
+  'accountbinding', 'sessionbinding', 'executionidentitybinding', 'resultreferencebinding',
+])
+const EVIDENCE_HMAC_BINDING = /^hmac-sha256:[a-f0-9]{64}$/
 
 function mask(value) {
   const text = String(value ?? '')
@@ -88,6 +92,12 @@ export function redactUrl(rawUrl) {
 export function assertSafeCrownProtocolEvidence(value) {
   const visit = (current, key = '') => {
     const normalizedKey = String(key).replace(/[^A-Za-z0-9]/g, '').toLowerCase()
+    if (EVIDENCE_HMAC_BINDING_KEYS.has(normalizedKey)) {
+      if (typeof current !== 'string' || !EVIDENCE_HMAC_BINDING.test(current)) {
+        throw new Error(`unsafe-crown-protocol-evidence:${key}`)
+      }
+      return
+    }
     if (
       EVIDENCE_FORBIDDEN_KEY_RE.test(String(key))
       || ['rawbody', 'requestbody', 'responsebody', 'postdata', 'payload', 'artifactpath'].includes(normalizedKey)

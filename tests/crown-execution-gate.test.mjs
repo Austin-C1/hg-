@@ -621,7 +621,7 @@ test('every gate and budget mutation rejects a stale executor fence after lease 
   handle.close()
 })
 
-test('bound authorization children reject every ordinary Store outcome, cancellation, and uncertain recovery path', () => {
+test('bound authorization children reject ordinary Store outcomes and cancellation while recovery preserves uncertain money', () => {
   const handle = openAppDatabase({ dbPath: ':memory:' })
   insertRule(handle.db, 'rule-real')
   const lease = acquireExecutorLease(handle.db)
@@ -655,11 +655,29 @@ test('bound authorization children reject every ordinary Store outcome, cancella
   }
   assert.throws(() => store.resolveChildOrder(child.childOrderId, { status: 'accepted', at: BASE_TIME }), /authorized-child-store-bypass/)
   assert.throws(() => store.cancelUnsubmitted(child.batchId, { at: BASE_TIME }), /authorized-child-store-bypass/)
-  assert.throws(() => store.recover({ at: BASE_TIME }), /authorized-child-store-bypass/)
   assert.deepEqual({ ...handle.db.prepare('SELECT * FROM bet_child_orders WHERE child_order_id = ?').get(child.childOrderId) }, before.child)
   assert.deepEqual({ ...handle.db.prepare('SELECT * FROM bet_batches WHERE batch_id = ?').get(child.batchId) }, before.batch)
   assert.deepEqual({ ...handle.db.prepare('SELECT * FROM execution_authorizations WHERE authorization_id = ?').get(authorization.authorizationId) }, before.authorization)
   assert.deepEqual({ ...handle.db.prepare('SELECT * FROM execution_authorization_child_budgets WHERE child_order_id = ?').get(child.childOrderId) }, before.binding)
+
+  assert.deepEqual(store.recover({ at: BASE_TIME }), {
+    unknownCount: 1,
+    activeLockCount: 1,
+    batchCount: 1,
+  })
+  assert.deepEqual({ ...handle.db.prepare(`
+    SELECT status, error_code FROM bet_child_orders WHERE child_order_id = ?
+  `).get(child.childOrderId) }, { status: 'unknown', error_code: 'recovery-uncertain' })
+  assert.deepEqual({ ...handle.db.prepare(`
+    SELECT reserved_amount_minor, unknown_amount_minor
+    FROM execution_authorizations WHERE authorization_id = ?
+  `).get(authorization.authorizationId) }, { reserved_amount_minor: 0, unknown_amount_minor: 25 })
+  assert.equal(handle.db.prepare(`
+    SELECT status FROM execution_authorization_child_budgets WHERE child_order_id = ?
+  `).get(child.childOrderId).status, 'unknown')
+  assert.deepEqual({ ...handle.db.prepare(`
+    SELECT child_order_id, status FROM betting_account_locks WHERE account_id = ?
+  `).get(child.accountId) }, { child_order_id: child.childOrderId, status: 'unknown' })
 
   handle.close()
 })

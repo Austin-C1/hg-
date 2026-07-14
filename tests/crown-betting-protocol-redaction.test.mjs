@@ -25,7 +25,14 @@ test('protocol evidence rejects credentials, raw bodies, tickets, and absolute p
     requestFieldSetFingerprint: `sha256:${'a'.repeat(64)}`,
     responseCode: '501',
     linkageTag: `hmac-sha256:${'b'.repeat(64)}`,
+    accountBinding: `hmac-sha256:${'c'.repeat(64)}`,
+    sessionBinding: `hmac-sha256:${'d'.repeat(64)}`,
+    executionIdentityBinding: `hmac-sha256:${'e'.repeat(64)}`,
+    resultReferenceBinding: `hmac-sha256:${'f'.repeat(64)}`,
   }))
+  assert.throws(() => assertSafeCrownProtocolEvidence({
+    sessionBinding: 'not-an-irreversible-binding',
+  }), /unsafe-crown-protocol-evidence/)
 })
 
 test('redactHeaders masks auth material', () => {

@@ -34,12 +34,10 @@ test('portable paths separate immutable version files from user-writable data', 
     sessionDir: 'C:\\Users\\UserA\\AppData\\Local\\CrownMonitor\\runtime\\crown-sessions',
     profileDir: 'C:\\Users\\UserA\\AppData\\Local\\CrownMonitor\\runtime\\browser-profiles',
     logDir: 'C:\\Users\\UserA\\AppData\\Local\\CrownMonitor\\logs',
-    updateDir: 'C:\\Users\\UserA\\AppData\\Local\\CrownMonitor\\updates',
-    backupDir: 'C:\\Users\\UserA\\AppData\\Local\\CrownMonitor\\backups',
     staticDir: 'D:\\带 空格\\CrownMonitor\\versions\\0.1.0\\app\\frontend\\dist',
   })
 
-  for (const field of ['dbPath', 'secretKeyPath', 'configDir', 'runtimeDir', 'sessionDir', 'profileDir', 'logDir', 'updateDir', 'backupDir']) {
+  for (const field of ['dbPath', 'secretKeyPath', 'configDir', 'runtimeDir', 'sessionDir', 'profileDir', 'logDir']) {
     assert.equal(assertPathWithin(paths.dataRoot, paths[field], field), paths[field])
   }
 })
@@ -187,8 +185,6 @@ test('portable environment exposes normalized explicit paths for child processes
     CROWN_SESSION_DIR: paths.sessionDir,
     CROWN_BROWSER_PROFILE_DIR: paths.profileDir,
     CROWN_LOG_DIR: paths.logDir,
-    CROWN_UPDATE_DIR: paths.updateDir,
-    CROWN_BACKUP_DIR: paths.backupDir,
     CROWN_STATIC_DIR: paths.staticDir,
   })
 })
@@ -209,8 +205,6 @@ const graphTampering = {
   sessionDir: `${graphPaths.runtimeDir}\\other-sessions`,
   profileDir: `${graphPaths.runtimeDir}\\other-profiles`,
   logDir: `${graphPaths.dataRoot}\\other-logs`,
-  updateDir: `${graphPaths.dataRoot}\\other-updates`,
-  backupDir: `${graphPaths.dataRoot}\\other-backups`,
 }
 
 for (const [field, tampered] of Object.entries(graphTampering)) {

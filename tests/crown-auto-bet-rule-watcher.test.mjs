@@ -236,9 +236,8 @@ test('claim transaction rechecks intent after an outer gate passes and another c
   const second = openAppDatabase({ dbPath: first.dbPath })
   try {
     const ready = Object.fromEntries([
-      'watcherFresh', 'watcherLeaseUnique', 'monitorLoginFresh', 'bettingAccountFresh', 'balanceFresh',
-      'capabilityExact', 'authorizationActive', 'schemaCurrent', 'environmentExact', 'fenceFresh',
-      'executorLeaseFresh', 'reconcilerLeaseFresh', 'executorReconcilerDistinct',
+      'ruleCardsEnabled', 'bettingAccountAvailable', 'capabilityExact',
+      'schemaCurrent', 'fenceFresh', 'executorLeaseFresh',
     ].map((field) => [field, true]))
     requestRealBettingStart(first.db, ready)
     assert.doesNotThrow(() => assertRealBettingRequested(first.db))

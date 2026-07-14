@@ -27,12 +27,10 @@
     "crown:frontend:build": "npm --prefix frontend run build",
     "crown:frontend:test": "npm --prefix frontend run test",
     "release:portable": "node scripts/build-windows-portable.mjs",
-    "release:audit": "node scripts/verify-release-artifacts.mjs",
-    "release:manifest": "node scripts/create-update-manifest.mjs"
+    "release:audit": "node scripts/verify-release-artifacts.mjs"
   },
   "dependencies": {
     "iconv-lite": "0.7.3",
-    "playwright": "1.61.1",
-    "yauzl": "3.4.0"
+    "playwright": "1.61.1"
   }
 }

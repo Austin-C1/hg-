@@ -18,8 +18,6 @@ const PATH_GRAPH_FIELDS = [
   'sessionDir',
   'profileDir',
   'logDir',
-  'updateDir',
-  'backupDir',
   'staticDir',
 ]
 
@@ -93,12 +91,10 @@ export function resolvePortablePaths({ appRoot, dataRoot, env = process.env, ver
     sessionDir: win32.join(runtimeDir, 'crown-sessions'),
     profileDir: win32.join(runtimeDir, 'browser-profiles'),
     logDir: win32.join(normalizedDataRoot, 'logs'),
-    updateDir: win32.join(normalizedDataRoot, 'updates'),
-    backupDir: win32.join(normalizedDataRoot, 'backups'),
     staticDir: win32.join(appDir, 'frontend', 'dist'),
   }
 
-  for (const field of ['dbPath', 'secretKeyPath', 'configDir', 'runtimeDir', 'sessionDir', 'profileDir', 'logDir', 'updateDir', 'backupDir']) {
+  for (const field of ['dbPath', 'secretKeyPath', 'configDir', 'runtimeDir', 'sessionDir', 'profileDir', 'logDir']) {
     assertPathWithin(paths.dataRoot, paths[field], field)
   }
   return paths
@@ -145,8 +141,6 @@ export function portableEnvironment(paths) {
     CROWN_SESSION_DIR: expected.sessionDir,
     CROWN_BROWSER_PROFILE_DIR: expected.profileDir,
     CROWN_LOG_DIR: expected.logDir,
-    CROWN_UPDATE_DIR: expected.updateDir,
-    CROWN_BACKUP_DIR: expected.backupDir,
     CROWN_STATIC_DIR: expected.staticDir,
   }
 }

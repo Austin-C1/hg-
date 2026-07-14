@@ -9,6 +9,13 @@ function nowIso() {
   return new Date().toISOString()
 }
 
+function exactIntegerCny(value) {
+  const match = /^(0|[1-9]\d*)(?:\.0+)?$/.exec(String(value || '').trim())
+  if (!match) return null
+  const integer = BigInt(match[1])
+  return integer <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(integer) : null
+}
+
 function accountId(account = {}) {
   return account.accountId || account.id || 'mon_primary'
 }
@@ -290,10 +297,6 @@ export class CrownApiSessionStore {
     if (!fs.existsSync(file)) return { status: '不存在', session: null, path: file }
     try {
       const session = readJsonFile(file)
-      if (this.strictOwner) {
-        delete session.protocolVersion
-        delete session.protocolVersionEvidence
-      }
       const baseUrl = normalizeCrownBaseUrl(account.loginUrl)
       const username = String(account.username || '').trim()
       const ownerMatches = !this.strictOwner || session.accountId === this.accountId
@@ -317,23 +320,6 @@ export class CrownApiSessionStore {
       username: String(account.username || session.username || '').trim(),
       baseUrl: normalizeCrownBaseUrl(account.loginUrl || session.baseUrl),
       savedAt: Number(session.savedAt || Date.now()),
-    }
-    if (
-      !this.strictOwner
-      &&
-      String(session.protocolVersion || '').trim()
-      && session.protocolVersionEvidence?.captured === true
-      && session.protocolVersionEvidence?.verified === true
-      && ['production-login-response', 'production-session-metadata'].includes(
-        String(session.protocolVersionEvidence?.source || ''),
-      )
-    ) {
-      normalized.protocolVersion = String(session.protocolVersion).trim()
-      normalized.protocolVersionEvidence = {
-        source: String(session.protocolVersionEvidence.source),
-        captured: true,
-        verified: true,
-      }
     }
     writeJsonFile(this.sessionPath(), normalized)
     return { status: '已保存', session: normalized, path: this.sessionPath() }
@@ -562,10 +548,14 @@ export class CrownApiLoginManager {
     runtimeDir = 'data/runtime',
     fetchImpl = globalThis.fetch,
     bettingAllowedOrigins = process.env.CROWN_BETTING_ALLOWED_ORIGINS || '',
+    now = () => new Date(),
   } = {}) {
+    if (typeof now !== 'function') throw new TypeError('crown-api-now')
     this.runtimeDir = runtimeDir
     this.client = new CrownApiClient({ fetchImpl })
     this.bettingAllowedOrigins = String(bettingAllowedOrigins || '')
+    this.now = now
+    this.verifiedBettingProtocols = new Map()
   }
 
   storeFor(account) {
@@ -574,6 +564,50 @@ export class CrownApiLoginManager {
 
   bettingStoreFor(account) {
     return new CrownApiSessionStore({ accountId: account.accountId, runtimeDir: this.runtimeDir, strictOwner: true })
+  }
+
+  _rememberVerifiedBettingProtocol(account, session) {
+    if (
+      !session
+      || session.accountId !== account.accountId
+      || session.username !== account.username
+      || normalizeCrownBaseUrl(session.baseUrl) !== normalizeCrownBaseUrl(account.loginUrl)
+      || !String(session.uid || '').trim()
+      || !String(session.protocolVersion || '').trim()
+      || session.protocolVersionEvidence?.captured !== true
+      || session.protocolVersionEvidence?.verified !== true
+      || session.protocolVersionEvidence?.source !== 'production-login-response'
+    ) return
+    this.verifiedBettingProtocols.set(account.accountId, Object.freeze({
+      accountId: account.accountId,
+      username: account.username,
+      baseUrl: normalizeCrownBaseUrl(account.loginUrl),
+      uid: String(session.uid),
+      protocolVersion: String(session.protocolVersion).trim(),
+      protocolVersionEvidence: Object.freeze({
+        source: 'production-login-response',
+        captured: true,
+        verified: true,
+      }),
+    }))
+  }
+
+  verifiedBettingSessionFor({ account, session } = {}) {
+    const exactAccount = bettingAccount(account, this.bettingAllowedOrigins)
+    const trusted = this.verifiedBettingProtocols.get(exactAccount.accountId)
+    if (
+      !trusted
+      || !session
+      || session.accountId !== trusted.accountId
+      || session.username !== trusted.username
+      || normalizeCrownBaseUrl(session.baseUrl) !== trusted.baseUrl
+      || String(session.uid || '') !== trusted.uid
+    ) return null
+    return {
+      ...session,
+      protocolVersion: trusted.protocolVersion,
+      protocolVersionEvidence: trusted.protocolVersionEvidence,
+    }
   }
 
   async _ensureSession({
@@ -610,6 +644,9 @@ export class CrownApiLoginManager {
     const fresh = await networkWithFence(() => this.client.login(account), assertFence)
     const verified = await networkWithFence(() => this.client.fetchGameList(fresh.session), assertFence)
     await assertFenceNow(assertFence)
+    if (store.strictOwner && requireVerifiedProtocolVersion) {
+      this._rememberVerifiedBettingProtocol(account, verified.session)
+    }
     const saved = store.saveSession(account, verified.session)
     log(logger, 'api-login-success', { accountId: accountId(account) })
     return {
@@ -644,6 +681,65 @@ export class CrownApiLoginManager {
 
   async fetchBettingFootballToday({ account, logger, assertFence = null } = {}) {
     return this.ensureBettingSession({ account, logger, assertFence })
+  }
+
+  async fetchFreshExecutionBalance({
+    account, session = null, logger, assertFence = null, requireVerifiedProtocolVersion = false,
+  } = {}) {
+    const exactAccount = bettingAccount(account, this.bettingAllowedOrigins)
+    try {
+      const store = this.bettingStoreFor(exactAccount)
+      const authenticated = session
+        ? { session: store.assertOwner(exactAccount, session) }
+        : await this._ensureSession({
+            account: exactAccount,
+            logger,
+            store,
+            assertFence,
+            requireVerifiedProtocolVersion,
+          })
+      const accountSummary = await networkWithFence(
+        () => this.client.fetchAccountSummary(authenticated.session),
+        assertFence,
+      )
+      await assertFenceNow(assertFence)
+      if (requireVerifiedProtocolVersion) {
+        this._rememberVerifiedBettingProtocol(exactAccount, accountSummary.session)
+      }
+      const balanceCny = exactIntegerCny(accountSummary.summary?.reportedBalance)
+      if (
+        accountSummary.summary?.valid !== true
+        || accountSummary.summary?.reportedCurrency !== 'CNY'
+        || String(exactAccount.currency || 'CNY').trim().toUpperCase() !== 'CNY'
+        || balanceCny === null
+      ) {
+        const error = new Error('betting-execution-balance-unavailable')
+        error.code = 'balance-unavailable'
+        throw error
+      }
+      store.saveSession(exactAccount, accountSummary.session)
+      const observed = this.now()
+      const observedAt = observed instanceof Date ? observed.toISOString() : new Date(observed).toISOString()
+      const result = {
+        balanceCny,
+        currency: 'CNY',
+        observedAt,
+        source: 'get_member_data',
+      }
+      Object.defineProperty(result, 'session', {
+        value: accountSummary.session,
+        enumerable: false,
+        configurable: false,
+        writable: false,
+      })
+      log(logger, 'betting-execution-balance-refreshed', {
+        accountId: exactAccount.accountId,
+        currency: 'CNY',
+      })
+      return Object.freeze(result)
+    } catch (error) {
+      throw sanitizedBettingError(error)
+    }
   }
 
   async testBettingAccountAccess({ account, logger } = {}) {

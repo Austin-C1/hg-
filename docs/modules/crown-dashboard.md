@@ -7,7 +7,7 @@
 - 卡片普通保存要求至少一个今日联赛；联赛选项由默认联赛命中与 exact 手动追踪赛事合并产生。手动联赛必须显式选择；其他现存卡片占用的联赛禁用并显示 owner name，当前卡片的 stale 联赛允许保留。
 - 同一联赛只能被一张现存卡片占用，停用不释放。删除使用 expectedVersion CAS 和物理删除，成功后立即释放联赛；未绑定 batch 的 inbox 终结，已创建历史保留。
 - Operations 只读取 `ruleCards:{total,enabled,reviewRequired,ownedLeagues}`，不再投影固定 prematch/live 投注设置。“每日开工完全重置”保留卡片和联赛占用，清理 card snapshot 在内的运行历史。
-- frontend mutation 在发送前核对 app/frontend/schema `dynamic-betting-cards-v1`；缺失或不一致时 fail-closed 并提示重启。当前 capability 为 `0/0/0`。
+- frontend mutation 在发送前核对 app/frontend/schema `dynamic-betting-cards-v1`；缺失或不一致时 fail-closed 并提示重启。当前只开放 exact row `prematch/full_time/asian_handicap/main`，Preview/Submit/Reconciliation capability 为 `1/1/0`；其他 row 与 Reconciliation 继续关闭，真实 runtime 默认 off。
 - canonical 字段为 API `waterMoveThreshold`、SQLite `water_move_threshold`；旧 `water_rise_threshold` 只作为数据库迁移输入。
 - 未配置的赔率和目标金额在输入框显示为空，不显示字符串 `null`。
 
@@ -40,21 +40,21 @@
 - 2026-07-11 实机页面验收通过免密规则保存、监控 Switch 关闭/恢复、第一个账号登录和余额/币种展示；第二个账号返回稳定的登录失败状态，未伪造余额。
 - 验证：backend 756/756、syntax 163、frontend 51/51、production build 通过。
 
-## 2026-07-11 B 阶段完成边界
+## 历史：2026-07-11 B 阶段完成边界
 
 - B1/B2 Task 1–12 的后台账本、安全门禁、对账和通知基础设施已完成并通过复核。
 - Dashboard 仍没有真实投注开关、人工对账入口或自动提交入口；普通 CRUD 不能把规则升级为 `real_eligible`。
-- 当前 canonical Crown preview/submit capability 为 0，production Provider fail-closed，因此 B 阶段完成不等于已开放真实投注。
+- 当时 canonical Crown preview/submit capability 为 0，production Provider fail-closed，因此该历史 B 阶段完成不等于已开放真实投注；当前 capability 以上方动态卡片契约中的 exact row `1/1/0` 为准。
 - Dashboard 继续只展示脱敏 batch/child/accepted 统计；provider reference、session、ticket、token 和密码不进入 API 投影。
 
-## 2026-07-11 B1 Dashboard 状态
+## 历史：2026-07-11 B1 Dashboard 当时状态
 
 - `/betting-rules` 使用 B1 规则契约：联赛精确多选、Signal 源赔率上下界、目标金额/币种/scale 和固定反打方向；规则金额与账号单笔限额分离。普通 CRUD 只能保持 `preview_only`，不能打开真实执行。
 - `/betting-accounts` 显示账号顺序、币种/scale、单笔上限、step、余额状态和 child 明细；今日真实统计按 `Asia/Shanghai` 只汇总 `accepted` child，不把 preview/rejected/unknown 算作成功。
 - Dashboard 可查看近期 batch/child 的 target/reserved/accepted/unknown/unfilled、finish reason 和模拟标记；provider reference 仅返回 null/掩码。
 - `/matches` 显示北京时间、时间质量和 warning，按 UTC 升序且空值置后；`/monitor-settings` 保留赛前/滚球两个独立 Switch，并提供默认折叠的逐赛事“数据质量与诊断”。
 - Dashboard child 和手动 watcher CLI 使用同一 canonical SQLite lease。`restart:true` 遇到相同 key 的未退出受管 child 时返回 `alreadyRunning` 并复用，不 kill；不同 key 明确冲突。
-- Dashboard 没有真实投注开关或自动提交入口。B2 后台基础设施已完成，但 canonical Crown capability 仍为 0；旧 `crown-bet-execute*` CLI 不属于当前多账号 Executor。
+- 当时 Dashboard 没有真实投注开关或自动提交入口。B2 后台基础设施已完成，但该历史阶段 canonical Crown capability 为 0；旧 `crown-bet-execute*` CLI 不属于现行多账号 Executor。当前 capability 以上方动态卡片契约中的 exact row `1/1/0` 为准。
 
 ## 2026-07-09 投注账号顺序与预览失败显示
 
@@ -90,7 +90,7 @@
 
 ## 目标
 
-提供 Docker-first 的本地 Crown 配置与赔率监控界面。当前版本用 React + Ant Design 展示赔率监控数据；比赛追踪仍复用 SQLite，本地默认联赛、监控模式和 Telegram 配置保存到 `config/*.json`。Dashboard 管理规则/账号并读取 batch/child 账本，不自动提交。B2 后台基础设施已完成但真实 Crown capability 未开放；历史独立 CLI 不是当前多账号真实执行入口。
+提供 Docker-first 的本地 Crown 配置与赔率监控界面。当前版本用 React + Ant Design 展示赔率监控数据；比赛追踪仍复用 SQLite，本地默认联赛、监控模式和 Telegram 配置保存到 `config/*.json`。Dashboard 管理规则/账号并读取 batch/child 账本，不因页面加载、登录或普通配置自动提交。B2 后台基础设施已完成；当前仅开放 exact row `prematch/full_time/asian_handicap/main` 的 capability `1/1/0`，其他 row 与 Reconciliation 关闭，真实 runtime 默认 off。历史独立 CLI 不是当前多账号真实执行入口。
 
 ## 文件
 
@@ -308,7 +308,7 @@ node --test tests\crown-dashboard-docker.test.mjs
 - `/operations` 的日常主流程是监控启停和四段下注准备链路；全局真实投注关闭时只显示开启按钮，requested/running 时只显示停止按钮。存在 unknown、未关闭对账或通知积压时才显示风险面板。
 - `/betting-accounts` 的 allocation 开关只控制账号是否可分配。启用会执行 fresh Crown access/balance check，但不会修改规则真实权限或全局真实投注意图。
 - 投注账号页通过 `api.getBettingAccountOverview()` 并行读取 `/api/app/betting-accounts` 与 `/api/app/betting-history`，不再读取大型赔率 bootstrap；加载期间不显示假空列表。
-- 当前真实协议 capability 证据仍不足，Operations 只能显示阻断条件，不能把账号启用或 UI 开关当作真实执行能力。
+- 当前 exact row `prematch/full_time/asian_handicap/main` 已具备 Preview/Submit capability，Reconciliation 与其他 row 的证据仍不足。Operations 必须显示剩余阻断条件，不能把账号启用或 UI 开关本身当作真实执行授权。
 
 ## 轻量安全上下文与配置页读取（2026-07-12）
 - `/api/app/security-context` 只返回当前请求可用的 `csrfToken` 和 `dashboardAccessMode`，不打开 SQLite、不读取赔率 JSONL。前端 Session 初始化固定使用该接口。

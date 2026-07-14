@@ -1,5 +1,9 @@
 # 皇冠 Windows Portable 与远程更新设计
 
+> **状态：已废弃（Superseded）**
+>
+> 本文只保留为历史设计证据，远程 updater 部分不得继续实现或恢复。当前权威设计为 [`2026-07-13-crown-manual-portable-and-desktop-shortcut-design.md`](./2026-07-13-crown-manual-portable-and-desktop-shortcut-design.md)：完整删除程序内远程更新链，保留手工 Portable 发布和用户数据，并在成功启动后幂等创建或修复桌面快捷方式。
+
 ## 目标
 
 为少量 Windows 用户提供可直接下载、解压、双击运行的 Private Beta（监控预览版），并支持从公开 GitHub Releases 手动检查和安装更新。

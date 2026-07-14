@@ -33,6 +33,7 @@ const LOCKED_IDENTITY = Object.freeze({
   mode: 'live',
   period: 'full_time',
   market: 'asian_handicap',
+  lineVariant: 'main',
   line: '-0 / 0.5',
   side: 'home',
 })
@@ -43,7 +44,10 @@ const LOCKED_ENVELOPE = Object.freeze({
   snapshot: {
     provider: 'crown', mode: 'live',
     event: { eventKey: 'crown|football|gid=8878933', ids: { gid: '8878933' } },
-    market: { period: 'full_time', marketType: 'asian_handicap', lineKey: '-0 / 0.5', handicapRaw: '-0 / 0.5' },
+    market: {
+      period: 'full_time', marketType: 'asian_handicap', lineVariant: 'main',
+      lineKey: '-0 / 0.5', handicapRaw: '-0 / 0.5',
+    },
     selection: { side: 'home', selectionIdentity: 'crown|football|gid=8878933|full_time|asian_handicap|-0 / 0.5|home' },
   },
 })
@@ -88,7 +92,10 @@ function insertFixtureRows(db, fencingToken) {
       status, created_at
     ) VALUES ('batch-security', 'signal-security', 'rule-security', ?, ?,
       'CNY', 2, 20, 20, 'queued', ?)
-  `).run(LOCKED_ENVELOPE.selectionIdentity, JSON.stringify({ lockedSelection: LOCKED_ENVELOPE }), AT)
+  `).run(LOCKED_ENVELOPE.selectionIdentity, JSON.stringify({
+    rule: { changedOddsMin: '0.75', changedOddsMax: '1.18' },
+    lockedSelection: LOCKED_ENVELOPE,
+  }), AT)
   db.prepare(`
     INSERT INTO bet_child_orders (
       child_order_id, batch_id, account_id, requested_amount_minor,

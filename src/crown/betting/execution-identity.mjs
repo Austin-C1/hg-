@@ -1,4 +1,4 @@
-const IDENTITY_KEYS = Object.freeze(['provider', 'gid', 'mode', 'period', 'market', 'line', 'side'])
+const IDENTITY_KEYS = Object.freeze(['provider', 'gid', 'mode', 'period', 'market', 'lineVariant', 'line', 'side'])
 
 function text(value, code) {
   const result = String(value ?? '').trim()
@@ -36,7 +36,8 @@ export function executionIdentityFromEnvelope(value, { provider } = {}) {
     mode: text(snapshot.mode || snapshot.event?.mode || envelope.providerMode || envelope.mode, 'missing-crown-preview-mode'),
     period: text(snapshot.market?.period, 'missing-crown-preview-period'),
     market: text(snapshot.market?.marketType, 'missing-crown-preview-market'),
-    line: text(snapshot.market?.lineKey || snapshot.market?.handicapRaw, 'missing-crown-line'),
+    lineVariant: text(snapshot.market?.lineVariant, 'missing-crown-line-variant'),
+    line: text(snapshot.market?.handicapRaw, 'missing-crown-line'),
     side: text(snapshot.selection?.side, 'missing-crown-preview-side'),
   }
   return Object.freeze(result)

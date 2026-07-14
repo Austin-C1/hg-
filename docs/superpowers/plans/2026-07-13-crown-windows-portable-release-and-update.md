@@ -1,5 +1,9 @@
 # 皇冠 Windows Portable、人工登录与签名更新实施计划
 
+> **状态：已废弃（Superseded）**
+>
+> 本计划只保留为历史实施证据，不得继续执行其中的 updater、manifest、签名、下载、candidate、handoff 或自动回滚任务。当前权威计划为 [`2026-07-13-crown-manual-portable-and-desktop-shortcut.md`](./2026-07-13-crown-manual-portable-and-desktop-shortcut.md)。
+
 > **Required sub-skill:** Use `superpowers:executing-plans` to implement this plan task-by-task.
 
 **Goal:** 把当前项目整理为可公开审计的源码仓库，并生成少量 Windows x64 用户可下载、解压、双击运行的 Private Beta；内置 Node.js、Chromium、用户确认的 118 项默认联赛白名单，以及手动检查、显式确认、失败自动回滚的 GitHub Releases 更新能力。

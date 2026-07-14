@@ -323,6 +323,14 @@ export function evaluateOddsDelta(change, { rule, defaultLeagues = null, tracked
   if (leagueReason) return skipped(change, leagueReason)
   if (!homeTeam) return skipped(change, 'data_incomplete:home_team_missing', ['homeTeam'])
   if (!awayTeam) return skipped(change, 'data_incomplete:away_team_missing', ['awayTeam'])
+  const handicapRaw = text(
+    change?.market?.handicapRaw
+      ?? change?.next?.market?.handicapRaw
+      ?? change?.old?.market?.handicapRaw,
+  )
+  if (!handicapRaw) {
+    return skipped(change, 'data_incomplete:handicap_raw_missing', ['market.handicapRaw'])
+  }
 
   const kickoff = mode === 'prematch' ? kickoffDecision(change, rule, now) : null
   if (kickoff?.matched === false) return kickoff
@@ -365,7 +373,7 @@ export function evaluateOddsDelta(change, { rule, defaultLeagues = null, tracked
       nextOdds,
       homeTeam,
       awayTeam,
-      handicapRaw: text(change?.market?.handicapRaw ?? change?.next?.market?.handicapRaw ?? change?.market?.handicap),
+      handicapRaw,
       oldOddsRaw: oddsRawOf(change?.old, oldOdds),
       nextOddsRaw: oddsRawOf(change?.next, nextOdds),
       mode,

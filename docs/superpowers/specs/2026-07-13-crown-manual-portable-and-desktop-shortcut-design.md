@@ -1,7 +1,15 @@
 # 皇冠手工 Portable 发布与桌面快捷启动设计
 
 **日期：** 2026-07-13
-**状态：** 待用户书面审阅
+**状态：** 已确认并完成实现；全量回归与临时 Portable 审计已通过，Fresh Windows 验收待完成
+
+## 0. 2026-07-13 当前实施状态
+
+- 远程更新前端/API/运行链已删除；手工 Portable、用户数据分离和成功启动后的幂等桌面快捷方式已实现，不增加开机启动或 Windows Service。
+- 该发布改造不改变投注金额语义：账号 `perBetLimit` 上限继续保留且可手工修改，`50 CNY` 只属于测试配置。
+- 该发布改造也不改变当前执行契约：账号顺序分配；`rejected` 转下一个未使用账号；`unknown` 锁定且不重试；Submit 网络开始后每 child 最多一次提交；fresh Preview 赔率必须在冻结规则区间，盘口身份使用 `handicapRaw`。
+- 当前只开放 exact row `prematch/full_time/asian_handicap/main`，Preview/Submit/Reconciliation capability 为 `1/1/0`；其他 row 与 Reconciliation 关闭，真实 runtime 默认 off，Portable 启动或人工登录不会自行发送 `FT_bet`。本 Portable 改造的历史验收轮次本身未发送 `FT_bet`。
+- backend `1286/1286`、frontend `137/137`、syntax check、production build 和临时 Portable 产物审计已通过；正式 clean-checkout 发行包与 Fresh Windows 10/11 x64 验收尚未完成，未把临时验收包标记为正式发布版。
 
 ## 1. 目标
 

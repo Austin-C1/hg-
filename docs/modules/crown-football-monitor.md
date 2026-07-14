@@ -1,5 +1,11 @@
 # Crown Football Monitor
 
+## 2026-07-14 Task 10 execution classification boundary
+
+- Watcher 仍是只读模块；它只负责把赛前全场让球 `RATIO_R` 且有 `IOR_RH|IOR_RC` 的事实标记为 `lineVariant=main`。该分类允许下游 exact capability 判断，但 watcher 自身不会调用 Preview 或 Submit。
+- `RATIO_RE`、滚球、其他 period/market 或缺少 exact home/away odds 字段的行保持 `lineVariant=unknown`，不能借助相似字段进入已开放的 production row。
+- `waterMoveThreshold` 是运行配置，当前 `0.01` 不改变上述协议身份或 capability 边界。
+
 ## 目标与边界
 
 本模块负责只读采集皇冠足球赔率，并把 provider 事实转换为可恢复、可审计的监控状态。默认运行 `schema v2`；真实投注执行不属于本模块。

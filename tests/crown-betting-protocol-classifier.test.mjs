@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { classifyProtocolRecord, shouldBlockProtocolRequest } from '../src/crown/betting-protocol/protocol-classifier.mjs'
-import { installRecorder } from '../scripts/crown-betting-protocol-capture.mjs'
+import { captureContextOptions, installContextCapture, installRecorder } from '../scripts/crown-betting-protocol-capture.mjs'
 
 test('classifies likely bet slip preview request', () => {
   const result = classifyProtocolRecord({
@@ -61,6 +61,88 @@ test('capture recorder preserves the originating request sequence for out-of-ord
   })
   assert.equal(records.at(-1).type, 'response')
   assert.equal(records.at(-1).seq, 1)
+})
+
+test('context capture covers new tabs and permits only one bounded real submit', async () => {
+  const handlers = {}
+  const records = []
+  let routeHandler
+  const context = {
+    on(name, handler) { handlers[name] = handler },
+    async route(pattern, handler) {
+      assert.equal(pattern, '**/*')
+      routeHandler = handler
+    },
+  }
+  await installContextCapture(context, { append(record) { records.push(record) } }, {
+    allowRealSubmit: true,
+    maxStake: 50,
+  })
+  assert.equal(typeof handlers.request, 'function')
+  assert.equal(typeof handlers.response, 'function')
+  assert.equal(typeof routeHandler, 'function')
+
+  const routeFor = (stake, extra = '') => {
+    const calls = []
+    return {
+      calls,
+      route: {
+        request: () => ({
+          method: () => 'POST', url: () => '/transform.php', resourceType: () => 'xhr', headers: () => ({}),
+          postData: () => `p=FT_bet&golds=${stake}&gid=8878933&gtype=FT${extra}`,
+        }),
+        async continue() { calls.push('continue') },
+        async abort(reason) { calls.push(`abort:${reason}`) },
+      },
+    }
+  }
+
+  const tooLarge = routeFor(51)
+  await routeHandler(tooLarge.route)
+  assert.deepEqual(tooLarge.calls, ['abort:blockedbyclient'])
+  assert.equal(records.at(-1).blockReason, 'real-submit-stake-invalid')
+
+  const rounded = routeFor('50.000000000000001')
+  await routeHandler(rounded.route)
+  assert.deepEqual(rounded.calls, ['abort:blockedbyclient'])
+  assert.equal(records.at(-1).blockReason, 'real-submit-stake-invalid')
+
+  const first = routeFor(50)
+  await routeHandler(first.route)
+  assert.deepEqual(first.calls, ['continue'])
+
+  const duplicate = routeFor(50)
+  await routeHandler(duplicate.route)
+  assert.deepEqual(duplicate.calls, ['abort:blockedbyclient'])
+  assert.equal(records.at(-1).blockReason, 'real-submit-limit-exceeded')
+})
+
+test('default context capture blocks exact FT_bet even when monitor text conflicts with classification', async () => {
+  const records = []
+  let routeHandler
+  const context = {
+    on() {},
+    async route(_pattern, handler) { routeHandler = handler },
+  }
+  await installContextCapture(context, { append(record) { records.push(record) } }, {
+    allowRealSubmit: false,
+    maxStake: 0,
+  })
+  const calls = []
+  await routeHandler({
+    request: () => ({
+      method: () => 'POST', url: () => '/transform.php', resourceType: () => 'xhr', headers: () => ({}),
+      postData: () => 'p=FT_bet&golds=50&gid=8878933&gtype=FT&note=get_game_list',
+    }),
+    async continue() { calls.push('continue') },
+    async abort(reason) { calls.push(`abort:${reason}`) },
+  })
+  assert.deepEqual(calls, ['abort:blockedbyclient'])
+  assert.equal(records.at(-1).blockReason, 'real-submit-disabled')
+})
+
+test('capture browser context disables service workers', () => {
+  assert.equal(captureContextOptions({ channel: 'msedge', headless: false }).serviceWorkers, 'block')
 })
 
 test('classifies likely submit request', () => {

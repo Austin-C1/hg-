@@ -32,12 +32,11 @@ function fixture(db, { signalId = 'signal-card', cardId = 'card-a', lineKey = 'R
     trigger: { direction: 'up' }, evidence: { mode: 'prematch', period: 'full_time', marketType: 'asian_handicap',
       handicap: -0.5, handicapRaw: '-0.5', leagueName, livePhase: null } }
   const card = { cardId, name: cardId, enabled: true, targetOddsMin: '0.8', targetOddsMax: '1.05',
-    targetAmountMinor: 100, currency: 'CNY', amountScale: 0, remark: '', realEligible: true,
-    realEligibilityVersion: 2, realEligibilityUpdatedAt: NOW, migrationReviewRequired: false,
+    targetAmountMinor: 100, currency: 'CNY', amountScale: 0, remark: '', migrationReviewRequired: false,
     migrationReviewReason: '', version: 3, leagueNames: [leagueName], createdAt: NOW, updatedAt: NOW }
   const selection = { provider: 'crown', mode: 'prematch', capturedAt: '2026-07-12T00:00:01.000Z',
     event: { eventKey, mode: 'prematch', livePhase: null },
-    market: { marketIdentity, period: 'full_time', marketType: 'asian_handicap', lineKey, handicap: -0.5, handicapRaw: '-0.5' },
+    market: { marketIdentity, period: 'full_time', marketType: 'asian_handicap', lineVariant: 'main', lineKey, handicap: -0.5, handicapRaw: '-0.5' },
     selection: { selectionIdentity: `${marketIdentity}|away`, side: 'away', odds: '0.91', suspended: false } }
   db.prepare(`INSERT OR IGNORE INTO auto_betting_rule_cards (
     card_id,name,enabled,target_odds_min,target_odds_max,target_amount_minor,currency,amount_scale,remark,
@@ -127,8 +126,6 @@ for (const [label, mutation, reason, real] of [
   ['version edit', "UPDATE auto_betting_rule_cards SET name='edited',version=4,updated_at='2026-07-12T00:00:01.000Z' WHERE card_id='card-a'", 'card-version-changed', false],
   ['disable', "UPDATE auto_betting_rule_cards SET enabled=0 WHERE card_id='card-a'", 'betting-mode-disabled', false],
   ['review reopen', "UPDATE auto_betting_rule_cards SET enabled=0,migration_review_required=1,migration_review_reason='review-again' WHERE card_id='card-a'", 'migration-review-required', false],
-  ['eligibility revoke', "UPDATE auto_betting_rule_cards SET real_eligible=0,real_eligibility_version=3,real_eligibility_updated_at='2026-07-12T00:00:01.000Z' WHERE card_id='card-a'", 'real-eligibility-required', true],
-  ['authorization eligibility mismatch', "UPDATE auto_betting_rule_cards SET real_eligible=1 WHERE card_id='card-a'", 'real-eligibility-required', true],
 ]) {
   test(`atomic card claim fail-closes current ${label} and terminalizes the inbox`, () => {
     const handle = openAppDatabase({ dbPath: ':memory:' })
@@ -164,7 +161,6 @@ for (const [cardLabel, mutation, reason, real] of [
   ['version edit', "UPDATE auto_betting_rule_cards SET name='edited',version=4,updated_at='2026-07-12T00:00:01.000Z' WHERE card_id='card-a'", 'card-version-changed', false],
   ['disable', "UPDATE auto_betting_rule_cards SET enabled=0 WHERE card_id='card-a'", 'betting-mode-disabled', false],
   ['review reopen', "UPDATE auto_betting_rule_cards SET enabled=0,migration_review_required=1,migration_review_reason='review-again' WHERE card_id='card-a'", 'migration-review-required', false],
-  ['eligibility revoke', "UPDATE auto_betting_rule_cards SET real_eligible=0,real_eligibility_version=3,real_eligibility_updated_at='2026-07-12T00:00:01.000Z' WHERE card_id='card-a'", 'real-eligibility-required', true],
 ]) {
   for (const marketState of ['missing', 'drift']) {
     test(`current ${cardLabel} wins over latest selection ${marketState} and commits the card terminal reason`, () => {
@@ -207,6 +203,20 @@ for (const [cardLabel, mutation, reason, real] of [
     })
   }
 }
+
+test('legacy card eligibility changes do not gate a new batch or create authorization budgets', () => {
+  const handle = openAppDatabase({ dbPath: ':memory:' })
+  const data = fixture(handle.db)
+  handle.db.prepare(`UPDATE auto_betting_rule_cards
+    SET real_eligible=0,real_eligibility_version=99,real_eligibility_updated_at=''
+    WHERE card_id='card-a'`).run()
+  const store = new BetBatchStore(handle.db, { now: () => new Date(NOW) })
+  const created = create(store, data, actualKey(data))
+  assert.equal(created.status, 'batch_created')
+  assert.equal(handle.db.prepare('SELECT authorization_id FROM bet_batches').get().authorization_id, null)
+  assert.equal(handle.db.prepare('SELECT COUNT(*) count FROM execution_authorization_child_budgets').get().count, 0)
+  handle.close()
+})
 
 test('valid current card keeps latest market drift as rollback-only market semantics', () => {
   const handle = openAppDatabase({ dbPath: ':memory:' })
@@ -255,30 +265,22 @@ test('authorization stores exact card scopes and keeps allowed signal modes with
   handle.close()
 })
 
-test('real card batch atomically binds child budget to exact authorization card scope', () => {
+test('new card batch is unbound from legacy authorization and budget ledgers', () => {
   const handle = openAppDatabase({ dbPath: ':memory:' })
   const data = fixture(handle.db)
-  const lease = new RuntimeLease({ db: handle.db, leaseKey: 'betting-executor:card-bind', ownerId: 'owner',
-    pid: 1, ttlMs: 60_000, now: () => new Date(NOW) })
-  lease.acquire()
-  authorizeExecution(handle.db, { authorizationId: 'auth-card-bind', currency: 'CNY', amountScale: 0,
-    bettingModes: ['prematch'], cardScopes: [{ cardId: 'card-a', eligibilityVersion: 2 }],
-    maxTotalAmountMinor: 200, confirmation: 'AUTHORIZE CARD BIND' }, { env: ENV, now: () => new Date(NOW) })
-  const store = new BetBatchStore(handle.db, { fencingToken: lease.fencingToken, leaseKey: lease.leaseKey,
-    now: () => new Date(NOW) })
+  const store = new BetBatchStore(handle.db, { now: () => new Date(NOW) })
   const result = store.claimAndCreateCardScopedBatch({
     signalId: data.signal.signalId, signalSnapshot: data.signal, inboxLease: data.inboxLease,
     lockedSelection: data.lockedSelection, cardId: data.card.cardId, cardVersion: data.card.version,
-    cardSnapshot: data.card, bettingMode: 'prematch', authorizationId: 'auth-card-bind',
+    cardSnapshot: data.card, bettingMode: 'prematch',
     eventKey: data.lockedSelection.eventKey, lockedSelectionIdentity: JSON.stringify(data.lockedSelection),
     sourceLeague: '英超', sourceOdds: '0.91', observedAt: NOW, currency: 'CNY', amountScale: 0,
     targetAmountMinor: 100, createdAt: NOW,
-  }, allocation(data.accountId), { fencingToken: lease.fencingToken, marketOnceKey: actualKey(data),
-    authorizationId: 'auth-card-bind', executorOwnerId: lease.ownerId,
-    authorizationOptions: { env: ENV, now: () => new Date(NOW) } })
+  }, allocation(data.accountId), { fencingToken: 1, marketOnceKey: actualKey(data) })
   assert.equal(result.status, 'batch_created')
-  assert.equal(handle.db.prepare('SELECT COUNT(*) count FROM execution_authorization_child_budgets').get().count, 1)
-  assert.equal(handle.db.prepare("SELECT reserved_amount_minor FROM execution_authorizations WHERE authorization_id='auth-card-bind'").get().reserved_amount_minor, 100)
+  assert.equal(handle.db.prepare('SELECT authorization_id FROM bet_batches').get().authorization_id, null)
+  assert.equal(handle.db.prepare('SELECT COUNT(*) count FROM execution_authorizations').get().count, 0)
+  assert.equal(handle.db.prepare('SELECT COUNT(*) count FROM execution_authorization_child_budgets').get().count, 0)
   handle.close()
 })
 
@@ -330,7 +332,7 @@ test('temp SQLite fake provider keeps market ownership per card and exact line w
   assert.deepEqual(await run(cases[3]), { status: 'already-claimed', batchId: first.batchId })
   assert.equal(handle.db.prepare('SELECT COUNT(*) count FROM bet_market_once_claims').get().count, 3)
   assert.equal(handle.db.prepare('SELECT COUNT(*) count FROM bet_batches').get().count, 3)
-  assert.deepEqual({ previewCalls, submitCalls }, { previewCalls: 9, submitCalls: 0 })
+  assert.deepEqual({ previewCalls, submitCalls }, { previewCalls: 3, submitCalls: 0 })
   handle.close()
   fs.rmSync(tempDir, { recursive: true, force: true })
 })
@@ -358,7 +360,7 @@ function authorizedCardContext() {
     authorizationOptions: { env: ENV, now: () => new Date(NOW) } })
   const child = created.children[0]
   const identity = { provider: 'fixture', gid: 'card-1', mode: 'prematch', period: 'full_time',
-    market: 'asian_handicap', line: 'RATIO_RE', side: 'away' }
+    market: 'asian_handicap', lineVariant: 'main', line: '-0.5', side: 'away' }
   const gate = { authorizationId: 'auth-card-b2', cardId: 'card-a', eligibilityVersion: 2,
     bettingMode: 'prematch', leaseKey: lease.leaseKey, executorOwnerId: lease.ownerId,
     fencingToken: lease.fencingToken, batchId: created.batchId, childOrderId: child.childOrderId,
@@ -367,7 +369,7 @@ function authorizedCardContext() {
     capabilityVersion: 'b2-ledger-fixture-v1', capabilityEvidenceId: 'fixture:b2-ledger:offline:v1',
     lockedIdentity: identity, currentIdentity: identity,
     preview: { minStakeMinor: 10, maxStakeMinor: 1000, balanceMinor: 1000,
-      stakeStepMinor: 10, odds: '0.91', line: 'RATIO_RE' } }
+      stakeStepMinor: 10, odds: '0.91', line: '-0.5' } }
   return { handle, data, lease, created, child, gate, prepare,
     cleanup() { handle.close(); fs.rmSync(tempDir, { recursive: true, force: true }) } }
 }

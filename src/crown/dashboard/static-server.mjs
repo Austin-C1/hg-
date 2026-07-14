@@ -9,7 +9,6 @@ import { APP_CONTRACT_VERSION } from '../app/app-contract-version.mjs'
 import { APP_VERSION } from '../app/app-version.mjs'
 import { handleAppApi } from '../app/app-api.mjs'
 import { handleLocalConfigApi } from '../app/local-config-api.mjs'
-import { parseSemver } from '../update/semver.mjs'
 import { readDashboardChanges, readDashboardConfig, readDashboardData } from './dashboard-data.mjs'
 
 const DEFAULT_HOST = '127.0.0.1'
@@ -45,25 +44,6 @@ function sendJson(res, statusCode, payload) {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
   })
-}
-
-function exactObject(value, fields) {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
-    && Object.keys(value).length === fields.length
-    && fields.every((field) => Object.hasOwn(value, field)))
-}
-
-function safeCandidateHealth(value) {
-  return exactObject(value, ['watcher', 'realBetting', 'capability'])
-    && exactObject(value.watcher, ['state'])
-    && exactObject(value.realBetting, ['requested', 'state'])
-    && exactObject(value.capability, ['preview', 'submit', 'reconciliation'])
-    && value.watcher.state === 'stopped'
-    && value.realBetting.requested === false
-    && value.realBetting.state === 'off'
-    && value.capability.preview === 0
-    && value.capability.submit === 0
-    && value.capability.reconciliation === 0
 }
 
 function commaList(value) {
@@ -333,40 +313,7 @@ async function serveApi(req, requestUrl, res, {
   }
 
   if (pathname === '/api/health/update') {
-    const candidateEnv = appOptions.env || {}
-    const configuredInstallationId = appOptions.installationId || candidateEnv.CROWN_INSTALLATION_ID || ''
-    const configuredProbe = String(candidateEnv.CROWN_UPDATE_PROBE_TOKEN || '')
-    const suppliedProbe = String(req.headers['x-crown-update-probe'] || '')
-    const configuredVersion = String(candidateEnv.CROWN_APP_VERSION || '')
-    let versionValid = false
-    try { parseSemver(configuredVersion); versionValid = true } catch {}
-    const enabled = candidateEnv.CROWN_UPDATE_CANDIDATE === '1'
-      && LAUNCHER_TOKEN.test(configuredProbe)
-      && safeEqual(configuredProbe, suppliedProbe)
-      && INSTALLATION_ID.test(configuredInstallationId)
-      && versionValid
-      && typeof appOptions.updateHealthProvider === 'function'
-    if (!enabled) {
-      sendJson(res, 404, { error: 'not-found' })
-      return true
-    }
-    let runtimeStatus
-    try { runtimeStatus = await appOptions.updateHealthProvider() } catch {
-      sendJson(res, 503, { error: 'update-health-unsafe' })
-      return true
-    }
-    if (!safeCandidateHealth(runtimeStatus)) {
-      sendJson(res, 503, { error: 'update-health-unsafe' })
-      return true
-    }
-    sendJson(res, 200, {
-      appId: 'crown-monitor',
-      version: configuredVersion,
-      appContractVersion: APP_CONTRACT_VERSION,
-      installationId: configuredInstallationId,
-      probeToken: configuredProbe,
-      ...runtimeStatus,
-    })
+    sendJson(res, 404, { error: 'not-found' })
     return true
   }
 
@@ -403,10 +350,14 @@ function staticTarget(staticDir, pathname) {
 }
 
 function isSpaRoute(pathname) {
-  return ['/matches', '/default-leagues', '/monitor-account', '/monitor-alerts', '/monitor-settings', '/auto-bet-rules', '/betting-rules', '/betting-accounts', '/operations', '/settings', '/system-update'].includes(pathname)
+  return ['/matches', '/default-leagues', '/monitor-account', '/monitor-alerts', '/monitor-settings', '/auto-bet-rules', '/betting-rules', '/betting-accounts', '/operations', '/settings'].includes(pathname)
 }
 
 async function serveStatic(pathname, res, staticDir) {
+  if (pathname === '/system-update') {
+    send(res, 404, 'Not found', { 'content-type': 'text/plain; charset=utf-8' })
+    return
+  }
   if (pathname === '/favicon.ico') {
     send(res, 204, '')
     return

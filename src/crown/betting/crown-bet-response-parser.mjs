@@ -129,6 +129,8 @@ export function parseCrownPreviewResponseStrict(xml, { expectedFieldSet } = {}) 
   const maxStake = strictPositiveDecimal(strictTag(body, responseFieldSet, 'gold_gmax'), 'gold_gmax', responseFieldSet)
   const odds = strictPositiveDecimal(strictTag(body, responseFieldSet, 'ioratio'), 'ioratio', responseFieldSet)
   const line = strictLine(strictTag(body, responseFieldSet, 'spread'), responseFieldSet)
+  const submitCon = strictTag(body, responseFieldSet, 'con', { required: false })
+  const submitRatio = strictTag(body, responseFieldSet, 'ratio', { required: false })
   const maxCreditRaw = strictTag(body, responseFieldSet, 'maxcredit', { required: false })
   if (envelope.duplicateField) throw strictError('duplicate-preview-response-field', responseFieldSet)
   if (compareExact(minStake, maxStake) > 0) throw strictError('preview-min-exceeds-max', responseFieldSet)
@@ -141,6 +143,8 @@ export function parseCrownPreviewResponseStrict(xml, { expectedFieldSet } = {}) 
     maxStake: evidenced(maxStake, 'gold_gmax'),
     odds: evidenced(odds, 'ioratio'),
     line: evidenced(line, 'spread'),
+    submitCon: submitCon ? { raw: submitCon, exact: submitCon, source: 'con', verified: true } : null,
+    submitRatio: submitRatio ? { raw: submitRatio, exact: submitRatio, source: 'ratio', verified: true } : null,
     maxCreditRaw,
     maxCreditSemantics: 'unverified',
     currency: { value: null, source: 'not-evidenced-in-preview-response', verified: false },
@@ -197,6 +201,48 @@ export function parseCrownSubmitResponse(xml) {
     enumerable: false,
   })
   return result
+}
+
+const SUBMIT_RESULT_FIELDS = Object.freeze(['order_id', 'ticket', 'ticket_id', 'tid', 'w_id'])
+
+export function parseCrownSubmitResponseStrict(xml, { expected = {}, expectedFieldSet, sealReference } = {}) {
+  try {
+    const envelope = strictEnvelope(xml)
+    if (!envelope || envelope.duplicateField) return { kind: 'unknown' }
+    const { body, fields } = envelope
+    if (expectedFieldSet) {
+      const safeFields = normalizedFieldSet(fields.filter((field) => (
+        !['mid', 'username'].includes(field) && !SUBMIT_RESULT_FIELDS.includes(field)
+      )))
+      if (safeFields.length !== normalizedFieldSet(expectedFieldSet).length
+        || safeFields.some((field, index) => field !== normalizedFieldSet(expectedFieldSet)[index])) {
+        return { kind: 'unknown' }
+      }
+    }
+    const code = strictTag(body, fields, 'code')
+    if (code !== '560') return { kind: 'unknown' }
+    for (const [field, expectedValue] of Object.entries({
+      gid: expected.gid,
+      gtype: expected.gtype,
+      wtype: expected.wtype,
+      rtype: expected.rtype,
+      gold: expected.amount,
+      ioratio: expected.odds,
+    })) {
+      if (!String(expectedValue || '') || strictTag(body, fields, field) !== String(expectedValue)) {
+        return { kind: 'unknown' }
+      }
+    }
+    const present = SUBMIT_RESULT_FIELDS.filter((field) => fields.includes(field))
+    if (present.length !== 1) return { kind: 'unknown' }
+    const reference = strictTag(body, fields, present[0])
+    if (!reference || typeof sealReference !== 'function') return { kind: 'unknown' }
+    const providerReferenceCiphertext = sealReference(reference)
+    if (typeof providerReferenceCiphertext !== 'string' || !providerReferenceCiphertext) return { kind: 'unknown' }
+    return { kind: 'accepted', providerReferenceCiphertext }
+  } catch {
+    return { kind: 'unknown' }
+  }
 }
 
 export function parseCrownDangerousStatus(xml) {

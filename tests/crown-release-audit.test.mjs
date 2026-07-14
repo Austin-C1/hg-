@@ -154,6 +154,22 @@ test('release audit rejects every planned runtime-data segment anywhere under sr
   }
 })
 
+test('release audit rejects only the retired src/crown/update tree after rebuilding the manifest', async (t) => {
+  const root = await createArtifact({
+    'current.json': '{"schemaVersion":1,"version":"0.1.0"}\n',
+    'versions/0.1.0/app/src/crown/update/update-service.mjs': 'export const updater = true\n',
+    'versions/0.1.0/app/src/crown/runtime/update-status.mjs': 'export const status = true\n',
+    'versions/0.1.0/app/src/crown/app/system-update-tombstone.mjs': 'export const tombstone = 404\n',
+  })
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const report = await scanReleaseArtifacts({ root })
+  assert.deepEqual(
+    report.findings.filter((finding) => finding.code === 'forbidden-artifact-path').map((finding) => finding.path),
+    ['versions/0.1.0/app/src/crown/update/update-service.mjs'],
+  )
+})
+
 test('release audit segment exceptions are limited to vendor runtime and node_modules trees', async (t) => {
   const root = await createArtifact({
     'current.json': '{"schemaVersion":1,"version":"0.1.0"}\n',
@@ -234,6 +250,34 @@ test('release audit validates every manifested size and sha256', async (t) => {
   const report = await scanReleaseArtifacts({ root })
   assert.equal(report.findings.some((finding) => finding.code === 'manifest-size-mismatch'), true)
   assert.equal(report.findings.some((finding) => finding.code === 'manifest-hash-mismatch'), true)
+})
+
+test('release audit requires every allowlisted launcher asset to exist and be non-empty', async (t) => {
+  const root = await createArtifact({
+    'current.json': '{"schemaVersion":1,"version":"0.1.0"}\n',
+    '启动程序.cmd': '@echo off\r\n',
+    '皇冠抓水投注.ico': Buffer.alloc(0),
+  })
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const report = await scanReleaseArtifacts({
+    root,
+    policy: {
+      launcherFiles: [
+        { source: 'packaging/windows/启动程序.cmd', target: '启动程序.cmd' },
+        { source: 'packaging/windows/launcher/ensure-desktop-shortcut.ps1', target: 'launcher/ensure-desktop-shortcut.ps1' },
+        { source: 'packaging/windows/皇冠抓水投注.ico', target: '皇冠抓水投注.ico' },
+      ],
+    },
+  })
+  assert.equal(report.ok, false)
+  assert.equal(report.findings.some((finding) => (
+    finding.code === 'required-artifact-missing'
+      && finding.path === 'launcher/ensure-desktop-shortcut.ps1'
+  )), true)
+  assert.equal(report.findings.some((finding) => (
+    finding.code === 'required-artifact-empty'
+      && finding.path === '皇冠抓水投注.ico'
+  )), true)
 })
 
 test('release manifest rejects Windows-unsafe paths and case-fold collisions', async (t) => {

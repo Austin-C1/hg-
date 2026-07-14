@@ -51,6 +51,58 @@ function boolToInt(value) {
   return value ? 1 : 0
 }
 
+const WATCHER_PROCESS_STATES = new Set([
+  'running', 'waiting-restart', 'stopped-after-retries', 'manually-stopped', 'stopping',
+])
+
+function boundedUtf8(value, maximumBytes = 2048) {
+  let result = ''
+  for (const character of String(value || '')) {
+    if (Buffer.byteLength(result + character, 'utf8') > maximumBytes) break
+    result += character
+  }
+  return result
+}
+
+function safeProcessTimestamp(value) {
+  if (value === null || value === undefined || value === '') return null
+  const text = String(value)
+  const milliseconds = Date.parse(text)
+  if (!Number.isFinite(milliseconds)) return null
+  return new Date(milliseconds).toISOString() === text ? text : null
+}
+
+function watcherProcessDto(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const processState = WATCHER_PROCESS_STATES.has(value.processState) ? value.processState : 'manually-stopped'
+  const restartAttempt = Number.isSafeInteger(value.restartAttempt) && value.restartAttempt >= 0 && value.restartAttempt <= 3
+    ? value.restartAttempt
+    : 0
+  const exitCode = value.lastExit?.exitCode === null
+    ? null
+    : Number.isSafeInteger(value.lastExit?.exitCode) && value.lastExit.exitCode >= 0
+      ? value.lastExit.exitCode
+      : null
+  const signal = typeof value.lastExit?.signal === 'string' && /^SIG[A-Z0-9]+$/.test(value.lastExit.signal)
+    ? value.lastExit.signal
+    : null
+  const lastExit = value.lastExit && typeof value.lastExit === 'object' && !Array.isArray(value.lastExit)
+    ? {
+        exitCode,
+        signal,
+        exitedAt: safeProcessTimestamp(value.lastExit.exitedAt),
+        stderrSummary: boundedUtf8(value.lastExit.stderrSummary),
+      }
+    : null
+  return {
+    desiredRunning: value.desiredRunning === true,
+    processState,
+    lastExit,
+    restartAttempt,
+    nextRestartAt: safeProcessTimestamp(value.nextRestartAt),
+  }
+}
+
 function intToBool(value) {
   return Boolean(value)
 }
@@ -721,6 +773,21 @@ export function createAppRepository(db, {
   }
 
   return {
+    sealCrownProviderReference(value, { childOrderId, submitAttemptId } = {}) {
+      const reference = String(value || '')
+      const child = String(childOrderId || '').trim()
+      const attempt = String(submitAttemptId || '').trim()
+      if (!reference || !child || !attempt) throw new Error('provider-reference-context')
+      return encryptSecret(reference, {
+        ...secretOptions,
+        context: {
+          purpose: 'crown-provider-reference',
+          childOrderId: child,
+          submitAttemptId: attempt,
+        },
+      })
+    },
+
     getSchemaVersion() {
       return db.prepare("SELECT meta_value FROM app_schema_meta WHERE meta_key = 'schema_contract'").get()?.meta_value || ''
     },
@@ -841,7 +908,6 @@ export function createAppRepository(db, {
       const catalog = buildTodayBettingLeagues({
         db,
         defaultLeagues,
-        now: () => new Date(currentIso()),
       })
       const owners = new Map(db.prepare(`
         SELECT leagues.league_name, cards.card_id, cards.name
@@ -879,7 +945,6 @@ export function createAppRepository(db, {
         const catalog = buildTodayBettingLeagues({
           db,
           defaultLeagues,
-          now: () => new Date(currentIso()),
         })
         const item = normalizeRuleCardCreate(payload, {
           availableLeagueNames: catalog.map((entry) => entry.leagueName),
@@ -921,7 +986,6 @@ export function createAppRepository(db, {
         const catalog = buildTodayBettingLeagues({
           db,
           defaultLeagues,
-          now: () => new Date(currentIso()),
         })
         const item = normalizeRuleCardUpdate(payload, {
           availableLeagueNames: catalog.map((entry) => entry.leagueName),
@@ -1614,7 +1678,7 @@ export function createAppRepository(db, {
       `).all(boundedLimit(limit)).map(mapBetBatch)
     },
 
-    getOperationsSummary() {
+    getOperationsSummary(monitorProcessStatus = null) {
       const serverTime = currentIso()
       const nowMs = Date.parse(serverTime)
       const staleAfterMs = 60_000
@@ -1819,6 +1883,7 @@ export function createAppRepository(db, {
           heartbeatAt: watcherLease?.heartbeat_at || null,
           expiresAt: watcherLease?.expires_at || null,
           fencingToken: Number(watcherLease?.fencing_token || 0),
+          ...(watcherProcessDto(monitorProcessStatus) ? { process: watcherProcessDto(monitorProcessStatus) } : {}),
         },
         runtime: runtimeDto,
         monitorAlerts,
@@ -1899,6 +1964,51 @@ export function createAppRepository(db, {
       const account = mapBettingAccountForExecution(row, secretOptions)
       if (!String(account.password || '')) throw new Error('betting-account-secret')
       return account
+    },
+
+    getCurrentCrownSelectionForExecution(lockedSelection) {
+      if (!lockedSelection || typeof lockedSelection !== 'object' || Array.isArray(lockedSelection)) {
+        throw new TypeError('crown-current-selection-required')
+      }
+      const eventKey = String(lockedSelection.eventKey || '').trim()
+      const selectionIdentity = String(lockedSelection.selectionIdentity || '').trim()
+      if (!/^crown\|football\|gid=[^|\s]+$/.test(eventKey)
+        || !selectionIdentity.startsWith(`${eventKey}|`)) {
+        throw new Error('crown-current-selection-identity')
+      }
+      const row = db.prepare(`
+        SELECT captured_at,snapshot_json
+        FROM monitor_selection_state
+        WHERE event_key=? AND selection_identity=?
+        LIMIT 1
+      `).get(eventKey, selectionIdentity)
+      const latest = db.prepare(`
+        SELECT MAX(captured_at) AS captured_at
+        FROM monitor_selection_state
+        WHERE event_key=?
+      `).get(eventKey)
+      if (!row) throw new Error('crown-current-selection-missing')
+      if (!latest?.captured_at || row.captured_at !== latest.captured_at) {
+        throw new Error('crown-current-selection-stale')
+      }
+      let snapshot
+      try { snapshot = JSON.parse(row.snapshot_json) } catch { throw new Error('crown-current-selection-invalid') }
+      if (snapshot?.provider !== 'crown'
+        || snapshot?.event?.eventKey !== eventKey
+        || snapshot?.selection?.selectionIdentity !== selectionIdentity
+        || snapshot?.selection?.suspended !== false) {
+        throw new Error('crown-current-selection-invalid')
+      }
+      return {
+        provider: 'crown',
+        eventKey,
+        period: String(snapshot.market?.period || ''),
+        marketType: String(snapshot.market?.marketType || ''),
+        lineKey: String(snapshot.market?.lineKey || ''),
+        side: String(snapshot.selection?.side || ''),
+        selectionIdentity,
+        snapshot,
+      }
     },
 
     getBettingAccountForAccessCheck(value) {

@@ -11,27 +11,27 @@
 - 普通删除物理删除卡片并释放联赛，先在同一事务终结未绑定 batch 的 pending/retry/processing inbox；已创建 batch/child 和不可变历史快照不回读卡片，也不因编辑、停用或删除改变。
 - “每日开工完全重置”保留现存卡片与联赛占用，清理 Signal、TG/inbox、card snapshot、batch/child、claim、锁、授权预算、submit/reconciliation/notification 等运行历史，并把真实投注保持为 off。
 - Operations 使用 `ruleCards:{total,enabled,reviewRequired,ownedLeagues}`；不再以固定 prematch/live 投注设置判断 readiness。
-- app/frontend/schema contract 统一为 `dynamic-betting-cards-v1`。canonical Crown preview/submit/reconciliation capability 仍为 `0/0/0`，因此 production 真实网络继续 fail-closed。
+- app/frontend/schema contract 统一为 `dynamic-betting-cards-v1`。当前只开放 exact row `prematch/full_time/asian_handicap/main`，canonical Crown Preview/Submit/Reconciliation capability 为 `1/1/0`；其他 row 与 Reconciliation 继续关闭，真实 runtime 默认 off，仍需通过规则卡、账号、fresh Preview、lease/fence 和单次 Submit 门禁。
 - 下方 C 阶段统一规则、固定投注设置和旧候选执行描述属于历史架构说明；与本节冲突时以本节、当前源码和测试为准。
 
 ## 2026-07-12 C 阶段历史状态（已被动态投注规则卡片契约覆盖）
 
 - C Task 1–11 已完成；最终验证基线为 backend 874/874、syntax 180、frontend 66/66、production build 与 Compose config 通过。
 - 统一监控/真实规则、单盘口一次、顺序多账号部分成交、rejected/unknown 终态、账号暂停排队、持久化全局意图和响应式运维控制台均已实现。
-- canonical Crown capability matrix 仍为 preview/submit/reconciliation `0/0/0`，所以真实 Crown 自动投注继续 fail-closed。
+- canonical Crown capability matrix 在该历史阶段为 preview/submit/reconciliation `0/0/0`，所以当时真实 Crown 自动投注 fail-closed；当前 capability 以顶部 exact row `1/1/0` 为准。
 - 2026-07-12 已按用户确认清除历史赔率抓取和监控回放数据；投注账本、unknown/提交/对账表和协议证据永久保留。
 - schema-v2 正常保存点击重置前的 snapshot/change JSONL；不会自动清理。运维控制台的“每日开工完全重置”会关闭真实投注、停启受管 watcher，并清除点击前的赔率/监控/投注运行状态、幂等锁、pending/unknown、对账、日志、索引、普通缓存和验收产物。账号凭据、登录会话、规则、Telegram、协议证据与运行依赖保留。
 - Dashboard 启动时执行一次 schema/migration；运行时 API、状态刷新和 watcher 状态更新使用轻量 SQLite 连接，不再反复执行全库迁移检查。
 
-## 2026-07-11 B 阶段状态补充
+## 历史：2026-07-11 B 阶段状态补充
 
 - B1 Task 1–9、B2 Task 10–12 已完成代码实现与独立安全复核。
 - 多账号账本、授权预算、durable submit attempt、unknown 恢复、持久对账证据和 Telegram outcome outbox 已实现；最终 backend 749/749、syntax 162、frontend 48/48、build/Compose config 通过。
-- 当前 production Crown capability matrix 的 preview/submit 均为 0；真实提交、自动对账和人工 Crown 结果修正保持 fail-closed。旧 real CLI 已关闭，不是绕过入口。
+- 当时 production Crown capability matrix 的 preview/submit 均为 0；真实提交、自动对账和人工 Crown 结果修正保持 fail-closed。旧 real CLI 已关闭，不是绕过入口；当前 capability 以顶部 exact row `1/1/0` 为准。
 - 尚未执行真实 Crown preview、`FT_bet`、真实 outcome Telegram 或历史诊断 cleanup。下一阶段为 C 正式设计与实施计划。
-- B 阶段详细证据见 `.superpowers/sdd/task-12-report.md` 和 `.superpowers/sdd/progress.md`；下文较早的“真实 CLI 已实现/资金对账未完成”等描述属于历史状态，以本节为准。
+- B 阶段详细证据见 `.superpowers/sdd/task-12-report.md` 和 `.superpowers/sdd/progress.md`；本节及下文较早的“真实 CLI 已实现/资金对账未完成”等描述都属于历史状态，当前状态以文件顶部契约、当前源码和测试为准。
 
-> 文档主体最初基于 2026-07-11 源码整理；顶部“动态投注规则卡片当前权威契约”及其明确覆盖的 current sections 已按 2026-07-12 源码和测试更新。其余带日期的阶段内容只用于了解演进，不能替代顶部契约、当前代码和测试。
+> 文档主体最初基于 2026-07-11 源码整理；顶部“动态投注规则卡片当前权威契约”的 capability 已按 2026-07-14 Task 10 更新为 exact row `1/1/0`。其余带日期的阶段内容只用于了解演进，不能替代顶部契约、当前代码和测试。
 
 ## 1. 文档目的
 
@@ -64,7 +64,7 @@
 | 投注 dry-run | 已实现并有测试 | 发送 `FT_order_view`，写脱敏审计与 SQLite 历史 |
 | 受控真实投注 CLI | 代码已实现 | 需要显式 `--real`、确认词、限额和非 preview-only 规则 |
 | 多账号顺序执行 | 代码已实现 | 按 `betOrder` 顺序执行，任一账号失败即停止 |
-| Dashboard 真实投注控制 | 已实现但能力阻断 | `/operations` 保存全局意图并仅在全部预检通过后受控启动 worker；当前 capability `0/0/0` |
+| Dashboard 真实投注控制 | 已实现，默认停止 | `/operations` 保存全局意图并仅在全部预检通过后受控启动 worker；当前 exact row capability `1/1/0`，其他 row 关闭 |
 | Signal 自动投注链 | 已实现但 fail-closed | watcher 不直接提交；Signal→card inbox→B2 必须经过动态卡片、授权、capability 和 lease/fence |
 | 资金风控与订单对账 | B2 离线实现完成 | durable attempt、unknown 不重投、授权预算、恢复与对账证据已实现；真实 Crown 对账能力仍为 0 |
 
@@ -546,7 +546,7 @@ Telegram 支持：
 - 分开的 `oddsAlert` 与 `betSuccess` bot 配置。
 - API 返回 masked token 状态，不返回明文 token。
 
-schema-v2 sender 只接收持久 Signal。每个渠道在 `monitor_deliveries` 独立记录 pending/retry/sent/dead-letter；网络等待有 timeout，不阻塞下一轮 XML 采集。B2 outcome notification outbox 与 Telegram consumer 已接线；由于真实 submit/reconciliation capability 为 0，本轮没有真实投注结果可发送。
+schema-v2 sender 只接收持久 Signal。每个渠道在 `monitor_deliveries` 独立记录 pending/retry/sent/dead-letter；网络等待有 timeout，不阻塞下一轮 XML 采集。B2 outcome notification outbox 与 Telegram consumer 已接线；在该历史验收轮次，真实 submit/reconciliation capability 当时为 0，因此没有真实投注结果可发送。当前 capability 以文件顶部 exact row `1/1/0` 为准。
 
 ### 7.5 从 Signal 生成投注候选
 
@@ -942,7 +942,7 @@ node scripts/crown-watch.mjs --app-db <db> --runtime-dir data/runtime
 - Monitor account：每 5 秒轻量获取账号 runtime 状态；编辑时避免覆盖表单。
 - 其他配置页：进入页面加载，保存后用 API 返回值刷新。
 
-历史 `betting_rules` 页面曾存在 `enabled=false/previewOnly=true` 且控件不完整的限制；该说明已被动态卡片页面取代。当前卡片启用仍不等于可真实执行：还必须通过 card eligibility、全局意图、账号、authorization、capability 和 lease/fence；当前 capability `0/0/0`，所以真实执行保持阻断。新建投注账号默认仍可能是 `status=disabled`。
+历史 `betting_rules` 页面曾存在 `enabled=false/previewOnly=true` 且控件不完整的限制；该说明已被动态卡片页面取代。当前卡片启用仍不等于可真实执行：还必须通过 card eligibility、全局意图、账号、authorization、capability 和 lease/fence。当前只开放 exact row `prematch/full_time/asian_handicap/main` 的 capability `1/1/0`，其他 row 与 Reconciliation 关闭，真实 runtime 默认 off；新建投注账号默认仍可能是 `status=disabled`。
 
 ## 11. 配置、环境变量与运行文件
 

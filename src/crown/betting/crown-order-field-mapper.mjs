@@ -112,6 +112,11 @@ function marketCode(record) {
 
 const STRICT_PREVIEW_MAPPER_KEYS = ['chose_team', 'gid', 'gtype', 'wtype']
 const STRICT_PREVIEW_WIRE_KEYS = ['chose_team', 'gid', 'gtype', 'langx', 'odd_f_type', 'p', 'ver', 'wtype']
+const STRICT_SUBMIT_WIRE_KEYS = [
+  'autoOdd', 'chose_team', 'con', 'f', 'gid', 'golds', 'gtype', 'imp', 'ioratio',
+  'isRB', 'isYesterday', 'langx', 'odd_f_type', 'p', 'ptype', 'ratio', 'rtype',
+  'timestamp', 'timestamp2', 'ver', 'wtype',
+]
 
 function exactKeys(value, expected) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
@@ -136,7 +141,7 @@ export function buildStrictCrownPreviewFields(record = {}, { capability } = {}) 
   }
   const evidenceId = required(capability.evidenceId, 'missing-crown-preview-evidence')
   const mode = required(record.mode || record.event?.mode, 'missing-crown-preview-mode')
-  if (mode !== 'live') throw new Error('unsupported-crown-preview-mode')
+  if (!['live', 'prematch'].includes(mode)) throw new Error('unsupported-crown-preview-mode')
   const period = required(record.market?.period, 'missing-crown-preview-period')
   const marketType = required(record.market?.marketType, 'missing-crown-preview-market')
   const lineVariant = required(record.market?.lineVariant, 'missing-crown-preview-line-variant')
@@ -164,14 +169,18 @@ export function buildStrictCrownPreviewFields(record = {}, { capability } = {}) 
   if (!exactList(capability.requestFieldSet, STRICT_PREVIEW_WIRE_KEYS)) {
     throw new Error('invalid-crown-preview-request-keys')
   }
-  const expectedWtype = marketType === 'asian_handicap' ? 'RE' : marketType === 'total' ? 'ROU' : ''
+  const expectedWtype = marketType === 'asian_handicap'
+    ? (mode === 'prematch' ? 'R' : 'RE')
+    : marketType === 'total'
+      ? (mode === 'prematch' ? 'OU' : 'ROU')
+      : ''
   if (!expectedWtype || mapperEvidence.wtype !== expectedWtype) {
     throw new Error('crown-preview-capability-mismatch:wtype')
   }
   const choseTeamValue = selectionCode(record).choseTeam
 
   const gid = required(record.event?.ids?.gid || record.event?.eventId, 'missing-crown-gid')
-  const line = required(record.market?.lineKey || record.market?.handicapRaw, 'missing-crown-line')
+  const line = required(record.market?.handicapRaw, 'missing-crown-line')
   const preview = {
     gid,
     gtype: 'FT',
@@ -182,7 +191,7 @@ export function buildStrictCrownPreviewFields(record = {}, { capability } = {}) 
   return {
     operation: 'FT_order_view',
     preview,
-    identity: { gid, mode, period, market: marketType, line, side },
+    identity: { gid, mode, period, market: marketType, lineVariant, line, side },
     capabilityEvidenceId: evidenceId,
   }
 }
@@ -206,6 +215,139 @@ export function buildStrictCrownPreviewWireFields(
   const ver = required(protocolVersion, 'crown-preview-field-source-unproven:ver')
   const wire = { ...preview, langx: defaults.langx, odd_f_type: defaults.odd_f_type, p: defaults.p, ver }
   if (!exactKeys(wire, STRICT_PREVIEW_WIRE_KEYS)) throw new Error('invalid-crown-preview-wire-fields')
+  return wire
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return JSON.stringify(value.map((item) => JSON.parse(stableJson(item))))
+  if (value && typeof value === 'object') {
+    return JSON.stringify(Object.fromEntries(Object.keys(value).sort().map((key) => [key, JSON.parse(stableJson(value[key]))])))
+  }
+  return JSON.stringify(value)
+}
+
+function assertSameIdentity(actual, expected, code) {
+  if (!actual || !expected || stableJson(actual) !== stableJson(expected)) throw new Error(code)
+}
+
+function safeInteger(value, code, { positive = false } = {}) {
+  if (!Number.isSafeInteger(value) || value < (positive ? 1 : 0)) throw new Error(code)
+  return value
+}
+
+function exactPositiveDecimal(value, code) {
+  const text = String(value || '').trim()
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(text) || Number(text) <= 0) throw new Error(code)
+  return text
+}
+
+function exactSignedDecimal(value, code) {
+  const input = String(value ?? '').trim()
+  const match = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/.exec(input)
+  if (!match || (match[3] || '').length > 6) throw new Error(code)
+  const digits = `${match[2]}${match[3] || ''}`.replace(/^0+(?=\d)/, '') || '0'
+  if (BigInt(digits) > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error(code)
+  const fraction = (match[3] || '').replace(/0+$/, '')
+  const zero = /^0+$/.test(digits)
+  return `${match[1] && !zero ? '-' : ''}${match[2]}${fraction ? `.${fraction}` : ''}`
+}
+
+export function buildStrictCrownSubmitWireFields(input = {}, {
+  capability,
+  protocolVersion,
+  protocolVersionEvidence,
+} = {}) {
+  if (!capability || capability.evidenceStatus !== 'verified' || capability.submitAllowed !== true) {
+    throw new Error('unverified-crown-submit-capability')
+  }
+  if (capability.mode !== 'prematch'
+    || capability.period !== 'full_time'
+    || capability.marketType !== 'asian_handicap'
+    || capability.lineVariant !== 'main'
+    || capability.mapperEvidence?.wtype !== 'R') {
+    throw new Error('unsupported-crown-submit-capability')
+  }
+  const lockedIdentity = input.lockedIdentity
+  assertSameIdentity(input.currentIdentity, lockedIdentity, 'crown-submit-identity-drift')
+  if (!lockedIdentity || lockedIdentity.provider !== 'crown'
+    || lockedIdentity.mode !== capability.mode
+    || lockedIdentity.period !== capability.period
+    || lockedIdentity.market !== capability.marketType
+    || lockedIdentity.lineVariant !== capability.lineVariant
+    || !['home', 'away'].includes(lockedIdentity.side)) {
+    throw new Error('crown-submit-identity-drift')
+  }
+
+  const preview = input.preview
+  if (!preview || typeof preview !== 'object' || Array.isArray(preview)) throw new Error('crown-submit-preview-required')
+  if (preview.lockedIdentity !== undefined) {
+    assertSameIdentity(preview.lockedIdentity, lockedIdentity, 'crown-submit-preview-identity-drift')
+  }
+  if (String(preview.line || '') !== String(lockedIdentity.line || '')) throw new Error('crown-submit-line-drift')
+  if (preview.currency !== 'CNY' || preview.amountScale !== 0) throw new Error('crown-submit-money-contract')
+  const minimum = safeInteger(preview.minStakeMinor, 'crown-submit-money-contract', { positive: true })
+  const maximum = safeInteger(preview.maxStakeMinor, 'crown-submit-money-contract', { positive: true })
+  const balance = safeInteger(preview.balanceMinor, 'crown-submit-money-contract')
+  const step = safeInteger(preview.stakeStepMinor, 'crown-submit-money-contract', { positive: true })
+  const amount = safeInteger(input.amountMinor, 'crown-submit-money-contract', { positive: true })
+  if (minimum > maximum || amount < minimum || amount > maximum || amount > balance) {
+    throw new Error('crown-submit-money-contract')
+  }
+  if (step !== 50 || preview.stakeStepProvenance !== 'local-conservative-policy'
+    || amount < 50 || (amount - 50) % 50 !== 0) {
+    throw new Error('crown-submit-local-quantum')
+  }
+  const odds = exactPositiveDecimal(preview.odds, 'crown-submit-odds')
+  const submitCon = exactSignedDecimal(preview.submitCon, 'crown-submit-field-source-unproven:con')
+  const submitRatio = exactSignedDecimal(preview.submitRatio, 'crown-submit-field-source-unproven:ratio')
+
+  const source = String(protocolVersionEvidence?.source || '')
+  if (protocolVersionEvidence?.captured !== true
+    || protocolVersionEvidence?.verified !== true
+    || !['production-login-response', 'production-session-metadata'].includes(source)) {
+    throw new Error('crown-submit-field-source-unproven:ver')
+  }
+  const ver = required(protocolVersion, 'crown-submit-field-source-unproven:ver')
+  const defaults = capability.mapperEvidence?.submitWireDefaults
+  if (!defaults || defaults.p !== 'FT_bet' || defaults.langx !== 'zh-cn'
+    || defaults.odd_f_type !== 'H' || defaults.isRB !== 'N' || defaults.f !== '1R'
+    || defaults.timestamp2 !== ''
+    || Object.hasOwn(defaults, 'con') || Object.hasOwn(defaults, 'ratio')
+    || Object.hasOwn(defaults, 'timestamp')) {
+    throw new Error('crown-submit-wire-defaults-unproven')
+  }
+  if (stableJson(capability.mapperEvidence?.submitWireSources) !== stableJson({
+    con: 'preview-response:con',
+    ratio: 'preview-response:ratio',
+    timestamp: 'request-epoch-ms',
+  })) throw new Error('crown-submit-wire-sources-unproven')
+  const home = lockedIdentity.side === 'home'
+  const timestamp = String(Date.now())
+  if (!/^\d{13}$/.test(timestamp)) throw new Error('crown-submit-timestamp-unavailable')
+  const wire = {
+    autoOdd: defaults.autoOdd,
+    chose_team: home ? 'H' : 'C',
+    con: submitCon,
+    f: defaults.f,
+    gid: required(lockedIdentity.gid, 'missing-crown-gid'),
+    golds: String(amount),
+    gtype: 'FT',
+    imp: defaults.imp,
+    ioratio: odds,
+    isRB: defaults.isRB,
+    isYesterday: defaults.isYesterday,
+    langx: defaults.langx,
+    odd_f_type: defaults.odd_f_type,
+    p: defaults.p,
+    ptype: defaults.ptype,
+    ratio: submitRatio,
+    rtype: home ? 'RH' : 'RC',
+    timestamp,
+    timestamp2: defaults.timestamp2,
+    ver,
+    wtype: 'R',
+  }
+  if (!exactKeys(wire, STRICT_SUBMIT_WIRE_KEYS)) throw new Error('invalid-crown-submit-wire-fields')
   return wire
 }
 

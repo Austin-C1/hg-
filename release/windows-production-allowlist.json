@@ -7,7 +7,8 @@
     { "source": "packaging/windows/首次使用说明.txt", "target": "首次使用说明.txt" },
     { "source": "packaging/windows/launcher/start.ps1", "target": "launcher/start.ps1" },
     { "source": "packaging/windows/launcher/stop.ps1", "target": "launcher/stop.ps1" },
-    { "source": "packaging/windows/launcher/update-bootstrap.ps1", "target": "launcher/update-bootstrap.ps1" }
+    { "source": "packaging/windows/launcher/ensure-desktop-shortcut.ps1", "target": "launcher/ensure-desktop-shortcut.ps1" },
+    { "source": "packaging/windows/皇冠抓水投注.ico", "target": "皇冠抓水投注.ico" }
   ],
   "appFiles": [
     "package.json",
@@ -17,8 +18,7 @@
     "release/windows-production-allowlist.json",
     "scripts/crown-dashboard.mjs",
     "scripts/crown-watch.mjs",
-    "scripts/crown-betting-worker.mjs",
-    "scripts/crown-update-apply.mjs"
+    "scripts/crown-betting-worker.mjs"
   ],
   "appTrees": [
     "src",
@@ -31,11 +31,9 @@
   ],
   "productionDependencies": [
     { "name": "iconv-lite", "version": "0.7.3", "direct": true },
-    { "name": "pend", "version": "1.2.0", "direct": false },
     { "name": "playwright", "version": "1.61.1", "direct": true },
     { "name": "playwright-core", "version": "1.61.1", "direct": false },
-    { "name": "safer-buffer", "version": "2.1.2", "direct": false },
-    { "name": "yauzl", "version": "3.4.0", "direct": true }
+    { "name": "safer-buffer", "version": "2.1.2", "direct": false }
   ],
   "forbiddenArtifactSegments": [
     "tests",
@@ -47,7 +45,8 @@
     "profile",
     "profiles",
     "log",
-    "logs"
+    "logs",
+    "src/crown/update"
   ],
   "forbiddenArtifactExtensions": [
     ".env",

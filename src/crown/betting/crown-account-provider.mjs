@@ -49,6 +49,14 @@ function canonicalLine(value) {
   }).join(' / ')
 }
 
+function exactCnyInteger(value, code) {
+  const text = String(value || '').trim()
+  if (!/^(?:0|[1-9]\d*)$/.test(text)) throw new Error(code)
+  const number = Number(text)
+  if (!Number.isSafeInteger(number)) throw new Error(code)
+  return number
+}
+
 function capabilityInput(lockedSelection) {
   return {
     mode: lockedSelection.mode || lockedSelection.event?.mode,
@@ -92,6 +100,7 @@ function responseIdentity(orderFields, expectedIdentity) {
     mode: requiredText(orderFields.identity?.mode, 'missing-crown-preview-mode'),
     period: requiredText(orderFields.identity?.period, 'missing-crown-preview-period'),
     market: requiredText(orderFields.identity?.market, 'missing-crown-preview-market'),
+    lineVariant: requiredText(orderFields.identity?.lineVariant, 'missing-crown-line-variant'),
     line: requiredText(orderFields.identity?.line, 'missing-crown-line'),
     side: requiredText(orderFields.identity?.side, 'missing-crown-preview-side'),
   }
@@ -99,6 +108,7 @@ function responseIdentity(orderFields, expectedIdentity) {
   if (identity.mode !== expectedIdentity.mode) throw new Error('crown-preview-mode-changed')
   if (identity.period !== expectedIdentity.period) throw new Error('crown-preview-period-changed')
   if (identity.market !== expectedIdentity.market) throw new Error('crown-preview-market-changed')
+  if (identity.lineVariant !== expectedIdentity.lineVariant) throw new Error('crown-preview-line-variant-changed')
   if (identity.line !== expectedIdentity.line) {
     throw new Error('crown-preview-line-identity-changed')
   }
@@ -172,7 +182,7 @@ export class CrownAccountPreviewProvider {
       assertFence: () => this._assertFence(),
       requireVerifiedProtocolVersion: true,
     })
-    const session = authenticated?.session
+    let session = authenticated?.session
     if (
       !session
       || session.accountId !== accountId
@@ -190,6 +200,24 @@ export class CrownAccountPreviewProvider {
     await this.capabilityResolver.assertFieldSets(capability, {
       requestFieldSet: Object.keys(wireFields),
     })
+
+    if (typeof this.loginManager?.fetchFreshExecutionBalance !== 'function') {
+      throw new TypeError('crown-preview-fresh-balance-manager')
+    }
+    const freshBalance = await this.loginManager.fetchFreshExecutionBalance({
+      account,
+      session,
+      logger: this.logger,
+      assertFence: () => this._assertFence(),
+      requireVerifiedProtocolVersion: true,
+    })
+    if (
+      freshBalance?.currency !== 'CNY'
+      || !Number.isSafeInteger(freshBalance?.balanceCny)
+      || freshBalance.balanceCny < 0
+      || !freshBalance.session
+    ) throw new Error('crown-preview-fresh-balance-invalid')
+    session = freshBalance.session
 
     this._assertFence()
     if (typeof this.loginManager?.client?.postForm !== 'function') throw new TypeError('crown-preview-transport')
@@ -218,6 +246,32 @@ export class CrownAccountPreviewProvider {
       responseFieldSet: parsed.responseFieldSet,
     })
     if (parsed.line.exact !== expectedLine) throw new Error('crown-preview-line-changed')
+    const minStakeMinor = exactCnyInteger(parsed.minStake.exact, 'crown-preview-cny-integer-required')
+    const maxStakeMinor = exactCnyInteger(parsed.maxStake.exact, 'crown-preview-cny-integer-required')
+    const submitValue = (value) => /^-?(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(String(value || ''))
+    const exactExecutionRow = capability.key === 'prematch|full_time|asian_handicap|main'
+      && capability.previewAllowed === true
+      && capability.submitAllowed === true
+      && account.currency === 'CNY'
+      && Number.isSafeInteger(account.perBetLimitMinor)
+      && account.perBetLimitMinor >= 50
+      && minStakeMinor === 50
+      && maxStakeMinor === 20000
+      && submitValue(parsed.submitCon?.exact)
+      && submitValue(parsed.submitRatio?.exact)
+    const executionPreview = exactExecutionRow ? Object.freeze({
+      minStakeMinor,
+      maxStakeMinor,
+      stakeStepMinor: 50,
+      stakeStepProvenance: 'local-conservative-policy',
+      odds: parsed.odds.exact,
+      line: parsed.line.exact,
+      submitCon: parsed.submitCon.exact,
+      submitRatio: parsed.submitRatio.exact,
+      currency: 'CNY',
+      amountScale: 0,
+      lockedIdentity,
+    }) : null
     if (typeof this.loginManager?.bettingStoreFor !== 'function') throw new TypeError('crown-preview-session-store')
     const ownedAccount = { ...account, accountId }
     this.loginManager.bettingStoreFor(ownedAccount).saveSession(ownedAccount, {
@@ -234,24 +288,35 @@ export class CrownAccountPreviewProvider {
       responseCode: parsed.code,
       responseFieldSetFingerprint: parsed.responseFieldSetFingerprint,
     })
-    return {
+    const result = {
       status: parsed.ok ? 'previewed' : 'preview-rejected',
       accountId,
       batchId,
       operation: orderFields.operation,
       capabilityEvidenceId: capability.evidenceId,
+      capabilityVersion: CROWN_CAPABILITY_MATRIX_VERSION,
       lockedIdentity,
       preview: parsed,
-      capacityMinor: null,
-      currency: parsed.currency,
-      stakeStep: parsed.stakeStep,
-      realExecutionEligible: false,
-      realExecutionBlockers: [
+      capacityMinor: exactExecutionRow
+        ? Math.min(maxStakeMinor, freshBalance.balanceCny, Number(account.perBetLimitMinor))
+        : null,
+      freshBalanceCny: freshBalance.balanceCny,
+      balanceObservedAt: freshBalance.observedAt,
+      currency: exactExecutionRow
+        ? { value: 'CNY', source: 'account-summary', verified: true }
+        : parsed.currency,
+      stakeStep: exactExecutionRow
+        ? { value: 50, source: 'local-conservative-policy', verified: true }
+        : parsed.stakeStep,
+      realExecutionEligible: exactExecutionRow,
+      realExecutionBlockers: exactExecutionRow ? [] : [
         'preview-capacity-unverified',
         'preview-currency-unverified',
         'preview-stake-step-unverified',
       ],
     }
+    if (executionPreview) result.executionPreview = executionPreview
+    return result
   }
 }
 

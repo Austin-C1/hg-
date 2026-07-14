@@ -19,7 +19,6 @@ export function bettingRoleLeaseKeys({ cwd = process.cwd(), dbPath = DEFAULT_DB_
   return {
     worker: `betting-worker:${suffix}`,
     executor: `betting-executor:${suffix}`,
-    reconciler: `betting-reconciler:${suffix}`,
   }
 }
 
@@ -99,10 +98,10 @@ export function createBettingProcessController({
         const leases = message?.leases
         const owners = leases ? Object.values(leases).map((item) => item?.ownerId) : []
         const valid = message?.type === 'ready' && message.generation === String(token) && message.nonce === nonce
-          && ['worker', 'executor', 'reconciler'].every((role) => leases?.[role]?.leaseKey === expectedKeys[role]
+          && ['worker', 'executor'].every((role) => leases?.[role]?.leaseKey === expectedKeys[role]
             && typeof leases[role].ownerId === 'string' && leases[role].ownerId
             && Number.isSafeInteger(leases[role].fencingToken) && leases[role].fencingToken > 0)
-          && new Set(owners).size === 3
+          && owners.length === 2 && new Set(owners).size === 2
         if (!valid) {
           return finish(processError('betting-worker-ready-invalid'))
         }

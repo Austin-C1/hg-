@@ -551,11 +551,22 @@ CREATE TABLE IF NOT EXISTS bet_child_orders (
   FOREIGN KEY (account_id) REFERENCES betting_accounts(id)
 );
 
+CREATE TABLE IF NOT EXISTS bet_batch_account_usage (
+  batch_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  child_order_id TEXT NOT NULL UNIQUE,
+  first_used_at TEXT NOT NULL,
+  PRIMARY KEY (batch_id, account_id),
+  FOREIGN KEY (batch_id) REFERENCES bet_batches(batch_id) ON DELETE CASCADE,
+  FOREIGN KEY (account_id) REFERENCES betting_accounts(id),
+  FOREIGN KEY (child_order_id) REFERENCES bet_child_orders(child_order_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS bet_submit_attempts (
   submit_attempt_id TEXT PRIMARY KEY
     CHECK (length(submit_attempt_id) > 0),
   child_order_id TEXT NOT NULL,
-  authorization_id TEXT NOT NULL,
+  authorization_id TEXT,
   attempt_ordinal INTEGER NOT NULL
     CHECK (typeof(attempt_ordinal) = 'integer' AND attempt_ordinal IN (1, 2)),
   amount_minor INTEGER NOT NULL
@@ -1516,6 +1527,9 @@ function needsCanonicalRebuild(db, table) {
       || !sql.includes('rule_id IS NULL AND betting_mode IS NOT NULL AND settings_version IS NOT NULL')
       || !sql.includes('card_id IS NOT NULL AND card_version IS NOT NULL')
   }
+  if (table === 'bet_submit_attempts') {
+    return info.get('authorization_id')?.notnull !== 0
+  }
   return info.get('currency')?.dflt_value !== "'CNY'"
     || info.get('amount_scale')?.dflt_value !== '0'
     || info.get('stake_step_minor')?.dflt_value !== '1'
@@ -1570,11 +1584,52 @@ function rebuildCanonicalTable(db, table) {
 function applyCanonicalTableRebuilds(db) {
   const tables = [
     'monitor_alert_settings', 'auto_betting_settings', 'betting_rules', 'betting_accounts', 'bet_batches', 'bet_market_once_claims',
+    'bet_submit_attempts',
   ].filter((table) => needsCanonicalRebuild(db, table))
   if (!tables.length) return
   for (const table of tables) rebuildCanonicalTable(db, table)
   const violation = db.prepare('PRAGMA foreign_key_check').get()
   if (violation) throw new Error(`canonical-rebuild-foreign-key:${violation.table}`)
+}
+
+function backfillBetBatchAccountUsage(db) {
+  db.exec(`
+    INSERT INTO bet_batch_account_usage (
+      batch_id, account_id, child_order_id, first_used_at
+    )
+    SELECT child.batch_id, child.account_id, child.child_order_id, child.created_at
+    FROM bet_child_orders AS child
+    JOIN (
+      SELECT batch_id, account_id, MIN(attempt) AS first_attempt
+      FROM bet_child_orders
+      GROUP BY batch_id, account_id
+    ) AS first
+      ON first.batch_id = child.batch_id
+      AND first.account_id = child.account_id
+      AND first.first_attempt = child.attempt
+    ON CONFLICT(batch_id, account_id) DO UPDATE SET
+      child_order_id = excluded.child_order_id,
+      first_used_at = excluded.first_used_at;
+
+    UPDATE bet_child_orders
+    SET status = 'cancelled',
+        error_code = CASE WHEN error_code = '' THEN 'account-already-used-migration' ELSE error_code END
+    WHERE status IN ('previewing', 'reserved')
+      AND EXISTS (
+        SELECT 1
+        FROM bet_batch_account_usage AS usage
+        WHERE usage.batch_id = bet_child_orders.batch_id
+          AND usage.account_id = bet_child_orders.account_id
+          AND usage.child_order_id <> bet_child_orders.child_order_id
+      );
+
+    DELETE FROM betting_account_locks
+    WHERE child_order_id IN (
+      SELECT child_order_id
+      FROM bet_child_orders
+      WHERE status = 'cancelled' AND error_code = 'account-already-used-migration'
+    );
+  `)
 }
 
 export function defaultDbPath(env = process.env) {
@@ -1677,6 +1732,7 @@ export function openAppDatabase({ dbPath, env = process.env, monitorJson } = {})
     applyExecutionAuthorizationGuards(db)
     applyDataMigrations(db, addedColumns)
     applyCanonicalTableRebuilds(db)
+    backfillBetBatchAccountUsage(db)
     applySeparatedExecutionScopeGuards(db)
     applyAuthorizationScopeGuards(db)
     applyAlertBettingSettingsMigration(db, readLegacyMonitorJson(monitorJson))

@@ -99,6 +99,7 @@ test('app database creates the required SQLite tables', () => {
     'auto_betting_rule_cards',
     'auto_betting_settings',
     'auto_betting_signal_inbox',
+    'bet_batch_account_usage',
     'bet_batches',
     'bet_child_orders',
     'bet_market_once_claims',
@@ -192,6 +193,167 @@ test('app database creates integer money columns and stable betting defaults', (
   assert.equal(leagueNames?.dflt_value, "'[]'")
 
   handle.close()
+})
+
+test('submit attempts allow the new virtual-account execution path without an authorization row', () => {
+  const handle = openAppDatabase({ dbPath: ':memory:' })
+  const authorization = handle.db.prepare('PRAGMA table_info(bet_submit_attempts)').all()
+    .find((row) => row.name === 'authorization_id')
+  assert.equal(authorization?.notnull, 0)
+  handle.close()
+})
+
+test('submit attempt migration preserves authorized history and accepts neutral attempts', () => {
+  const dbPath = tempDbPath()
+  const seeded = openAppDatabase({ dbPath })
+  seeded.db.exec(`
+    INSERT INTO monitor_signals (
+      signal_id,signal_key,strategy_id,strategy_version,status,observed_at,expires_at,payload_json
+    ) VALUES (
+      'migration-signal','migration-signal','migration-test',1,'ready',
+      '2026-07-12T00:00:00.000Z','2026-07-12T00:05:00.000Z','{}'
+    );
+    INSERT INTO betting_rules (id,name,enabled,currency,amount_scale,target_amount_minor,created_at,updated_at)
+    VALUES ('migration-rule','migration rule',1,'CNY',0,20,'2026-07-12T00:00:00.000Z','2026-07-12T00:00:00.000Z');
+    INSERT INTO betting_accounts (
+      id,label,username,status,allocation_status,per_bet_limit_minor,currency,amount_scale,
+      stake_step_minor,created_at,updated_at
+    ) VALUES (
+      'migration-account','migration account','migration-account','enabled','enabled',100,'CNY',0,
+      1,'2026-07-12T00:00:00.000Z','2026-07-12T00:00:00.000Z'
+    );
+    INSERT INTO execution_authorizations (
+      authorization_id,currency,amount_scale,rule_ids_json,max_total_amount_minor,
+      hard_cap_amount_minor,valid_from,expires_at,status,created_at,updated_at
+    ) VALUES (
+      'migration-authorization','CNY',0,'["migration-rule"]',100,100,
+      '2026-07-12T00:00:00.000Z','2026-07-12T00:01:00.000Z','expired',
+      '2026-07-12T00:00:00.000Z','2026-07-12T00:00:00.000Z'
+    );
+    INSERT INTO bet_batches (
+      batch_id,signal_id,rule_id,authorization_id,event_key,locked_selection_identity,
+      currency,amount_scale,target_amount_minor,reserved_amount_minor,unfilled_amount_minor,status,created_at
+    ) VALUES (
+      'migration-batch','migration-signal','migration-rule','migration-authorization','event','identity',
+      'CNY',0,20,20,0,'submitting','2026-07-12T00:00:00.000Z'
+    );
+    INSERT INTO bet_child_orders (
+      child_order_id,batch_id,account_id,attempt,requested_amount_minor,
+      preview_min_stake_minor,preview_max_stake_minor,preview_balance_minor,
+      preview_stake_step_minor,preview_odds,submit_attempt_id,submit_prepared_at,status,created_at
+    ) VALUES (
+      'migration-child','migration-batch','migration-account',1,20,1,100,100,1,'0.91',
+      'migration-submit-authorized','2026-07-12T00:00:00.000Z','submit_prepared','2026-07-12T00:00:00.000Z'
+    );
+    INSERT INTO bet_submit_attempts (
+      submit_attempt_id,child_order_id,authorization_id,attempt_ordinal,amount_minor,fencing_token,
+      capability_version,capability_evidence_id,preview_odds,locked_identity_json,preview_snapshot_json,
+      status,prepared_at,created_at,updated_at
+    ) VALUES (
+      'migration-submit-authorized','migration-child','migration-authorization',1,20,1,
+      'migration-v1','migration-evidence','0.91','{"provider":"fixture"}','{}',
+      'submit_prepared','2026-07-12T00:00:00.000Z','2026-07-12T00:00:00.000Z','2026-07-12T00:00:00.000Z'
+    );
+  `)
+  seeded.close()
+
+  const legacy = new DatabaseSync(dbPath)
+  const currentSql = legacy.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='bet_submit_attempts'").get().sql
+  const legacySql = currentSql
+    .replace('CREATE TABLE bet_submit_attempts', 'CREATE TABLE bet_submit_attempts__legacy_not_null')
+    .replace('authorization_id TEXT,', 'authorization_id TEXT NOT NULL,')
+  assert.match(legacySql, /authorization_id TEXT NOT NULL/)
+  legacy.exec('PRAGMA foreign_keys=OFF')
+  legacy.exec('DROP TRIGGER bet_submit_attempts_immutable_update')
+  legacy.exec('DROP TRIGGER bet_submit_attempts_immutable_delete')
+  legacy.exec('DROP TRIGGER bet_submit_attempts_initial_status')
+  legacy.exec('DROP TRIGGER bet_submit_attempts_status_transition')
+  legacy.exec('DROP INDEX bet_submit_attempts_child_status_idx')
+  legacy.exec(legacySql)
+  legacy.exec('INSERT INTO bet_submit_attempts__legacy_not_null SELECT * FROM bet_submit_attempts')
+  legacy.exec('DROP TABLE bet_submit_attempts')
+  legacy.exec('ALTER TABLE bet_submit_attempts__legacy_not_null RENAME TO bet_submit_attempts')
+  legacy.exec('PRAGMA foreign_keys=ON')
+  legacy.close()
+
+  const migrated = openAppDatabase({ dbPath })
+  const authorizationColumn = migrated.db.prepare('PRAGMA table_info(bet_submit_attempts)').all()
+    .find((row) => row.name === 'authorization_id')
+  assert.equal(authorizationColumn?.notnull, 0)
+  assert.equal(migrated.db.prepare(`SELECT authorization_id FROM bet_submit_attempts
+    WHERE submit_attempt_id='migration-submit-authorized'`).get().authorization_id, 'migration-authorization')
+  assert.deepEqual({ ...migrated.db.prepare(`SELECT batch_id,account_id,child_order_id
+    FROM bet_batch_account_usage WHERE batch_id='migration-batch'`).get() }, {
+    batch_id: 'migration-batch', account_id: 'migration-account', child_order_id: 'migration-child',
+  })
+  migrated.db.prepare(`INSERT INTO bet_submit_attempts (
+    submit_attempt_id,child_order_id,authorization_id,attempt_ordinal,amount_minor,fencing_token,
+    capability_version,capability_evidence_id,preview_odds,locked_identity_json,preview_snapshot_json,
+    status,prepared_at,created_at,updated_at
+  ) VALUES (
+    'migration-submit-neutral','migration-child',NULL,2,20,1,
+    'migration-v1','migration-evidence','0.91','{"provider":"fixture"}','{}',
+    'submit_prepared','2026-07-12T00:00:01.000Z','2026-07-12T00:00:01.000Z','2026-07-12T00:00:01.000Z'
+  )`).run()
+  assert.equal(migrated.db.prepare("SELECT authorization_id FROM bet_submit_attempts WHERE submit_attempt_id='migration-submit-neutral'").get().authorization_id, null)
+  assert.throws(() => migrated.db.prepare(`UPDATE bet_submit_attempts SET amount_minor=21
+    WHERE submit_attempt_id='migration-submit-neutral'`).run(), /bet-submit-attempt-immutable/)
+  assert.deepEqual(migrated.db.prepare('PRAGMA foreign_key_check').all(), [])
+  migrated.close()
+})
+
+test('account-usage migration cancels only duplicate unsent children and keeps the first historical use', () => {
+  const dbPath = tempDbPath()
+  const seeded = openAppDatabase({ dbPath })
+  seeded.db.exec(`
+    INSERT INTO monitor_signals (
+      signal_id,signal_key,strategy_id,strategy_version,status,observed_at,expires_at,payload_json
+    ) VALUES ('usage-signal','usage-key','migration-test',1,'ready',
+      '2026-07-13T00:00:00.000Z','2026-07-13T00:05:00.000Z','{}');
+    INSERT INTO betting_rules (id,name,currency,amount_scale,target_amount_minor,created_at,updated_at)
+    VALUES ('usage-rule','usage rule','CNY',0,100,'2026-07-13T00:00:00.000Z','2026-07-13T00:00:00.000Z');
+    INSERT INTO betting_accounts (
+      id,label,username,status,allocation_status,per_bet_limit_minor,currency,amount_scale,
+      stake_step_minor,created_at,updated_at
+    ) VALUES ('usage-account','usage account','usage-account','enabled','enabled',100,'CNY',0,1,
+      '2026-07-13T00:00:00.000Z','2026-07-13T00:00:00.000Z');
+    INSERT INTO bet_batches (
+      batch_id,signal_id,rule_id,currency,amount_scale,target_amount_minor,
+      reserved_amount_minor,accepted_amount_minor,unfilled_amount_minor,status,created_at
+    ) VALUES ('usage-batch','usage-signal','usage-rule','CNY',0,100,40,40,20,'submitting',
+      '2026-07-13T00:00:00.000Z');
+    INSERT INTO bet_child_orders (
+      child_order_id,batch_id,account_id,attempt,requested_amount_minor,
+      preview_min_stake_minor,preview_max_stake_minor,preview_balance_minor,
+      preview_stake_step_minor,preview_odds,status,resolved_at,created_at
+    ) VALUES
+      ('usage-first','usage-batch','usage-account',1,40,1,100,100,1,'0.88','accepted',
+        '2026-07-13T00:00:01.000Z','2026-07-13T00:00:00.000Z'),
+      ('usage-duplicate','usage-batch','usage-account',2,40,1,100,100,1,'0.88','reserved','',
+        '2026-07-13T00:00:02.000Z');
+    INSERT INTO betting_account_locks (
+      account_id,child_order_id,batch_id,status,fencing_token,acquired_at,updated_at
+    ) VALUES ('usage-account','usage-duplicate','usage-batch','reserved',1,
+      '2026-07-13T00:00:02.000Z','2026-07-13T00:00:02.000Z');
+  `)
+  seeded.close()
+
+  const migrated = openAppDatabase({ dbPath })
+  assert.deepEqual({ ...migrated.db.prepare(`SELECT batch_id,account_id,child_order_id
+    FROM bet_batch_account_usage WHERE batch_id='usage-batch'`).get() }, {
+    batch_id: 'usage-batch',
+    account_id: 'usage-account',
+    child_order_id: 'usage-first',
+  })
+  assert.deepEqual(migrated.db.prepare(`SELECT child_order_id,status,error_code
+    FROM bet_child_orders WHERE batch_id='usage-batch' ORDER BY attempt`).all().map((row) => ({ ...row })), [
+    { child_order_id: 'usage-first', status: 'accepted', error_code: '' },
+    { child_order_id: 'usage-duplicate', status: 'cancelled', error_code: 'account-already-used-migration' },
+  ])
+  assert.equal(migrated.db.prepare(`SELECT COUNT(*) AS count FROM betting_account_locks
+    WHERE account_id='usage-account'`).get().count, 0)
+  assert.deepEqual(migrated.db.prepare('PRAGMA foreign_key_check').all(), [])
+  migrated.close()
 })
 
 test('app database migrates configured rule leagues into the dedicated JSON column', () => {
@@ -447,6 +609,7 @@ test('app database enforces betting uniqueness, foreign keys, locks, and amount 
   }
 
   assert.equal(uniqueColumns('bet_batches').includes('signal_id,rule_id'), true)
+  assert.equal(uniqueColumns('bet_batch_account_usage').includes('batch_id,account_id'), true)
   assert.equal(uniqueColumns('betting_rule_leagues').includes('league_name'), true)
 
   const lockAccount = handle.db.prepare('PRAGMA table_info(betting_account_locks)').all()
@@ -461,6 +624,11 @@ test('app database enforces betting uniqueness, foreign keys, locks, and amount 
       'signal_id->monitor_signals.signal_id',
     ],
     bet_child_orders: ['account_id->betting_accounts.id', 'batch_id->bet_batches.batch_id'],
+    bet_batch_account_usage: [
+      'account_id->betting_accounts.id',
+      'batch_id->bet_batches.batch_id',
+      'child_order_id->bet_child_orders.child_order_id',
+    ],
     execution_authorization_child_budgets: [
       'account_id->betting_accounts.id',
       'authorization_id->execution_authorizations.authorization_id',

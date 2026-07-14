@@ -478,6 +478,129 @@ function directArgs(runtimeDir, dbPath) {
   }
 }
 
+test('trusted login, chk_login, and validated get_game_list refresh proofs while failures do not', async () => {
+  const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-v2-login-proof-'))
+  const dbPath = path.join(runtimeDir, 'crown.sqlite')
+  const proofs = []
+  const stateStore = openMonitorStateStore({ dbPath })
+  stateStore.recordTrustedLoginProof = (input) => { proofs.push(input); return { recorded: true, ...input } }
+  const auditStore = new JsonlV2AuditStore({
+    snapshotsPath: path.join(runtimeDir, 's.jsonl'),
+    changesPath: path.join(runtimeDir, 'c.jsonl'),
+  })
+  const account = { id: 'mon_primary', username: 'owner', password: 'secret', loginUrl: 'https://fixture.example.com' }
+  const args = { ...directArgs(runtimeDir, dbPath), loginTest: true }
+
+  await runDirectApiWatch(args, {
+    stats: createWatcherStats(),
+    configState: { current: disabledRuntimeConfig(), args },
+    logger: { log() {}, error() {} },
+    monitorAccount: account,
+  }, {
+    stateStore,
+    auditStore,
+    now: () => '2026-07-13T01:00:00.000Z',
+    apiLoginManager: {
+      async ensureLogin() {
+        return {
+          ok: true,
+          loginMethod: '接口登录',
+          xmlVerified: true,
+          sessionVerified: true,
+          finishedAt: '2026-07-13T01:00:00.000Z',
+        }
+      },
+    },
+    updateLoginResult() {},
+  })
+  assert.deepEqual(proofs.map((proof) => proof.source), ['login', 'chk_login', 'get_game_list'])
+  assert.equal(proofs.every((proof) => proof.accountId === 'mon_primary'), true)
+
+  proofs.length = 0
+  const failedStateStore = { recordTrustedLoginProof(input) { proofs.push(input) }, close() {} }
+  await runDirectApiWatch(args, {
+    stats: createWatcherStats(),
+    configState: { current: disabledRuntimeConfig(), args },
+    logger: { log() {}, error() {} },
+    monitorAccount: account,
+  }, {
+    stateStore: failedStateStore,
+    auditStore: { close() {} },
+    apiLoginManager: {
+      async ensureLogin() {
+        return { ok: false, loginMethod: '接口登录', xmlVerified: false, sessionVerified: false }
+      },
+    },
+    updateLoginResult() {},
+  })
+  assert.deepEqual(proofs, [])
+})
+
+test('direct poll records get_game_list proof only after authoritative XML is accepted', async () => {
+  const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-v2-list-proof-'))
+  const dbPath = path.join(runtimeDir, 'crown.sqlite')
+  const stateStore = openMonitorStateStore({ dbPath })
+  const proofs = []
+  const originalProof = stateStore.recordTrustedLoginProof?.bind(stateStore)
+  stateStore.recordTrustedLoginProof = (input) => {
+    proofs.push(input)
+    return originalProof ? originalProof(input) : { recorded: false }
+  }
+  const auditStore = new JsonlV2AuditStore({ snapshotsPath: path.join(runtimeDir, 's.jsonl'), changesPath: path.join(runtimeDir, 'c.jsonl') })
+  const account = { id: 'mon_primary', loginUrl: 'https://fixture.example.com', consecutiveFailures: 0 }
+  const common = {
+    stats: createWatcherStats(),
+    configState: { current: disabledRuntimeConfig() },
+    logger: { log() {}, error() {} },
+    monitorAccount: account,
+    stateStore,
+    auditStore,
+    loadMonitorAccount: () => account,
+    loadTrackedMatches: () => [],
+    updateMonitorAccount() {},
+  }
+  try {
+    const accepted = await runDirectApiPollOnce({ ...directArgs(runtimeDir, dbPath), maxGameMore: 0 }, {
+      ...common,
+      now: () => '2026-07-13T01:01:00.000Z',
+      createPollId: () => 'proof-ok',
+      apiLoginManager: {
+        async fetchFootballToday() {
+          return {
+            text: listXml,
+            requestScope: { endpointKind: 'get_game_list', showtype: 'today', rtype: 'r', filter: 'MIX' },
+            session: { uid: 'trusted-session' },
+          }
+        },
+        async fetchFootballGameMore() { throw new Error('details should not be selected') },
+      },
+    })
+    assert.equal(accepted.ok, true)
+    assert.deepEqual(proofs.map((proof) => proof.source), ['get_game_list'])
+
+    proofs.length = 0
+    const rejected = await runDirectApiPollOnce({ ...directArgs(runtimeDir, dbPath), maxGameMore: 0 }, {
+      ...common,
+      now: () => '2026-07-13T01:02:00.000Z',
+      createPollId: () => 'proof-failed',
+      apiLoginManager: {
+        async fetchFootballToday() {
+          return {
+            text: '<serverresponse><game><GID>1001</GID>',
+            requestScope: { endpointKind: 'get_game_list', showtype: 'today' },
+            session: { uid: 'untrusted-session' },
+          }
+        },
+      },
+    })
+    assert.equal(rejected.ok, false)
+    assert.deepEqual(proofs, [])
+  } finally {
+    stateStore.close()
+    auditStore.close()
+  }
+})
+
 test('finite direct watcher wiring shares poll scope, chains rotated detail sessions, writes v2 paths, and closes state', async () => {
   const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-v2-wiring-'))
   const dbPath = path.join(runtimeDir, 'crown.sqlite')

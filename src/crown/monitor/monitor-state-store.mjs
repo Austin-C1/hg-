@@ -33,6 +33,7 @@ const SENSITIVE_KEY = new Set([
 ])
 const RAW_TRANSPORT_KEY = new Set(['body', 'rawbody', 'rawproviderresponse', 'rawresponse', 'rawxml', 'responsebody', 'storagestate'])
 const CANDIDATE_STATUSES = new Set(['eligible', 'skipped'])
+const TRUSTED_LOGIN_PROOF_SOURCES = new Set(['login', 'chk_login', 'get_game_list'])
 const SNAPSHOT_FIELDS = ['provider', 'sport', 'mode', 'capturedAt', 'source', 'event', 'market', 'selection', 'warnings']
 const EVENT_FIELDS = [
   'eventId',
@@ -70,6 +71,7 @@ const MARKET_FIELDS = [
   'providerMarketId',
   'marketType',
   'period',
+  'lineVariant',
   'handicapRaw',
   'handicap',
   'ratioField',
@@ -414,6 +416,28 @@ export class MonitorStateStore {
 
   assertOpen() {
     if (this.closed) throw new Error('monitor state store is closed')
+  }
+
+  recordTrustedLoginProof({ source, accountId, observedAt } = {}) {
+    this.assertOpen()
+    const normalizedSource = requiredString(source, 'source')
+    if (!TRUSTED_LOGIN_PROOF_SOURCES.has(normalizedSource)) {
+      throw new TypeError('source must be login, chk_login, or get_game_list')
+    }
+    const normalizedAccountId = requiredString(accountId, 'accountId')
+    requiredCanonicalTimestamp(observedAt, 'observedAt')
+    const result = this.db.prepare(`
+      UPDATE monitor_accounts
+      SET last_login_result_at = ?, updated_at = ?
+      WHERE id = ?
+        AND (last_login_result_at = '' OR last_login_result_at < ?)
+    `).run(observedAt, observedAt, normalizedAccountId, observedAt)
+    return {
+      recorded: result.changes === 1,
+      source: normalizedSource,
+      accountId: normalizedAccountId,
+      observedAt,
+    }
   }
 
   getScope(scopeKey) {
