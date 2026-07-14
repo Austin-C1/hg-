@@ -6,6 +6,7 @@ import path from 'node:path'
 import test from 'node:test'
 
 import {
+  analyzeCrownProtocolCapture,
   buildCrownExecutionEvidenceCandidate,
   writeCrownExecutionEvidenceCandidate,
 } from '../scripts/crown-betting-protocol-analyze.mjs'
@@ -149,12 +150,169 @@ function build(captureDir, options = {}) {
   })
 }
 
-function removeCaptureRow(captureDir, visibility, index) {
-  const file = path.join(captureDir, visibility, visibility === 'private' ? 'raw-network.jsonl' : 'redacted-network.jsonl')
+function removeCaptureRow(captureDir, kind, index) {
+  const file = path.join(captureDir, 'private', `${kind}-network.jsonl`)
   const rows = fs.readFileSync(file, 'utf8').trimEnd().split(/\r?\n/)
   rows.splice(index, 1)
   fs.writeFileSync(file, `${rows.join('\n')}\n`, 'utf8')
 }
+
+const ANALYZER_PUBLIC_OUTPUTS = Object.freeze([
+  'protocol-evidence.json',
+  'protocol-summary.json',
+  'protocol-map.md',
+  'protocol-catalog.safe.json',
+  'static-wire-evidence.safe.json',
+  'eight-direction-candidates.safe.json',
+])
+
+function assertNoAnalyzerPublicOutputs(captureDir) {
+  for (const name of ANALYZER_PUBLIC_OUTPUTS) {
+    assert.equal(fs.existsSync(path.join(captureDir, 'public', name)), false, name)
+  }
+}
+
+function writeHistoricalLegacyManifest(captureDir) {
+  fs.writeFileSync(path.join(captureDir, 'public', 'manifest.json'), `${JSON.stringify({
+    generatedAt: '2026-07-14T00:00:00.000Z',
+    url: 'https://offline.invalid',
+    profile: 'data/crown-profile',
+    allowOddsClick: false,
+    allowStakeFill: false,
+    allowRealSubmit: false,
+    maxStake: 0,
+  })}\n`, 'utf8')
+}
+
+test('default protocol store run ids do not collide within one second', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-protocol-store-'))
+  const first = createProtocolStore({ rootDir: root })
+  const second = createProtocolStore({ rootDir: root })
+  assert.notEqual(first.runDir, second.runDir)
+})
+
+test('protocol store rejects unsafe public manifests', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-protocol-store-'))
+  const store = createProtocolStore({ rootDir: root })
+  assert.throws(() => store.writeManifest({
+    scenario: 'discover', url: 'https://offline.invalid/private?uid=secret',
+  }), /unsafe-crown-protocol-evidence/)
+  assert.doesNotThrow(() => store.writeManifest({
+    schemaVersion: 'crown-protocol-capture-manifest-v2',
+    scenario: 'discover', submitPolicy: 'block-at-route',
+  }))
+})
+
+test('legacy raw and redacted captures remain analyzable without new recorder ordinals', () => {
+  const captureDir = createCapture()
+  fs.renameSync(
+    path.join(captureDir, 'private', 'redacted-network.jsonl'),
+    path.join(captureDir, 'public', 'redacted-network.jsonl'),
+  )
+  writeHistoricalLegacyManifest(captureDir)
+  const result = analyzeCrownProtocolCapture(captureDir, { hmacKey: HMAC_KEY, legacyLayout: true })
+
+  assert.equal(result.recordCount, baseRecords().length)
+  assert.equal(result.safeArtifacts, false)
+  assert.equal(fs.existsSync(path.join(captureDir, 'public', 'protocol-evidence.json')), true)
+})
+
+test('modern analyzer validates the private raw and redacted pair before writing safe artifacts', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-modern-capture-'))
+  const store = createProtocolStore({ rootDir: root, runId: 'modern' })
+  store.append({
+    captureRunId: 'modern', direction: 'discover', sessionGeneration: 'generation',
+    seq: 1, eventOrdinal: 1, type: 'request', method: 'GET', resourceType: 'fetch',
+    url: 'https://offline.invalid/list.json', headers: {}, postData: '',
+  })
+  const redacted = path.join(store.privateDir, 'redacted-network.jsonl')
+  const row = JSON.parse(fs.readFileSync(redacted, 'utf8'))
+  fs.writeFileSync(redacted, `${JSON.stringify({ ...row, method: 'POST' })}\n`)
+
+  assert.throws(() => analyzeCrownProtocolCapture(store.runDir, {
+    hmacKey: HMAC_KEY,
+  }), /redaction-pair-mismatch/)
+  assertNoAnalyzerPublicOutputs(store.runDir)
+})
+
+test('modern analyzer requires a complete private pair and never uses the legacy public fallback', async (t) => {
+  function createModernRun(runId) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-modern-private-pair-'))
+    const store = createProtocolStore({ rootDir: root, runId })
+    store.append({
+      captureRunId: runId, direction: 'discover', sessionGeneration: 'generation',
+      seq: 1, eventOrdinal: 1, type: 'request', method: 'GET', resourceType: 'fetch',
+      url: 'https://offline.invalid/list.json', headers: {}, postData: '',
+    })
+    return store
+  }
+
+  await t.test('v2 manifest cannot fall back to public redacted JSONL', () => {
+    const store = createModernRun('v2-public-fallback')
+    store.writeManifest({
+      schemaVersion: 'crown-protocol-capture-manifest-v2',
+      scenario: 'discover', submitPolicy: 'block-at-route',
+    })
+    fs.renameSync(
+      path.join(store.privateDir, 'redacted-network.jsonl'),
+      path.join(store.publicDir, 'redacted-network.jsonl'),
+    )
+
+    assert.throws(() => analyzeCrownProtocolCapture(store.runDir, {
+      hmacKey: HMAC_KEY,
+    }), /(?:modern-layout-incomplete|capture-files-unavailable)/)
+    assertNoAnalyzerPublicOutputs(store.runDir)
+  })
+
+  await t.test('private redacted without raw is a modern signal', () => {
+    const store = createModernRun('private-redacted-only')
+    fs.rmSync(path.join(store.privateDir, 'raw-network.jsonl'))
+
+    assert.throws(() => analyzeCrownProtocolCapture(store.runDir, {
+      hmacKey: HMAC_KEY,
+    }), /(?:modern-layout-incomplete|capture-files-unavailable)/)
+    assertNoAnalyzerPublicOutputs(store.runDir)
+  })
+
+  await t.test('stripped private pair without manifest cannot downgrade to legacy', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-modern-stripped-pair-'))
+    const store = createProtocolStore({ rootDir: root, runId: 'stripped-private-pair' })
+    store.append({
+      direction: 'discover', seq: 1, type: 'request', method: 'GET', resourceType: 'fetch',
+      url: 'https://offline.invalid/list.json', headers: {}, postData: '',
+    })
+
+    assert.throws(() => analyzeCrownProtocolCapture(store.runDir, {
+      hmacKey: HMAC_KEY,
+    }), /modern-layout-incomplete/)
+    assertNoAnalyzerPublicOutputs(store.runDir)
+  })
+})
+
+test('modern analyzer rejects incomplete recorder metadata instead of silently treating it as legacy', () => {
+  for (const [runId, removeFields] of [
+    ['partial-modern', ['eventOrdinal']],
+    ['manifest-modern', ['eventOrdinal', 'captureRunId', 'sessionGeneration']],
+  ]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-modern-layout-'))
+    const store = createProtocolStore({ rootDir: root, runId })
+    const record = {
+      captureRunId: runId, direction: 'discover', sessionGeneration: 'generation',
+      seq: 1, eventOrdinal: 1, type: 'request', method: 'GET', resourceType: 'fetch',
+      url: 'https://offline.invalid/list.json', headers: {}, postData: '',
+    }
+    for (const field of removeFields) delete record[field]
+    store.append(record)
+    store.writeManifest({
+      schemaVersion: 'crown-protocol-capture-manifest-v2',
+      scenario: 'discover', submitPolicy: 'block-at-route',
+    })
+
+    assert.throws(() => analyzeCrownProtocolCapture(store.runDir, {
+      hmacKey: HMAC_KEY,
+    }), /crown-protocol-catalog:modern-layout-incomplete/)
+  }
+})
 
 test('builds a public-safe accepted candidate from one exact offline attempt', () => {
   const captureDir = createCapture()
@@ -361,15 +519,35 @@ test('fails closed when direct submit response identity is missing or drifts', a
 test('fails closed when raw and public capture rows are not one-to-one', async (t) => {
   await t.test('raw capture is missing one row', () => {
     const captureDir = createCapture()
-    removeCaptureRow(captureDir, 'private', 2)
+    removeCaptureRow(captureDir, 'raw', 2)
     assert.throws(() => build(captureDir), /redaction-pair-missing/)
   })
 
-  await t.test('public capture is missing one row', () => {
+  await t.test('private redacted capture is missing one row', () => {
     const captureDir = createCapture()
-    removeCaptureRow(captureDir, 'public', 2)
+    removeCaptureRow(captureDir, 'redacted', 2)
     assert.throws(() => build(captureDir), /redaction-pair-missing/)
   })
+})
+
+test('stores raw and redacted rows privately while preserving the legacy accepted candidate', () => {
+  const captureDir = createCapture()
+  const privateRedacted = path.join(captureDir, 'private', 'redacted-network.jsonl')
+  const publicRedacted = path.join(captureDir, 'public', 'redacted-network.jsonl')
+
+  assert.equal(fs.existsSync(privateRedacted), true)
+  assert.equal(fs.existsSync(publicRedacted), false)
+  const privateCandidate = build(captureDir)
+
+  fs.renameSync(privateRedacted, publicRedacted)
+  writeHistoricalLegacyManifest(captureDir)
+  const legacyCandidate = build(captureDir, { legacyLayout: true })
+  assert.deepEqual(legacyCandidate, privateCandidate)
+  assert.deepEqual([
+    verifyCrownCapabilityMatrix().allowedPreviewCount,
+    verifyCrownCapabilityMatrix().allowedSubmitCount,
+    verifyCrownCapabilityMatrix().allowedReconciliationCount,
+  ], [1, 1, 0])
 })
 
 test('fails closed when response pairing or request/response order drifts', async (t) => {
@@ -441,7 +619,7 @@ test('fails closed on unsafe pairing, duplicate fields, drift, truncation, and m
   const cases = [
     ['redaction pair mismatch', () => {
       const dir = createCapture()
-      const file = path.join(dir, 'public', 'redacted-network.jsonl')
+      const file = path.join(dir, 'private', 'redacted-network.jsonl')
       const rows = fs.readFileSync(file, 'utf8').trim().split(/\r?\n/).map(JSON.parse)
       rows[2].method = 'GET'
       fs.writeFileSync(file, `${rows.map(JSON.stringify).join('\n')}\n`)

@@ -861,8 +861,17 @@ test('analyzer emits no origin, private path, or raw sample body', () => {
     status: 200, classification: { stage: 'preview' },
     responseBody: '<serverresponse><code>501</code><secret_field>must-not-leak</secret_field></serverresponse>',
   })}\n`)
+  fs.writeFileSync(path.join(publicDir, 'manifest.json'), JSON.stringify({
+    generatedAt: '2026-07-14T00:00:00.000Z',
+    url: 'https://offline.invalid',
+    profile: 'data/crown-profile',
+    allowOddsClick: false,
+    allowStakeFill: false,
+    allowRealSubmit: false,
+    maxStake: 0,
+  }))
 
-  const result = spawnSync(process.execPath, ['scripts/crown-betting-protocol-analyze.mjs', root], {
+  const result = spawnSync(process.execPath, ['scripts/crown-betting-protocol-analyze.mjs', root, '--legacy-layout'], {
     cwd: path.resolve('.'), encoding: 'utf8',
   })
   assert.equal(result.status, 0, result.stderr)

@@ -7,6 +7,8 @@ import {
   redactBody,
   redactUrl,
   parseBody,
+  parseJsonRejectDuplicateKeys,
+  projectCrownProtocolShape,
 } from '../src/crown/betting-protocol/capture-redaction.mjs'
 
 test('protocol evidence rejects credentials, raw bodies, tickets, and absolute paths', () => {
@@ -94,4 +96,98 @@ test('parseBody preserves duplicate form fields so exact classifiers can reject 
   assert.deepEqual(parseBody('p=FT_order_view&gid=1&gid=2'), {
     p: 'FT_order_view', gid: ['1', '2'],
   })
+})
+
+test('strict JSON duplicate-key scan preserves native semantics without recursive depth limits', () => {
+  const depth = 10_000
+  const source = `${'['.repeat(depth)}0${']'.repeat(depth)}`
+  const parsed = parseJsonRejectDuplicateKeys(source)
+  let cursor = parsed
+  for (let index = 0; index < depth; index += 1) cursor = cursor[0]
+  assert.equal(cursor, 0)
+
+  assert.throws(
+    () => parseJsonRejectDuplicateKeys('{"a":1,"\\u0061":2}'),
+    (error) => error?.code === 'DUPLICATE_JSON_KEY' && error.duplicateKey === 'a',
+  )
+})
+
+test('structural projection removes dynamic and sensitive values while binding the full shape', () => {
+  const projected = projectCrownProtocolShape({
+    p: 'FT_order_view', gid: 'dynamic-gid', odds: 0.96, suspended: false,
+    uid: 'private-uid', nested: { line: '-0.5' },
+  }, {
+    hmacKey: Buffer.alloc(32, 9), domain: 'test/request/v1',
+  })
+
+  assert.deepEqual(projected.fields, [
+    { name: 'gid', type: 'string' },
+    { name: 'nested', type: 'object' },
+    { name: 'nested.line', type: 'string' },
+    { name: 'odds', type: 'number' },
+    { name: 'p', type: 'string' },
+    { name: 'suspended', type: 'boolean' },
+  ])
+  assert.equal(projected.excludedSensitiveFieldCount, 1)
+  assert.match(projected.fullFieldSetBinding, /^hmac-sha256:[a-f0-9]{64}$/)
+  const serialized = JSON.stringify(projected)
+  for (const forbidden of ['dynamic-gid', 'private-uid', 'FT_order_view', '-0.5', '0.96']) {
+    assert.equal(serialized.includes(forbidden), false)
+  }
+  assert.doesNotThrow(() => assertSafeCrownProtocolEvidence(projected))
+})
+
+test('WebSocket string and Buffer projections retain only shape, bucket, and HMAC', () => {
+  const text = projectCrownProtocolShape('private-websocket-text', {
+    hmacKey: Buffer.alloc(32, 9), domain: 'test/websocket/v1',
+  })
+  const binary = projectCrownProtocolShape(Buffer.from('private-websocket-buffer'), {
+    hmacKey: Buffer.alloc(32, 9), domain: 'test/websocket/v1',
+  })
+
+  assert.deepEqual(Object.keys(text).sort(), ['fullFieldSetBinding', 'lengthBucket', 'valueType'])
+  assert.equal(text.valueType, 'string')
+  assert.equal(binary.valueType, 'buffer')
+  assert.match(binary.fullFieldSetBinding, /^hmac-sha256:[a-f0-9]{64}$/)
+  assert.equal(JSON.stringify([text, binary]).includes('private-websocket'), false)
+})
+
+test('structural projection folds dynamic object keys without publishing IDs', () => {
+  const projected = projectCrownProtocolShape({
+    8878933: { odds: '0.97' },
+    'event-123456': { line: '-0.5' },
+    '123e4567-e89b-12d3-a456-426614174000': { side: 'home' },
+  }, { hmacKey: Buffer.alloc(32, 9), domain: 'test/dynamic-map/v1' })
+  const serialized = JSON.stringify(projected)
+
+  assert.equal(projected.dynamicFieldNameCount, 3)
+  assert.ok(projected.fields.some((field) => field.name === '[*]'))
+  assert.ok(projected.fields.some((field) => field.name === '[*].odds'))
+  for (const forbidden of ['8878933', 'event-123456', '123e4567-e89b-12d3-a456-426614174000']) {
+    assert.equal(serialized.includes(forbidden), false)
+  }
+})
+
+test('safe evidence rejects raw URL, origin, body, Buffer, and false HMAC bindings', () => {
+  for (const value of [
+    { url: '/transform.php' },
+    { origin: 'offline.invalid' },
+    { body: 'private' },
+    { path: '/transform.php' },
+    { frame: Buffer.from('private') },
+    { endpointPath: 'https://offline.invalid/transform.php' },
+    { endpointPath: '/transform.php?uid=private' },
+    { endpointPath: '/api/private-user-alpha/secret-token-value' },
+    { sourceBinding: `sha256:${'a'.repeat(64)}` },
+    { runBinding: `hmac-sha256:${'a'.repeat(63)}` },
+    { identityBinding: 'plaintext' },
+  ]) {
+    assert.throws(() => assertSafeCrownProtocolEvidence(value), /unsafe-crown-protocol-evidence/)
+  }
+  assert.doesNotThrow(() => assertSafeCrownProtocolEvidence({
+    endpointPath: '/transform.php',
+    sourceBinding: `hmac-sha256:${'a'.repeat(64)}`,
+    runBinding: `hmac-sha256:${'b'.repeat(64)}`,
+    identityBinding: `hmac-sha256:${'c'.repeat(64)}`,
+  }))
 })

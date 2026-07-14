@@ -1,14 +1,22 @@
 #!/usr/bin/env node
-import { createHash, createHmac } from 'node:crypto'
+import { createHash, createHmac, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { classifyProtocolRecord } from '../src/crown/betting-protocol/protocol-classifier.mjs'
+import { readOrCreateLocalSecretKey } from '../src/crown/app/app-secret.mjs'
+import {
+  CROWN_BROWSER_TARGETS,
+  classifyProtocolRecord,
+  classifyProtocolWebSocketFrame,
+} from '../src/crown/betting-protocol/protocol-classifier.mjs'
 import {
   assertSafeCrownProtocolEvidence,
+  isCrownPublicEndpointPath,
   parseBody,
-  redactBody,
+  parseJsonRejectDuplicateKeys,
+  projectCrownProtocolShape,
+  redactCapturedBody,
   redactHeaders,
   redactUrl,
 } from '../src/crown/betting-protocol/capture-redaction.mjs'
@@ -56,6 +64,34 @@ const HMAC_DOMAINS = Object.freeze({
   record: 'crown-execution-evidence/record/v1',
   watcher: 'crown-execution-evidence/watcher/v1',
 })
+const CATALOG_RECORD_TYPES = new Set([
+  'request', 'response', 'requestfailed', 'redirect', 'route-decision', 'request-blocked',
+  'websocket-open', 'websocket-send', 'websocket-receive', 'websocket-error', 'websocket-close',
+  'websocket-route-decision',
+  'market-unavailable',
+])
+const CATALOG_SENSITIVE_FIELD = /(?:secret|user(?:name)?|pass(?:word)?|pwd|token|cookie|session|uid|ticket|auth(?:orization)?|csrf|xsrf|jwt|signature|sign|order[_-]?id|account|member|provider|reference|\bmid\b|\btid\b|w_id)/i
+const CATALOG_KNOWN_SENSITIVE_FIELDS = new Set([
+  'secret', 'username', 'user', 'password', 'passwd', 'pwd', 'token', 'cookie',
+  'session', 'uid', 'ticket', 'ticket_id', 'authorization', 'auth', 'csrf', 'xsrf',
+  'jwt', 'signature', 'sign', 'order_id', 'account', 'member', 'provider', 'reference',
+  'mid', 'tid', 'w_id', 'set-cookie',
+])
+const STATIC_WIRE_VALUE_ALLOWLIST = Object.freeze({
+  FT_order_view: Object.freeze([{ field: 'p', value: 'FT_order_view' }]),
+  FT_bet: Object.freeze([{ field: 'p', value: 'FT_bet' }]),
+})
+const CATALOG_PUBLIC_OUTPUTS = Object.freeze([
+  'protocol-catalog.safe.json',
+  'eight-direction-candidates.safe.json',
+  'static-wire-evidence.safe.json',
+])
+const ANALYZER_PUBLIC_OUTPUTS = Object.freeze([
+  'protocol-evidence.json',
+  'protocol-summary.json',
+  'protocol-map.md',
+  ...CATALOG_PUBLIC_OUTPUTS,
+])
 
 function stable(value) {
   if (Array.isArray(value)) return value.map(stable)
@@ -70,7 +106,9 @@ function fingerprint(value) {
 }
 
 function readJsonl(file) {
-  return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line))
+  return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map((line) => (
+    parseJsonRejectDuplicateKeys(line)
+  ))
 }
 
 function executionFail(reason) {
@@ -192,7 +230,9 @@ function xmlEvidence(parsed, expectedFields, {
 
 function parseJsonlBytes(bytes, reason) {
   try {
-    return bytes.toString('utf8').split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line))
+    return bytes.toString('utf8').split(/\r?\n/).filter(Boolean).map((line) => (
+      parseJsonRejectDuplicateKeys(line)
+    ))
   } catch {
     executionFail(reason)
   }
@@ -203,32 +243,47 @@ function redactedProtocolRecord(record) {
     ...record,
     url: record.url ? redactUrl(record.url) : record.url,
     headers: redactHeaders(record.headers || {}),
-    postData: record.postData ? redactBody(parseBody(record.postData)) : undefined,
-    responseBody: record.responseBody ? redactBody(parseBody(record.responseBody)) : undefined,
+    postData: record.postData ? redactCapturedBody(record.postData, record.headers) : undefined,
+    responseBody: record.responseBody ? redactCapturedBody(record.responseBody, record.headers) : undefined,
   }
 }
 
-function readCapturePair(captureDir) {
+function readCapturePair(captureDir, { layout = 'modern', requireModernMetadata = false } = {}) {
   let rawBytes
-  let publicBytes
+  let redactedBytes
   try {
     rawBytes = fs.readFileSync(path.join(captureDir, 'private', 'raw-network.jsonl'))
-    publicBytes = fs.readFileSync(path.join(captureDir, 'public', 'redacted-network.jsonl'))
+    const privateRedacted = path.join(captureDir, 'private', 'redacted-network.jsonl')
+    const legacyPublicRedacted = path.join(captureDir, 'public', 'redacted-network.jsonl')
+    const redactedFile = layout === 'legacy' ? legacyPublicRedacted : privateRedacted
+    redactedBytes = fs.readFileSync(redactedFile)
   } catch {
+    if (layout === 'modern') catalogFail('modern-layout-incomplete')
     executionFail('capture-files-unavailable')
   }
   const rawRecords = parseJsonlBytes(rawBytes, 'raw-capture-invalid')
-  const publicRecords = parseJsonlBytes(publicBytes, 'redacted-capture-invalid')
-  if (rawRecords.length === 0 || rawRecords.length !== publicRecords.length) executionFail('redaction-pair-missing')
+  const redactedRecords = parseJsonlBytes(redactedBytes, 'redacted-capture-invalid')
+  if (layout === 'modern' && requireModernMetadata && (
+    rawRecords.length === 0
+    || redactedRecords.length === 0
+    || !rawRecords.every(completeModernRecorderRecord)
+    || !redactedRecords.every(completeModernRecorderRecord)
+  )) catalogFail('modern-layout-incomplete')
+  if (rawRecords.length === 0 || rawRecords.length !== redactedRecords.length) executionFail('redaction-pair-missing')
   for (let index = 0; index < rawRecords.length; index += 1) {
     const raw = rawRecords[index]
-    const redacted = publicRecords[index]
+    const redacted = redactedRecords[index]
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)
       || stableJson(redactedProtocolRecord(raw)) !== stableJson(redacted)) {
       executionFail('redaction-pair-mismatch')
     }
   }
-  return { rawBytes, records: rawRecords.map((record, index) => ({ record, index })) }
+  return {
+    rawBytes,
+    rawRecords,
+    redactedRecords,
+    records: rawRecords.map((record, index) => ({ record, index })),
+  }
 }
 
 function requestBody(entry) {
@@ -345,8 +400,10 @@ function derivedCapability(submit, watcher) {
 
 function endpointKind(record) {
   try {
-    const name = path.posix.basename(new URL(record.url).pathname).replace(/\.[^.]+$/, '')
-    return /^[a-z0-9_-]{1,64}$/i.test(name) ? name : 'other'
+    const pathname = new URL(record.url, 'https://relative.invalid').pathname
+    if (pathname === '/transform.php') return 'transform'
+    if (pathname === '/transform_nl.php') return 'transform_nl'
+    return 'other'
   } catch {
     return 'other'
   }
@@ -365,10 +422,32 @@ function bodyObject(value) {
   } catch { return {} }
 }
 
+function safeStructureBodyObject(value) {
+  const strictJson = catalogJsonPayload(value)
+  if (strictJson.isJson) {
+    return strictJson.value && typeof strictJson.value === 'object' && !Array.isArray(strictJson.value)
+      ? strictJson.value
+      : {}
+  }
+  const parsed = parseBody(value)
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
+  return {}
+}
+
+function safeFieldName(field) {
+  const text = String(field)
+  return !/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(text)
+    || /^\d+$/.test(text)
+    || /^[a-f0-9]{8}-[a-f0-9-]{27,}$/i.test(text)
+    || /\d{4,}/.test(text)
+    ? '[*]'
+    : text
+}
+
 function safeFieldSet(fields, { envelope = '' } = {}) {
   return [...new Set(fields.map(String).filter((field) => (
     field && field !== envelope && !SENSITIVE_FIELD.test(field)
-  )))].sort()
+  )).map(safeFieldName))].sort()
 }
 
 function xmlOpeningFields(value) {
@@ -376,6 +455,7 @@ function xmlOpeningFields(value) {
 }
 
 function responseFieldSafety(value) {
+  catalogJsonPayload(value)
   const fields = xmlOpeningFields(value).filter((field) => field !== 'serverresponse')
   return {
     fields,
@@ -429,8 +509,868 @@ function linkageTagFor(records, context, key) {
   return `hmac-sha256:${createHmac('sha256', key).update(payload).digest('hex')}`
 }
 
+function catalogFail(reason) {
+  throw new Error(`crown-protocol-catalog:${reason}`)
+}
+
+function catalogHmacKey(value) {
+  const key = Buffer.isBuffer(value)
+    ? Buffer.from(value)
+    : (value instanceof Uint8Array ? Buffer.from(value) : Buffer.from(String(value ?? ''), 'utf8'))
+  if (key.length < 32) catalogFail('hmac-key-too-short')
+  return key
+}
+
+function catalogBinding(key, domain, value) {
+  const hmac = createHmac('sha256', key)
+  hmac.update(String(domain), 'utf8')
+  hmac.update(Buffer.from([0]))
+  hmac.update(stableJson(value), 'utf8')
+  return `hmac-sha256:${hmac.digest('hex')}`
+}
+
+function catalogEndpointDescriptor(rawUrl, key) {
+  let pathname
+  try {
+    pathname = new URL(String(rawUrl || ''), 'https://relative.invalid').pathname
+    if (!/^\/(?:[^?#\s]*)$/.test(pathname) || pathname.includes('..')) catalogFail('unsafe-endpoint-path')
+  } catch (error) {
+    if (String(error?.message || '').startsWith('crown-protocol-catalog:')) throw error
+    catalogFail('unsafe-endpoint-path')
+  }
+  const normalized = pathname || '/'
+  const segments = normalized.split('/').filter(Boolean)
+  const extension = path.posix.extname(normalized).slice(1).toLowerCase()
+  const extensionClass = ['php', 'json', 'xml', 'html'].includes(extension)
+    ? extension
+    : (extension ? 'other' : 'none')
+  return {
+    endpointPath: isCrownPublicEndpointPath(normalized) ? normalized : '/[redacted]',
+    endpointPathAllowlisted: isCrownPublicEndpointPath(normalized),
+    endpointShape: { segmentCount: segments.length, extensionClass },
+    endpointPathBinding: catalogBinding(key, 'crown-protocol-catalog/endpoint-path/v1', [normalized]),
+  }
+}
+
+function catalogParams(value) {
+  const output = {}
+  for (const [field, child] of new URLSearchParams(String(value || '')).entries()) {
+    if (Object.hasOwn(output, field)) catalogFail('duplicate-field')
+    output[field] = child
+  }
+  return output
+}
+
+function catalogCheckFields(value) {
+  if (!value || typeof value !== 'object') return
+  if (Array.isArray(value)) {
+    for (const child of value) catalogCheckFields(child)
+    return
+  }
+  for (const [field, child] of Object.entries(value)) {
+    if (CATALOG_SENSITIVE_FIELD.test(field) && !CATALOG_KNOWN_SENSITIVE_FIELDS.has(field.toLowerCase())) {
+      catalogFail('unknown-sensitive-field')
+    }
+    catalogCheckFields(child)
+  }
+}
+
+function catalogXmlValues(value) {
+  const text = String(value || '')
+  const matches = [...text.matchAll(/<([A-Za-z_][\w.-]*)\b[^>]*>([^<]*)<\/\1>/g)]
+  if (!matches.length) return null
+  const output = {}
+  for (const match of matches) {
+    const field = match[1]
+    if (field === 'serverresponse') continue
+    const child = decodeXml(match[2]).trim()
+    if (!Object.hasOwn(output, field)) output[field] = child
+    else if (Array.isArray(output[field])) output[field].push(child)
+    else output[field] = [output[field], child]
+  }
+  catalogCheckFields(output)
+  return output
+}
+
+function catalogJsonPayload(value) {
+  if (typeof value !== 'string') return { isJson: false, value: null }
+  const text = String(value)
+  try {
+    return { isJson: true, value: parseJsonRejectDuplicateKeys(text) }
+  } catch (error) {
+    if (error?.code === 'DUPLICATE_JSON_KEY') catalogFail('duplicate-field')
+    if (/^\s*[\[{]/.test(text)) catalogFail('json-invalid')
+    return { isJson: false, value: null }
+  }
+}
+
+function catalogPayload(value) {
+  if (value === undefined || value === null || value === '') return {}
+  if (Buffer.isBuffer(value) || value instanceof Uint8Array) return Buffer.from(value)
+  if (value && typeof value === 'object') {
+    if (Array.isArray(value)) return value
+    catalogCheckFields(value)
+    return value
+  }
+  const text = String(value)
+  if (/^\s*</.test(text)) return catalogXmlValues(text) || text
+  const strictJson = catalogJsonPayload(text)
+  if (strictJson.isJson) {
+    catalogCheckFields(strictJson.value)
+    return strictJson.value
+  }
+  if (/[=&]/.test(text)) {
+    const parsed = catalogParams(text)
+    catalogCheckFields(parsed)
+    return parsed
+  }
+  return text
+}
+
+function catalogRequestPayload(record) {
+  let requestUrl
+  try {
+    requestUrl = new URL(String(record.url || ''), 'https://relative.invalid')
+  } catch {
+    catalogFail('unsafe-request-url')
+  }
+  const query = catalogParams(requestUrl.search)
+  const body = catalogPayload(record.postData)
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Buffer.isBuffer(body)) {
+    return Object.keys(query).length ? query : body
+  }
+  for (const field of Object.keys(body)) {
+    if (Object.hasOwn(query, field)) catalogFail('duplicate-field')
+  }
+  const merged = { ...query, ...body }
+  catalogCheckFields(merged)
+  return merged
+}
+
+function catalogFunctionName(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+  const value = payload.p
+  if (value === undefined) return null
+  if (typeof value !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value)) {
+    catalogFail('unsafe-function-name')
+  }
+  return value
+}
+
+function catalogTransport(record) {
+  const raw = String(record.resourceType || '').toLowerCase()
+  if (String(record.method || '').toUpperCase() === 'POST' && raw === 'document') return 'form'
+  if (['xhr', 'fetch', 'document'].includes(raw)) return raw
+  return raw && /^[a-z-]{1,32}$/.test(raw) ? raw : 'other'
+}
+
+function catalogStatusClass(status) {
+  if (!Number.isInteger(status)) return 'none'
+  if (status >= 200 && status < 300) return 'success'
+  if (status >= 300 && status < 400) return 'redirect'
+  if (status >= 400 && status < 500) return 'client-error'
+  if (status >= 500 && status < 600) return 'server-error'
+  return 'other'
+}
+
+function catalogRecordRun(record, captureId) {
+  const run = String(record.captureRunId || captureId || '').trim()
+  if (!run) catalogFail('run-id-unavailable')
+  return run
+}
+
+function rawWebSocketRouteClassification(decision) {
+  if (decision.source === 'url') {
+    return classifyProtocolRecord({
+      type: 'request', method: 'GET', url: decision.url, postData: '',
+    })
+  }
+  if (decision.source !== 'frame') return null
+  if (decision.payloadKind === 'binary') {
+    if (decision.postData !== undefined) return null
+    return classifyProtocolWebSocketFrame({ url: decision.url, payload: null })
+  }
+  if (decision.payloadKind !== 'text' || typeof decision.postData !== 'string') return null
+  return classifyProtocolWebSocketFrame({
+    url: decision.url, payload: decision.postData,
+  })
+}
+
+function validatedWebSocketRouteClassification(decision) {
+  const continued = decision.decision === 'continued'
+  const blocked = decision.decision === 'blocked'
+  if ((!continued && !blocked)
+    || decision.dispatchCount !== (continued ? 1 : 0)
+    || !['url', 'frame'].includes(decision.source)
+    || typeof decision.url !== 'string'
+    || !decision.url) return null
+
+  const classification = rawWebSocketRouteClassification(decision)
+  if (!classification) return null
+  if (decision.source === 'url') {
+    return classification.stage === 'submit' && blocked && decision.dispatchCount === 0
+      ? classification
+      : null
+  }
+
+  if (decision.classification?.stage !== classification.stage) return null
+  const stage = classification?.stage
+  if (!STAGES.has(stage)) return null
+  if (decision.payloadKind === 'binary') {
+    return blocked && stage === 'unknown' && decision.dispatchCount === 0
+      ? classification
+      : null
+  }
+  if (['monitor', 'preview'].includes(stage)) {
+    return continued && decision.dispatchCount === 1 ? classification : null
+  }
+  return blocked && decision.dispatchCount === 0 ? classification : null
+}
+
+function catalogValidatedGroups(records, captureId) {
+  if (!Array.isArray(records)) catalogFail('records-invalid')
+  const ordinalsByRun = new Map()
+  const recordsByRun = new Map()
+  const groups = new Map()
+  for (const record of records) {
+    if (!record || typeof record !== 'object' || Array.isArray(record)) catalogFail('record-invalid')
+    if (!CATALOG_RECORD_TYPES.has(String(record.type || ''))) catalogFail('record-type-unsupported')
+    const run = catalogRecordRun(record, captureId)
+    if (!Number.isSafeInteger(record.eventOrdinal) || record.eventOrdinal < 1) catalogFail('event-ordinal-invalid')
+    const ordinals = ordinalsByRun.get(run) || new Set()
+    if (ordinals.has(record.eventOrdinal)) catalogFail('duplicate-event-ordinal')
+    ordinals.add(record.eventOrdinal)
+    ordinalsByRun.set(run, ordinals)
+    const runRecords = recordsByRun.get(run) || []
+    runRecords.push(record)
+    recordsByRun.set(run, runRecords)
+    if (!Number.isSafeInteger(record.seq) || record.seq < 1) catalogFail('sequence-invalid')
+    const key = `${run}\u0000${record.seq}`
+    const group = groups.get(key) || { run, seq: record.seq, records: [] }
+    group.records.push(record)
+    groups.set(key, group)
+  }
+  for (const group of groups.values()) {
+    group.records.sort((left, right) => left.eventOrdinal - right.eventOrdinal)
+    const count = (type) => group.records.filter((record) => record.type === type).length
+    if (count('request') > 1) catalogFail('duplicate-request')
+    if (count('response') > 1) catalogFail('duplicate-response')
+    if (count('route-decision') + count('request-blocked') > 1) catalogFail('duplicate-route-decision')
+    if (count('websocket-open') > 1) catalogFail('duplicate-websocket-open')
+    const httpLifecycle = group.records.some((record) => [
+      'request', 'response', 'requestfailed', 'redirect', 'route-decision', 'request-blocked',
+    ].includes(record.type))
+    const socketLifecycle = group.records.some((record) => [
+      'websocket-open', 'websocket-send', 'websocket-receive', 'websocket-error', 'websocket-close',
+    ].includes(record.type))
+    const websocketRouteDecision = group.records.some((record) => record.type === 'websocket-route-decision')
+    if (httpLifecycle && socketLifecycle) catalogFail('transport-sequence-conflict')
+    if (websocketRouteDecision && (httpLifecycle || socketLifecycle || group.records.length !== 1)) {
+      catalogFail('transport-sequence-conflict')
+    }
+    if (websocketRouteDecision) {
+      const [decision] = group.records
+      const classification = validatedWebSocketRouteClassification(decision)
+      if (!classification) catalogFail('websocket-route-decision-invalid')
+      group.websocketRouteClassification = classification
+    }
+    if (httpLifecycle && count('request') !== 1) catalogFail('orphan-http-lifecycle')
+    if (socketLifecycle && count('websocket-open') !== 1) catalogFail('orphan-websocket-lifecycle')
+    if (httpLifecycle) {
+      const request = group.records.find((record) => record.type === 'request')
+      const routeDecision = group.records.find((record) => (
+        ['route-decision', 'request-blocked'].includes(record.type)
+      ))
+      if (routeDecision?.type === 'route-decision') {
+        const continued = routeDecision.decision === 'continued'
+        const blocked = routeDecision.decision === 'blocked'
+        if ((!continued && !blocked)
+          || routeDecision.dispatchCount !== (continued ? 1 : 0)) {
+          catalogFail('route-decision-invalid')
+        }
+      }
+      if (routeDecision?.type === 'request-blocked'
+        && ((routeDecision.decision && routeDecision.decision !== 'blocked')
+          || (routeDecision.dispatchCount !== undefined && routeDecision.dispatchCount !== 0))) {
+        catalogFail('route-decision-invalid')
+      }
+      for (const record of group.records) {
+        if (record === request) continue
+        if (record.eventOrdinal <= request.eventOrdinal) catalogFail('lifecycle-order')
+        if (record.method && String(record.method).toUpperCase() !== String(request.method).toUpperCase()) {
+          catalogFail('lifecycle-correlation')
+        }
+        if (record.url && String(record.url) !== String(request.url)) catalogFail('lifecycle-correlation')
+        if (record.postData) {
+          const requestPayload = catalogRequestPayload(request)
+          const lifecyclePayload = catalogRequestPayload(record)
+          if (catalogFunctionName(requestPayload) !== catalogFunctionName(lifecyclePayload)
+            || stableJson(Object.keys(requestPayload || {}).sort()) !== stableJson(Object.keys(lifecyclePayload || {}).sort())) {
+            catalogFail('lifecycle-correlation')
+          }
+        }
+      }
+    }
+  }
+  for (const runRecords of recordsByRun.values()) {
+    const frameEvidence = websocketFrameEvidence(runRecords)
+    if (frameEvidence.decisionInvalid || frameEvidence.correlationInvalid) {
+      catalogFail('websocket-frame-evidence-invalid')
+    }
+  }
+  return [...groups.values()].sort((left, right) => (
+    left.records[0].eventOrdinal - right.records[0].eventOrdinal
+  ))
+}
+
+function withoutBindings(value) {
+  if (Array.isArray(value)) return value.map(withoutBindings)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value)
+      .filter(([key]) => !String(key).toLowerCase().endsWith('binding'))
+      .map(([key, child]) => [key, withoutBindings(child)]))
+  }
+  return value
+}
+
+function catalogGroupEntry(group, key) {
+  const lifecycle = group.records.map((record) => (
+    record.type === 'request-blocked' ? 'route-decision' : record.type
+  ))
+  const open = group.records.find((record) => record.type === 'websocket-open')
+  const websocketRouteDecision = group.records.find((record) => record.type === 'websocket-route-decision')
+  if (websocketRouteDecision) {
+    const classification = group.websocketRouteClassification
+    return {
+      ...catalogEndpointDescriptor(websocketRouteDecision.url, key),
+      functionName: null,
+      method: 'WEBSOCKET',
+      transport: 'websocket',
+      stage: STAGES.has(classification.stage) ? classification.stage : 'candidate',
+      lifecycle: ['websocket-route-decision'],
+      sequenceRelation: 'independent-route-decision',
+      routeOutcome: websocketRouteDecision.decision === 'continued' ? 'continued' : 'blocked',
+      dispatchCount: websocketRouteDecision.dispatchCount === 1 ? 1 : 0,
+    }
+  }
+  if (open) {
+    const frames = group.records
+      .filter((record) => ['websocket-send', 'websocket-receive'].includes(record.type))
+      .map((record) => {
+        const rawFrame = record.payload?.type === 'Buffer'
+          && Array.isArray(record.payload.data)
+          && record.payload.data.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)
+          ? Buffer.from(record.payload.data)
+          : record.payload
+        const shape = projectCrownProtocolShape(rawFrame, {
+          hmacKey: key, domain: `crown-protocol-catalog/websocket/${record.type}/v1`,
+        })
+        return {
+          direction: record.type === 'websocket-send' ? 'send' : 'receive',
+          valueType: shape.valueType,
+          lengthBucket: shape.lengthBucket,
+          frameBinding: shape.fullFieldSetBinding,
+        }
+      })
+    return {
+      ...catalogEndpointDescriptor(open.url, key),
+      functionName: null,
+      method: 'WEBSOCKET',
+      transport: 'websocket',
+      stage: 'candidate',
+      lifecycle,
+      sequenceRelation: 'same-run-seq',
+      frames,
+      terminalState: lifecycle.includes('websocket-error') ? 'error' : (lifecycle.includes('websocket-close') ? 'closed' : 'open'),
+    }
+  }
+
+  const request = group.records.find((record) => record.type === 'request')
+  const response = group.records.find((record) => record.type === 'response')
+  const requestPayload = catalogRequestPayload(request)
+  const responsePayload = catalogPayload(response?.responseBody)
+  const classification = classifyProtocolRecord(request)
+  const routeDecision = group.records.find((record) => (
+    ['route-decision', 'request-blocked'].includes(record.type)
+  ))
+  return {
+    ...catalogEndpointDescriptor(request.url, key),
+    functionName: catalogFunctionName(requestPayload),
+    method: /^[A-Z]{1,16}$/.test(String(request.method || '').toUpperCase())
+      ? String(request.method).toUpperCase() : 'OTHER',
+    transport: catalogTransport(request),
+    stage: STAGES.has(classification.stage) ? classification.stage : 'unknown',
+    lifecycle,
+    sequenceRelation: 'same-run-seq',
+    routeOutcome: routeDecision
+      ? (routeDecision.type === 'request-blocked' || routeDecision.decision === 'blocked'
+          ? 'blocked' : 'continued')
+      : 'not-observed',
+    ...(routeDecision ? {
+      dispatchCount: routeDecision.type === 'request-blocked' ? 0 : routeDecision.dispatchCount,
+    } : {}),
+    statusClass: catalogStatusClass(response?.status),
+    request: projectCrownProtocolShape(requestPayload, {
+      hmacKey: key, domain: 'crown-protocol-catalog/request-field-set/v1',
+    }),
+    response: projectCrownProtocolShape(responsePayload, {
+      hmacKey: key, domain: 'crown-protocol-catalog/response-field-set/v1',
+    }),
+  }
+}
+
+export function buildCrownProtocolCatalogCandidate(records, {
+  expectedDirections = CROWN_BROWSER_TARGETS,
+  captureId = 'capture',
+  hmacKey,
+} = {}) {
+  const key = catalogHmacKey(hmacKey)
+  const groups = catalogValidatedGroups(records, captureId)
+  const aggregated = new Map()
+  for (const group of groups) {
+    if (group.records[0].type === 'market-unavailable') continue
+    const entry = catalogGroupEntry(group, key)
+    const aggregationKey = stableJson({
+      ...withoutBindings(entry),
+      ...(!entry.endpointPathAllowlisted ? { endpointPathBinding: entry.endpointPathBinding } : {}),
+    })
+    const current = aggregated.get(aggregationKey) || { entry, groups: [] }
+    current.groups.push(group)
+    aggregated.set(aggregationKey, current)
+  }
+  const entries = [...aggregated.values()].map(({ entry, groups: occurrences }) => ({
+    ...entry,
+    occurrenceCount: occurrences.length,
+    evidenceBinding: catalogBinding(key, 'crown-protocol-catalog/entry/v1', occurrences.map((group) => group.records)),
+  })).sort((left, right) => stableJson(withoutBindings(left)).localeCompare(stableJson(withoutBindings(right))))
+  const expectedIds = new Set((expectedDirections || []).map((direction) => (
+    typeof direction === 'string' ? direction : direction.id
+  )))
+  const observedIds = new Set(records.map((record) => record.direction).filter((id) => expectedIds.has(id)))
+  const content = {
+    schemaVersion: 'crown-protocol-catalog-candidate-v1',
+    sourceBinding: catalogBinding(key, 'crown-protocol-catalog/source/v1', [captureId, records]),
+    expectedDirectionCount: expectedIds.size,
+    observedDirectionCount: observedIds.size,
+    entries,
+  }
+  assertSafeCrownProtocolEvidence(content)
+  const artifact = { ...content, catalogDigest: fingerprint(content) }
+  assertSafeCrownProtocolEvidence(artifact)
+  return artifact
+}
+
+export function buildCrownStaticWireEvidence(records, options = {}) {
+  const catalog = buildCrownProtocolCatalogCandidate(records, options)
+  const entries = catalog.entries.filter((entry) => (
+    entry.endpointPathAllowlisted && entry.transport !== 'websocket'
+  )).map((entry) => ({
+    endpointPath: entry.endpointPath,
+    functionName: entry.functionName,
+    method: entry.method,
+    transport: entry.transport,
+    request: entry.request,
+    response: entry.response,
+    staticValues: STATIC_WIRE_VALUE_ALLOWLIST[entry.functionName] || [],
+    sourceBinding: entry.evidenceBinding,
+  }))
+  const content = {
+    schemaVersion: 'crown-static-wire-evidence-v1',
+    sourceBinding: catalog.sourceBinding,
+    entries,
+  }
+  assertSafeCrownProtocolEvidence(content)
+  const artifact = { ...content, evidenceDigest: fingerprint(content) }
+  assertSafeCrownProtocolEvidence(artifact)
+  return artifact
+}
+
+function eightDirectionFail(reason) {
+  throw new Error(`crown-eight-direction:${reason}`)
+}
+
+function directionId(direction) {
+  return typeof direction === 'string' ? direction : direction?.id
+}
+
+function exactOperationRequests(records, operation) {
+  return records.filter((record) => record.type === 'request').map((record) => ({
+    record,
+    body: catalogRequestPayload(record),
+  })).filter(({ body }) => body && typeof body === 'object' && body.p === operation)
+}
+
+function exactResponseFor(records, request) {
+  const matches = records.filter((record) => record.type === 'response' && record.seq === request.seq)
+  if (matches.length !== 1) eightDirectionFail('response-count')
+  if (String(matches[0].method || '').toUpperCase() !== String(request.method || '').toUpperCase()
+    || String(matches[0].url || '') !== String(request.url || '')) {
+    eightDirectionFail('response-correlation')
+  }
+  return matches[0]
+}
+
+function expectedDirectionTarget(direction) {
+  const id = directionId(direction)
+  const target = CROWN_BROWSER_TARGETS.find((candidate) => candidate.id === id)
+  if (!target) eightDirectionFail('direction-unsupported')
+  return target
+}
+
+function verifiedAsianHandicapDirection(previewBody, submitBody) {
+  const sideCode = String(submitBody.chose_team || '')
+  if (!['H', 'C'].includes(sideCode)
+    || previewBody.gtype !== 'FT'
+    || submitBody.gtype !== 'FT'
+    || previewBody.chose_team !== sideCode
+    || previewBody.wtype !== submitBody.wtype) return null
+  const side = sideCode === 'H' ? 'home' : 'away'
+  if (submitBody.wtype === 'R'
+    && submitBody.rtype === `R${sideCode}`
+    && submitBody.isRB === 'N'
+    && submitBody.f === '1R') {
+    return `prematch-full-time-asian-handicap-${side}`
+  }
+  if (submitBody.wtype === 'RE'
+    && submitBody.rtype === `RE${sideCode}`
+    && submitBody.isRB === 'Y'
+    && submitBody.f === '') {
+    return `live-full-time-asian-handicap-${side}`
+  }
+  return null
+}
+
+function directionWireAssessment(direction, previewBody, submitBody) {
+  const target = expectedDirectionTarget(direction)
+  const sideCode = ['home', 'over'].includes(target.side) ? 'H' : 'C'
+  const verifiedDirection = verifiedAsianHandicapDirection(previewBody, submitBody)
+  const looksAsianHandicap = ['R', 'RE'].includes(String(previewBody.wtype || ''))
+    || ['R', 'RE'].includes(String(submitBody.wtype || ''))
+    || /^(?:R|RE)[HC]$/.test(String(submitBody.rtype || ''))
+  if (verifiedDirection) {
+    if (verifiedDirection !== target.id) eightDirectionFail('direction-wire-mismatch')
+    return { verified: true, target }
+  }
+  if (target.marketType === 'asian_handicap' || looksAsianHandicap) {
+    eightDirectionFail('direction-wire-mismatch')
+  }
+  if (target.marketType !== 'total'
+    || previewBody.gtype !== 'FT'
+    || submitBody.gtype !== 'FT'
+    || previewBody.chose_team !== sideCode
+    || submitBody.chose_team !== sideCode
+    || !String(submitBody.rtype || '').endsWith(sideCode)) {
+    eightDirectionFail('direction-wire-mismatch')
+  }
+  return { verified: false, target }
+}
+
+function websocketSubmitDecisions(records) {
+  return records.filter((record) => (
+    record.type === 'websocket-route-decision'
+    && rawWebSocketRouteClassification(record)?.stage === 'submit'
+  ))
+}
+
+function websocketSubmitFrames(records) {
+  return records.filter((record) => {
+    if (record.type !== 'websocket-send' || typeof record.payload !== 'string') return false
+    return classifyProtocolRecord({
+      type: 'request', method: 'POST', url: record.url || '', postData: record.payload,
+    }).stage === 'submit'
+  })
+}
+
+function websocketFrameEvidence(records) {
+  const opens = records.filter((record) => record.type === 'websocket-open')
+  const sends = records
+    .filter((record) => record.type === 'websocket-send')
+    .sort((left, right) => left.eventOrdinal - right.eventOrdinal)
+  const frameDecisions = records
+    .filter((record) => record.type === 'websocket-route-decision' && record.source === 'frame')
+    .sort((left, right) => left.eventOrdinal - right.eventOrdinal)
+  const continuedDecisions = frameDecisions.filter((decision) => decision.decision === 'continued')
+  let decisionInvalid = frameDecisions.some((decision) => (
+    !validatedWebSocketRouteClassification(decision)
+  ))
+  let correlationInvalid = false
+  for (const decision of frameDecisions.filter((record) => record.decision === 'blocked')) {
+    if (!opens.some((open) => (
+      String(open.url || '') === String(decision.url || '')
+      && open.eventOrdinal < decision.eventOrdinal
+    ))) correlationInvalid = true
+  }
+  if (sends.length !== continuedDecisions.length) correlationInvalid = true
+  const pairCount = Math.min(sends.length, continuedDecisions.length)
+  for (let index = 0; index < pairCount; index += 1) {
+    const send = sends[index]
+    const decision = continuedDecisions[index]
+    const matchingOpens = opens.filter((open) => open.seq === send.seq)
+    const open = matchingOpens[0]
+    if (matchingOpens.length !== 1
+      || !open
+      || open.eventOrdinal >= decision.eventOrdinal
+      || decision.eventOrdinal >= send.eventOrdinal
+      || String(open.url || '') !== String(decision.url || '')
+      || (send.url && String(send.url) !== String(open.url || ''))) {
+      correlationInvalid = true
+      continue
+    }
+    const payloadKind = typeof send.payload === 'string' ? 'text' : 'binary'
+    if (decision.payloadKind !== payloadKind
+      || !validatedWebSocketRouteClassification(decision)) {
+      decisionInvalid = true
+      continue
+    }
+    if (payloadKind !== 'text' || decision.postData !== send.payload) {
+      decisionInvalid = true
+      continue
+    }
+    const classification = rawWebSocketRouteClassification(decision)
+    if (!classification) {
+      decisionInvalid = true
+      continue
+    }
+    if (decision.classification?.stage !== classification.stage) {
+      decisionInvalid = true
+      continue
+    }
+    const mayContinue = ['monitor', 'preview'].includes(classification.stage)
+    if (decision.decision === 'continued' ? !mayContinue : decision.dispatchCount !== 0) {
+      decisionInvalid = true
+    }
+  }
+  return { decisionInvalid, correlationInvalid }
+}
+
+function classifiedHttpBettingTraffic(records) {
+  const traffic = { requests: [], routes: [] }
+  for (const record of records) {
+    const bucket = record.type === 'request'
+      ? traffic.requests
+      : (['route-decision', 'request-blocked'].includes(record.type) ? traffic.routes : null)
+    if (!bucket) continue
+    const classification = classifyProtocolRecord({
+      type: 'request', method: record.method, url: record.url, postData: record.postData,
+    })
+    if (['preview', 'submit'].includes(classification.stage)) {
+      bucket.push({ record, stage: classification.stage })
+    } else if (classification.stage === 'candidate' && classification.routeRisk === 'order-like-post') {
+      bucket.push({ record, stage: 'order-risk' })
+    }
+  }
+  return traffic
+}
+
+export function buildCrownEightDirectionCandidates(records, {
+  expectedDirections = CROWN_BROWSER_TARGETS,
+  captureId = 'capture',
+  hmacKey,
+} = {}) {
+  const key = catalogHmacKey(hmacKey)
+  if (!Array.isArray(records)) eightDirectionFail('records-invalid')
+  const byRun = new Map()
+  for (const record of records) {
+    const run = String(record.captureRunId || '')
+    if (!run) eightDirectionFail('run-integrity')
+    const rows = byRun.get(run) || []
+    rows.push(record)
+    byRun.set(run, rows)
+  }
+  const runsByDirection = new Map()
+  for (const [run, runRecords] of byRun) {
+    const directions = new Set(runRecords.map((record) => record.direction))
+    const generations = new Set(runRecords.map((record) => record.sessionGeneration))
+    if (directions.size !== 1 || generations.size !== 1 || directions.has(undefined) || generations.has(undefined)) {
+      eightDirectionFail('run-integrity')
+    }
+    const [direction] = directions
+    const runs = runsByDirection.get(direction) || []
+    runs.push({ run, generation: [...generations][0], records: runRecords })
+    runsByDirection.set(direction, runs)
+  }
+
+  const candidates = (expectedDirections || []).map((direction, index) => {
+    const canonicalDirection = expectedDirectionTarget(direction)
+    const id = canonicalDirection.id
+    const runs = runsByDirection.get(id) || []
+    if (runs.length === 0) eightDirectionFail('missing-run')
+    if (runs.length !== 1) eightDirectionFail('duplicate-run')
+    const selected = runs[0]
+    const ordinals = new Set()
+    for (const record of selected.records) {
+      if (!Number.isSafeInteger(record.eventOrdinal) || record.eventOrdinal < 1) eightDirectionFail('run-integrity')
+      if (ordinals.has(record.eventOrdinal)) eightDirectionFail('run-integrity')
+      ordinals.add(record.eventOrdinal)
+    }
+    const websocketSubmits = websocketSubmitDecisions(selected.records)
+    const websocketSubmitAttempts = websocketSubmitFrames(selected.records)
+    if (websocketSubmits.some((record) => (
+      record.decision !== 'blocked' || record.dispatchCount !== 0
+    ))) eightDirectionFail('websocket-submit-dispatched')
+    const {
+      decisionInvalid: websocketFrameDecisionInvalid,
+      correlationInvalid: websocketFrameCorrelationInvalid,
+    } = websocketFrameEvidence(selected.records)
+    const httpBettingTraffic = classifiedHttpBettingTraffic(selected.records)
+    const unavailable = selected.records.filter((record) => record.type === 'market-unavailable')
+    if (unavailable.length) {
+      const partialBettingTraffic = httpBettingTraffic.requests.length > 0
+        || httpBettingTraffic.routes.length > 0
+      if (unavailable.length !== 1 || unavailable[0].marketConclusion !== 'operator-confirmed'
+        || unavailable[0].finalConfirmation !== 'CONFIRM_MARKET_UNAVAILABLE'
+        || !Number.isSafeInteger(unavailable[0].attemptCount)
+        || unavailable[0].attemptCount < 4
+        || unavailable[0].waited !== true
+        || unavailable[0].switchedMatch !== true
+        || websocketSubmits.length > 0
+        || websocketSubmitAttempts.length > 0
+        || websocketFrameDecisionInvalid
+        || websocketFrameCorrelationInvalid
+        || partialBettingTraffic) {
+        eightDirectionFail('market-unavailable-partial')
+      }
+      return {
+        ordinal: index + 1,
+        direction: canonicalDirection,
+        status: 'market-unavailable',
+        reason: 'operator-confirmed',
+        dispatchCount: 0,
+        submitAllowed: false,
+        capabilityPromoted: false,
+        runBinding: catalogBinding(key, 'crown-eight-direction/run/v1', selected.records),
+      }
+    }
+    if (websocketSubmits.length > 0 || websocketSubmitAttempts.length > 0) {
+      eightDirectionFail('websocket-submit-attempt')
+    }
+    if (websocketFrameDecisionInvalid) eightDirectionFail('websocket-route-decision-invalid')
+    if (websocketFrameCorrelationInvalid) eightDirectionFail('websocket-frame-correlation')
+
+    const previewLikeRequests = httpBettingTraffic.requests.filter(({ stage }) => stage === 'preview')
+    const submitLikeRequests = httpBettingTraffic.requests.filter(({ stage }) => stage === 'submit')
+    const submitLikeRoutes = httpBettingTraffic.routes.filter(({ stage }) => stage === 'submit')
+    const orderRiskRequests = httpBettingTraffic.requests.filter(({ stage }) => stage === 'order-risk')
+    const orderRiskRoutes = httpBettingTraffic.routes.filter(({ stage }) => stage === 'order-risk')
+
+    const preview = exactOperationRequests(selected.records, 'FT_order_view')
+    const submit = exactOperationRequests(selected.records, 'FT_bet')
+    if (preview.length !== 1) eightDirectionFail('preview-count')
+    if (submit.length !== 1) eightDirectionFail('submit-count')
+    const previewResponse = exactResponseFor(selected.records, preview[0].record)
+    if (!Number.isInteger(previewResponse.status) || previewResponse.status < 200 || previewResponse.status >= 300) {
+      eightDirectionFail('preview-response-unsuccessful')
+    }
+    if (selected.records.some((record) => record.type === 'response' && record.seq === submit[0].record.seq)) {
+      eightDirectionFail('submit-response-present')
+    }
+    const routeDecisions = selected.records.filter((record) => (
+      record.seq === submit[0].record.seq
+      && ['route-decision', 'request-blocked'].includes(record.type)
+    ))
+    if (routeDecisions.length !== 1
+      || (routeDecisions[0].decision !== 'blocked' && routeDecisions[0].type !== 'request-blocked')) {
+      eightDirectionFail('submit-not-blocked')
+    }
+    if (routeDecisions[0].dispatchCount !== 0) eightDirectionFail('submit-dispatched')
+    const routeBody = catalogRequestPayload(routeDecisions[0])
+    if (String(routeDecisions[0].method || '').toUpperCase() !== String(submit[0].record.method || '').toUpperCase()
+      || String(routeDecisions[0].url || '') !== String(submit[0].record.url || '')
+      || stableJson(routeBody) !== stableJson(submit[0].body)) {
+      eightDirectionFail('route-correlation')
+    }
+    if (!(preview[0].record.eventOrdinal < previewResponse.eventOrdinal
+      && previewResponse.eventOrdinal < submit[0].record.eventOrdinal
+      && submit[0].record.eventOrdinal < routeDecisions[0].eventOrdinal)) {
+      eightDirectionFail('chronology')
+    }
+    if (previewLikeRequests.length !== 1
+      || submitLikeRequests.length !== 1
+      || submitLikeRoutes.length !== 1
+      || orderRiskRequests.length !== 0
+      || orderRiskRoutes.length !== 0) {
+      eightDirectionFail('betting-traffic-count')
+    }
+
+    const previewValues = catalogXmlValues(previewResponse.responseBody) || {}
+    if (previewValues.code !== '501') eightDirectionFail('preview-code-unverified')
+    const previewBody = preview[0].body
+    const submitBody = submit[0].body
+    const expectedRatio = previewValues.ratio ?? previewValues.spread
+    if (!previewBody.gid || previewBody.gid !== submitBody.gid
+      || !previewBody.uid || previewBody.uid !== submitBody.uid
+      || !previewBody.gtype || previewBody.gtype !== submitBody.gtype
+      || !previewBody.wtype || previewBody.wtype !== submitBody.wtype
+      || !previewBody.chose_team || previewBody.chose_team !== submitBody.chose_team
+      || !previewValues.spread || !previewValues.ioratio
+      || previewValues.ioratio !== submitBody.ioratio
+      || !expectedRatio || expectedRatio !== submitBody.ratio) {
+      eightDirectionFail('identity-drift')
+    }
+    const wireAssessment = directionWireAssessment(canonicalDirection, previewBody, submitBody)
+    const wireIdentity = [
+      previewBody.gtype, previewBody.wtype, previewBody.chose_team,
+      submitBody.gtype, submitBody.wtype, submitBody.rtype,
+      submitBody.isRB, submitBody.chose_team, submitBody.f,
+    ]
+    const directionWireBinding = catalogBinding(
+      key, 'crown-eight-direction/direction-wire/v1', wireIdentity,
+    )
+    const identity = [
+      selected.generation, previewBody.uid, previewBody.gid, previewBody.chose_team,
+      previewBody.gtype, previewBody.wtype, submitBody.rtype, submitBody.isRB, submitBody.f,
+      previewValues.spread, previewValues.ioratio,
+    ]
+    if (!wireAssessment.verified) {
+      return {
+        ordinal: index + 1,
+        direction: canonicalDirection,
+        status: 'incomplete',
+        reason: 'EVIDENCE_REQUIRED',
+        evidenceRequired: ['verified-total-wire-family'],
+        dispatchCount: 0,
+        submitAllowed: false,
+        capabilityPromoted: false,
+        runBinding: catalogBinding(key, 'crown-eight-direction/run/v1', selected.records),
+        directionWireBinding,
+        lifecycle: ['preview-request', 'preview-response', 'submit-request', 'submit-route-blocked'],
+      }
+    }
+    return {
+      ordinal: index + 1,
+      direction: canonicalDirection,
+      status: 'candidate',
+      reason: 'preview-success-submit-route-blocked',
+      dispatchCount: 0,
+      submitAllowed: false,
+      capabilityPromoted: false,
+      runBinding: catalogBinding(key, 'crown-eight-direction/run/v1', selected.records),
+      identityBinding: catalogBinding(key, 'crown-eight-direction/identity/v1', identity),
+      directionWireBinding,
+      lifecycle: ['preview-request', 'preview-response', 'submit-request', 'submit-route-blocked'],
+    }
+  })
+  const directionWireBindings = candidates
+    .map((candidate) => candidate.directionWireBinding)
+    .filter(Boolean)
+  if (new Set(directionWireBindings).size !== directionWireBindings.length) {
+    eightDirectionFail('duplicate-direction-wire')
+  }
+  const unexpected = [...runsByDirection.keys()].filter((id) => !(expectedDirections || []).some((direction) => directionId(direction) === id))
+  if (unexpected.length) eightDirectionFail('unexpected-direction')
+  const content = {
+    schemaVersion: 'crown-eight-direction-candidates-v1',
+    sourceBinding: catalogBinding(key, 'crown-eight-direction/source/v1', [captureId, records]),
+    candidates,
+  }
+  assertSafeCrownProtocolEvidence(content)
+  const artifact = { ...content, candidateDigest: fingerprint(content) }
+  assertSafeCrownProtocolEvidence(artifact)
+  return artifact
+}
+
 function safeStructure(record) {
-  const request = bodyObject(record.postData)
+  const request = safeStructureBodyObject(record.postData)
   const requestKeys = Object.keys(request)
   const requestFieldSetValid = !requestKeys.some((field) => (
     SENSITIVE_FIELD.test(field) && !ALLOWED_TRANSPORT_FIELDS.has(field)
@@ -440,7 +1380,7 @@ function safeStructure(record) {
   const responseFields = responseSafety.fields
   const responseFieldSetValid = responseSafety.valid
   const responseFieldSet = safeFieldSet(responseFields, { envelope: 'serverresponse' })
-  const classification = record.classification?.stage ? record.classification : classifyProtocolRecord(record)
+  const classification = classifyProtocolRecord(record)
   const method = String(record.method || '').toUpperCase()
   const recordType = String(record.type || 'unknown')
   const stage = String(classification.stage || 'unknown')
@@ -618,12 +1558,13 @@ function exactTime(value, reason) {
 
 export function buildCrownExecutionEvidenceCandidate(
   captureDir,
-  { hmacKey } = {},
+  { hmacKey, legacyLayout = false } = {},
 ) {
   const key = privateHmacKey(hmacKey)
   const watcher = readWatcherEvidence(captureDir)
   const watcherEvidenceDigest = fingerprint(watcher)
-  const { rawBytes, records } = readCapturePair(captureDir)
+  const layout = crownProtocolCaptureLayout(captureDir, { legacyLayout })
+  const { rawBytes, records } = readCapturePair(captureDir, { layout })
   const selected = selectedExecutionAttempt(records)
 
   const previewForm = selected.preview.request.body
@@ -837,6 +1778,128 @@ export function writeCrownExecutionEvidenceCandidate(captureDir, options = {}) {
   return { candidate, candidateDigest: candidate.candidateDigest }
 }
 
+function writeSafeJson(publicDir, name, artifact) {
+  assertSafeCrownProtocolEvidence(artifact)
+  publishPublicFiles(publicDir, { [name]: `${JSON.stringify(artifact, null, 2)}\n` }, [name])
+  return artifact
+}
+
+function removePublicOutputs(publicDir, names) {
+  for (const name of names) fs.rmSync(path.join(publicDir, name), { force: true })
+}
+
+function publishPublicFiles(publicDir, files, outputNames = Object.keys(files)) {
+  fs.mkdirSync(publicDir, { recursive: true })
+  const tempDir = path.join(publicDir, `.tmp-crown-protocol-${randomUUID()}`)
+  fs.mkdirSync(tempDir)
+  try {
+    for (const [name, content] of Object.entries(files)) {
+      fs.writeFileSync(path.join(tempDir, name), content, 'utf8')
+    }
+    removePublicOutputs(publicDir, outputNames)
+    for (const name of Object.keys(files)) {
+      fs.renameSync(path.join(tempDir, name), path.join(publicDir, name))
+    }
+  } catch (error) {
+    removePublicOutputs(publicDir, outputNames)
+    throw error
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+}
+
+function incompleteEightDirectionArtifact(expectedDirections, key, captureId) {
+  const content = {
+    schemaVersion: 'crown-eight-direction-candidates-v1',
+    sourceBinding: catalogBinding(key, 'crown-eight-direction/source/v1', [captureId, 'not-captured']),
+    candidates: expectedDirections.map((direction, index) => ({
+      ordinal: index + 1,
+      direction,
+      status: 'incomplete',
+      reason: 'capture-not-provided',
+      dispatchCount: 0,
+      submitAllowed: false,
+      capabilityPromoted: false,
+    })),
+  }
+  assertSafeCrownProtocolEvidence(content)
+  return { ...content, candidateDigest: fingerprint(content) }
+}
+
+export function writeCrownProtocolCatalogCandidate(captureDir, records, options = {}) {
+  const artifact = buildCrownProtocolCatalogCandidate(records, options)
+  return writeSafeJson(path.join(captureDir, 'public'), 'protocol-catalog.safe.json', artifact)
+}
+
+export function writeCrownEightDirectionCandidates(captureDir, records, options = {}) {
+  const artifact = buildCrownEightDirectionCandidates(records, options)
+  return writeSafeJson(path.join(captureDir, 'public'), 'eight-direction-candidates.safe.json', artifact)
+}
+
+export function writeCrownStaticWireEvidence(captureDir, records, options = {}) {
+  const artifact = buildCrownStaticWireEvidence(records, options)
+  return writeSafeJson(path.join(captureDir, 'public'), 'static-wire-evidence.safe.json', artifact)
+}
+
+function buildCrownProtocolArtifactSet(sourceRecords, {
+  expectedDirections,
+  captureId,
+  hmacKey,
+  allowIncompleteEightDirection,
+}) {
+  const key = catalogHmacKey(hmacKey || readOrCreateLocalSecretKey())
+  const options = { expectedDirections, captureId, hmacKey: key }
+  const protocolCatalog = buildCrownProtocolCatalogCandidate(sourceRecords, options)
+  const staticWireEvidence = buildCrownStaticWireEvidence(sourceRecords, options)
+  const hasExpectedDirection = sourceRecords.some((record) => (
+    expectedDirections.some((direction) => directionId(direction) === record.direction)
+  ))
+  const eightDirectionCandidates = allowIncompleteEightDirection && !hasExpectedDirection
+    ? incompleteEightDirectionArtifact(expectedDirections, key, captureId)
+    : buildCrownEightDirectionCandidates(sourceRecords, options)
+  return { protocolCatalog, eightDirectionCandidates, staticWireEvidence }
+}
+
+function writeCrownProtocolArtifactSet(captureDir, artifacts) {
+  const publicDir = path.join(captureDir, 'public')
+  publishPublicFiles(publicDir, {
+    'protocol-catalog.safe.json': `${JSON.stringify(artifacts.protocolCatalog, null, 2)}\n`,
+    'eight-direction-candidates.safe.json': `${JSON.stringify(artifacts.eightDirectionCandidates, null, 2)}\n`,
+    'static-wire-evidence.safe.json': `${JSON.stringify(artifacts.staticWireEvidence, null, 2)}\n`,
+  }, CATALOG_PUBLIC_OUTPUTS)
+  return {
+    protocolCatalog: artifacts.protocolCatalog,
+    eightDirectionCandidates: artifacts.eightDirectionCandidates,
+    staticWireEvidence: artifacts.staticWireEvidence,
+  }
+}
+
+export function writeCrownProtocolCatalogArtifacts(captureDir, {
+  records,
+  expectedDirections = CROWN_BROWSER_TARGETS,
+  captureId = path.basename(path.resolve(captureDir)),
+  hmacKey,
+  allowIncompleteEightDirection = false,
+} = {}) {
+  const publicDir = path.join(captureDir, 'public')
+  removePublicOutputs(publicDir, CATALOG_PUBLIC_OUTPUTS)
+  try {
+    let sourceRecords = records
+    if (!sourceRecords) {
+      sourceRecords = readCapturePair(captureDir, {
+        layout: 'modern', requireModernMetadata: true,
+      }).rawRecords
+    }
+    const artifacts = buildCrownProtocolArtifactSet(sourceRecords, {
+      expectedDirections, captureId, hmacKey, allowIncompleteEightDirection,
+    })
+    return writeCrownProtocolArtifactSet(captureDir, artifacts)
+  } catch (error) {
+    removePublicOutputs(publicDir, CATALOG_PUBLIC_OUTPUTS)
+    throw error
+  }
+}
+
 function markdown(artifact) {
   const lines = [
     '# Crown Betting Protocol Safe Summary', '',
@@ -852,21 +1915,183 @@ function markdown(artifact) {
   return lines.join('\n')
 }
 
-export function analyzeCrownProtocolCapture(captureDir) {
+function legacyRedactedCaptureFile(captureDir) {
+  return path.join(captureDir, 'public', 'redacted-network.jsonl')
+}
+
+function capturePublicManifestLayout(captureDir) {
+  const manifestFile = path.join(captureDir, 'public', 'manifest.json')
+  if (!fs.existsSync(manifestFile)) return 'none'
+  let manifest
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'))
+  } catch {
+    catalogFail('manifest-invalid')
+  }
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) catalogFail('manifest-invalid')
+  const legacyFields = [
+    'allowOddsClick', 'allowRealSubmit', 'allowStakeFill', 'generatedAt',
+    'maxStake', 'profile', 'url',
+  ]
+  const keys = Object.keys(manifest).sort()
+  const historicalLegacyShape = stableJson(keys) === stableJson(legacyFields)
+    && typeof manifest.generatedAt === 'string'
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(manifest.generatedAt)
+    && typeof manifest.url === 'string'
+    && /^https?:\/\//i.test(manifest.url)
+    && typeof manifest.profile === 'string'
+    && manifest.profile.length > 0
+    && typeof manifest.allowOddsClick === 'boolean'
+    && typeof manifest.allowStakeFill === 'boolean'
+    && typeof manifest.allowRealSubmit === 'boolean'
+    && Number.isSafeInteger(manifest.maxStake)
+    && manifest.maxStake >= 0
+  return historicalLegacyShape ? 'legacy' : 'modern'
+}
+
+function completeModernRecorderRecord(record) {
+  return Boolean(record)
+    && typeof record === 'object'
+    && !Array.isArray(record)
+    && Number.isSafeInteger(record.eventOrdinal)
+    && record.eventOrdinal > 0
+    && typeof record.captureRunId === 'string'
+    && Boolean(record.captureRunId)
+    && typeof record.sessionGeneration === 'string'
+    && Boolean(record.sessionGeneration)
+}
+
+function hasModernRecorderMarker(record) {
+  return Boolean(record)
+    && typeof record === 'object'
+    && !Array.isArray(record)
+    && (
+      Object.hasOwn(record, 'eventOrdinal')
+      || Object.hasOwn(record, 'captureRunId')
+      || Object.hasOwn(record, 'sessionGeneration')
+    )
+}
+
+function readLayoutProbe(file, reason) {
+  if (!fs.existsSync(file)) return []
+  let bytes
+  try {
+    bytes = fs.readFileSync(file)
+  } catch {
+    executionFail('capture-files-unavailable')
+  }
+  return parseJsonlBytes(bytes, reason)
+}
+
+function crownProtocolCaptureLayout(captureDir, { legacyLayout = false } = {}) {
+  const privateRedacted = path.join(captureDir, 'private', 'redacted-network.jsonl')
+  const privateManifest = path.join(captureDir, 'private', 'manifest.json')
+  const rawRecords = readLayoutProbe(
+    path.join(captureDir, 'private', 'raw-network.jsonl'), 'raw-capture-invalid',
+  )
+  const publicRecords = readLayoutProbe(
+    path.join(captureDir, 'public', 'redacted-network.jsonl'), 'redacted-capture-invalid',
+  )
+  const publicManifestLayout = capturePublicManifestLayout(captureDir)
+  const hasModernMarker = publicManifestLayout === 'modern'
+    || fs.existsSync(privateManifest)
+    || fs.existsSync(privateRedacted)
+    || [...rawRecords, ...publicRecords].some(hasModernRecorderMarker)
+  if (legacyLayout) {
+    if (hasModernMarker) catalogFail('modern-layout-cannot-use-legacy')
+    if (publicManifestLayout !== 'legacy') catalogFail('legacy-layout-manifest-required')
+    return 'legacy'
+  }
+  if (hasModernMarker) return 'modern'
+  catalogFail('legacy-layout-explicit-opt-in-required')
+}
+
+export function analyzeCrownProtocolCapture(captureDir, options = {}) {
   const publicDir = path.join(captureDir, 'public')
-  const records = readJsonl(path.join(publicDir, 'redacted-network.jsonl'))
   const captureId = path.basename(path.resolve(captureDir))
-  const artifact = buildCrownProtocolArtifact(records, { captureId })
-  fs.writeFileSync(path.join(publicDir, 'protocol-evidence.json'), `${JSON.stringify(artifact, null, 2)}\n`, 'utf8')
-  fs.writeFileSync(path.join(publicDir, 'protocol-summary.json'), `${JSON.stringify(summarizeCrownProtocol(records), null, 2)}\n`, 'utf8')
-  fs.writeFileSync(path.join(publicDir, 'protocol-map.md'), markdown(artifact), 'utf8')
-  return { captureId: artifact.captureId, recordCount: records.length, evidenceCount: artifact.records.length, artifactSafeDigest: artifact.artifactSafeDigest }
+  removePublicOutputs(publicDir, ANALYZER_PUBLIC_OUTPUTS)
+  try {
+    const layout = crownProtocolCaptureLayout(captureDir, {
+      legacyLayout: options.legacyLayout === true,
+    })
+    let records
+    let pendingSafeArtifacts = null
+    if (layout === 'modern') {
+      const pair = readCapturePair(captureDir, {
+        layout: 'modern', requireModernMetadata: true,
+      })
+      records = pair.redactedRecords
+      pendingSafeArtifacts = buildCrownProtocolArtifactSet(pair.rawRecords, {
+        expectedDirections: CROWN_BROWSER_TARGETS,
+        captureId,
+        hmacKey: options.hmacKey,
+        allowIncompleteEightDirection: true,
+      })
+    } else {
+      records = readJsonl(legacyRedactedCaptureFile(captureDir))
+    }
+    const artifact = buildCrownProtocolArtifact(records, { captureId })
+    const summary = summarizeCrownProtocol(records)
+    const protocolMap = markdown(artifact)
+    const files = {
+      'protocol-evidence.json': `${JSON.stringify(artifact, null, 2)}\n`,
+      'protocol-summary.json': `${JSON.stringify(summary, null, 2)}\n`,
+      'protocol-map.md': protocolMap,
+    }
+    if (pendingSafeArtifacts) {
+      files['protocol-catalog.safe.json'] = `${JSON.stringify(pendingSafeArtifacts.protocolCatalog, null, 2)}\n`
+      files['eight-direction-candidates.safe.json'] = `${JSON.stringify(pendingSafeArtifacts.eightDirectionCandidates, null, 2)}\n`
+      files['static-wire-evidence.safe.json'] = `${JSON.stringify(pendingSafeArtifacts.staticWireEvidence, null, 2)}\n`
+    }
+    publishPublicFiles(publicDir, files, ANALYZER_PUBLIC_OUTPUTS)
+    return {
+      captureId: artifact.captureId,
+      recordCount: records.length,
+      evidenceCount: artifact.records.length,
+      artifactSafeDigest: artifact.artifactSafeDigest,
+      safeArtifacts: Boolean(pendingSafeArtifacts),
+    }
+  } catch (error) {
+    removePublicOutputs(publicDir, ANALYZER_PUBLIC_OUTPUTS)
+    throw error
+  }
+}
+
+export function analyzeCrownProtocolCaptureSet(captureDir, runDirs, options = {}) {
+  const publicDir = path.join(captureDir, 'public')
+  removePublicOutputs(publicDir, CATALOG_PUBLIC_OUTPUTS)
+  try {
+    if (!Array.isArray(runDirs) || runDirs.length === 0) catalogFail('capture-set-empty')
+    const records = runDirs.flatMap((runDir) => (
+      readCapturePair(runDir, { layout: 'modern', requireModernMetadata: true }).rawRecords
+    ))
+    return writeCrownProtocolCatalogArtifacts(captureDir, {
+      ...options,
+      records,
+      captureId: path.basename(path.resolve(captureDir)),
+    })
+  } catch (error) {
+    removePublicOutputs(publicDir, CATALOG_PUBLIC_OUTPUTS)
+    throw error
+  }
+}
+
+export function parseAnalyzeArgs(argv) {
+  const args = { captureDir: '', legacyLayout: false }
+  for (const arg of argv) {
+    if (arg === '--legacy-layout') args.legacyLayout = true
+    else if (!arg.startsWith('-') && !args.captureDir) args.captureDir = arg
+    else throw new Error('crown-protocol-analyze:invalid-arguments')
+  }
+  if (!args.captureDir) throw new Error('Usage: node scripts/crown-betting-protocol-analyze.mjs <capture-dir> [--legacy-layout]')
+  return args
 }
 
 function main() {
-  const captureDir = process.argv[2]
-  if (!captureDir) throw new Error('Usage: node scripts/crown-betting-protocol-analyze.mjs <capture-dir>')
-  console.log(JSON.stringify(analyzeCrownProtocolCapture(captureDir)))
+  const args = parseAnalyzeArgs(process.argv.slice(2))
+  console.log(JSON.stringify(analyzeCrownProtocolCapture(args.captureDir, {
+    legacyLayout: args.legacyLayout,
+  })))
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) main()

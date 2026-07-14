@@ -117,7 +117,7 @@ function fixture({ apiSecret = null, snapshotSecret = null } = {}) {
   }])
   writeJsonl(path.join(runtimeDir, 'crown-watch-runtime.jsonl'), [
     { type: 'xml-response', source: 'direct-api', method: 'POST', url: 'https://crown.example/transform.php', endpointKind: 'get_game_list' },
-    { type: 'xml-response', source: 'direct-api', method: 'POST', url: 'https://crown.example/transform.php', postData: 'p=get_game_more&GID=3001', endpointKind: 'get_game_more' },
+    { type: 'xml-response', source: 'direct-api', method: 'POST', url: 'https://crown.example/transform.php', postData: 'p=get_game_more&gtype=ft&showtype=today&lid=3001&ecid=4001', endpointKind: 'get_game_more' },
     { type: 'xml-response', source: 'direct-api', method: 'GET', url: 'https://crown.example/health' },
   ])
 
