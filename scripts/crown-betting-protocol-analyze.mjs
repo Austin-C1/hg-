@@ -92,6 +92,7 @@ const ANALYZER_PUBLIC_OUTPUTS = Object.freeze([
   'protocol-map.md',
   ...CATALOG_PUBLIC_OUTPUTS,
 ])
+const LEGACY_PUBLIC_REDACTED_OUTPUT = 'redacted-network.jsonl'
 
 function stable(value) {
   if (Array.isArray(value)) return value.map(stable)
@@ -2120,14 +2121,19 @@ function crownProtocolCaptureLayout(captureDir, { legacyLayout = false } = {}) {
   const rawRecords = readLayoutProbe(
     path.join(captureDir, 'private', 'raw-network.jsonl'), 'raw-capture-invalid',
   )
-  const publicRecords = readLayoutProbe(
-    path.join(captureDir, 'public', 'redacted-network.jsonl'), 'redacted-capture-invalid',
-  )
   const publicManifestLayout = capturePublicManifestLayout(captureDir)
-  const hasModernMarker = publicManifestLayout === 'modern'
+  const hasPrivateModernMarker = publicManifestLayout === 'modern'
     || fs.existsSync(privateManifest)
     || fs.existsSync(privateRedacted)
-    || [...rawRecords, ...publicRecords].some(hasModernRecorderMarker)
+    || rawRecords.some(hasModernRecorderMarker)
+  if (hasPrivateModernMarker) {
+    if (legacyLayout) catalogFail('modern-layout-cannot-use-legacy')
+    return 'modern'
+  }
+  const publicRecords = readLayoutProbe(
+    path.join(captureDir, 'public', LEGACY_PUBLIC_REDACTED_OUTPUT), 'redacted-capture-invalid',
+  )
+  const hasModernMarker = publicRecords.some(hasModernRecorderMarker)
   if (legacyLayout) {
     if (hasModernMarker) catalogFail('modern-layout-cannot-use-legacy')
     if (publicManifestLayout !== 'legacy') catalogFail('legacy-layout-manifest-required')
@@ -2140,11 +2146,15 @@ function crownProtocolCaptureLayout(captureDir, { legacyLayout = false } = {}) {
 export function analyzeCrownProtocolCapture(captureDir, options = {}) {
   const publicDir = path.join(captureDir, 'public')
   const captureId = path.basename(path.resolve(captureDir))
+  const legacyPublicRedacted = path.join(publicDir, LEGACY_PUBLIC_REDACTED_OUTPUT)
+  let modernLayout = false
   removePublicOutputs(publicDir, ANALYZER_PUBLIC_OUTPUTS)
   try {
     const layout = crownProtocolCaptureLayout(captureDir, {
       legacyLayout: options.legacyLayout === true,
     })
+    modernLayout = layout === 'modern'
+    if (modernLayout) fs.rmSync(legacyPublicRedacted, { force: true })
     let records
     let pendingSafeArtifacts = null
     if (layout === 'modern') {
@@ -2184,6 +2194,7 @@ export function analyzeCrownProtocolCapture(captureDir, options = {}) {
     }
   } catch (error) {
     removePublicOutputs(publicDir, ANALYZER_PUBLIC_OUTPUTS)
+    if (modernLayout) fs.rmSync(legacyPublicRedacted, { force: true })
     throw error
   }
 }

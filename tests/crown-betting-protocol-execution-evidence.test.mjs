@@ -235,6 +235,38 @@ test('modern analyzer validates the private raw and redacted pair before writing
   assertNoAnalyzerPublicOutputs(store.runDir)
 })
 
+test('modern analyzer removes stale legacy public redacted JSONL on success and failure', async (t) => {
+  function createModernRun(runId) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-modern-stale-public-'))
+    const store = createProtocolStore({ rootDir: root, runId })
+    store.append({
+      captureRunId: runId, direction: 'discover', sessionGeneration: 'generation',
+      seq: 1, eventOrdinal: 1, type: 'request', method: 'GET', resourceType: 'fetch',
+      url: 'https://offline.invalid/list.json', headers: {}, postData: '',
+    })
+    const stale = path.join(store.publicDir, 'redacted-network.jsonl')
+    fs.writeFileSync(stale, '{"gid":"stale-dynamic-detail"}\n', 'utf8')
+    return { store, stale }
+  }
+
+  await t.test('successful rebuild', () => {
+    const { store, stale } = createModernRun('modern-stale-success')
+    analyzeCrownProtocolCapture(store.runDir, { hmacKey: HMAC_KEY })
+    assert.equal(fs.existsSync(stale), false)
+  })
+
+  await t.test('failed rebuild', () => {
+    const { store, stale } = createModernRun('modern-stale-failure')
+    const redacted = path.join(store.privateDir, 'redacted-network.jsonl')
+    const row = JSON.parse(fs.readFileSync(redacted, 'utf8'))
+    fs.writeFileSync(redacted, `${JSON.stringify({ ...row, method: 'POST' })}\n`, 'utf8')
+    assert.throws(() => analyzeCrownProtocolCapture(store.runDir, {
+      hmacKey: HMAC_KEY,
+    }), /redaction-pair-mismatch/)
+    assert.equal(fs.existsSync(stale), false)
+  })
+})
+
 test('modern analyzer requires a complete private pair and never uses the legacy public fallback', async (t) => {
   function createModernRun(runId) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-modern-private-pair-'))
