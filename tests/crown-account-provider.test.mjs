@@ -64,7 +64,8 @@ function previewXml({ minimum = '60', maximum = '1000', odds = '0.96', line = '0
 function account(overrides = {}) {
   return {
     id: 'bet-owner', username: 'owner', password: 'private-password',
-    loginUrl: 'https://crown.example.com', currency: 'CNY', perBetLimitMinor: 200,
+    loginUrl: 'https://crown.example.com', currency: 'CNY', amountScale: 0,
+    stakeStepMinor: 1, perBetLimitMinor: 200,
     ...overrides,
   }
 }
@@ -332,8 +333,9 @@ test('Preview uses Browser session, balance and FT_order_view without Node trans
   assert.equal(result.transportKind, 'browser-page-fetch')
   assert.equal(result.executionPreview.minStakeMinor, 60)
   assert.equal(result.executionPreview.maxStakeMinor, 1000)
-  assert.equal(result.executionPreview.stakeStepMinor, null)
-  assert.equal(result.capacityMinor, 60)
+  assert.equal(result.executionPreview.stakeStepMinor, 1)
+  assert.equal(result.executionPreview.stakeStepProvenance, 'verified-account-policy')
+  assert.equal(result.capacityMinor, 200)
   assert.equal(result.freshBalanceCny, 300)
   assert.equal(result.realExecutionEligible, true)
   assert.equal(result.browserSession, harness.session)
@@ -357,7 +359,7 @@ test('fresh limits are provider data, not the old 50/20000 constants', async () 
     minimum: result.executionPreview.minStakeMinor,
     maximum: result.executionPreview.maxStakeMinor,
     capacity: result.capacityMinor,
-  }, { minimum: 73, maximum: 777, capacity: 73 })
+  }, { minimum: 73, maximum: 777, capacity: 500 })
 })
 
 test('session ownership, protocol proof and cookie-free memory state are checked before balance or Preview', async (t) => {

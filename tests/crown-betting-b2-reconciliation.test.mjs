@@ -745,6 +745,9 @@ test('strong reconciliation resolves the bound acceptance unknown and resumes th
   const manifest = createCrownBrowserAcceptanceManifest({ capabilityVersion: CROWN_CAPABILITY_MATRIX_VERSION })
   initializeCrownBrowserAcceptanceCampaign(context.db, { manifest, secretKey: PROVIDER_REFERENCE_KEY })
   const direction = manifest.directions[0]
+  const staticSubmitAllowed = listCrownCapabilities().find((item) => item.mode === direction.mode
+    && item.period === direction.period && item.marketType === direction.marketType
+    && item.lineVariant === direction.lineVariant && item.selectionSide === direction.selectionSide).submitAllowed
   context.db.prepare(`UPDATE crown_browser_acceptance_cases SET
     state='unknown',dispatch_count=1,authorized_min_minor=20,
     child_order_id='child-reconcile',account_id='account-reconcile',submit_attempt_id='attempt-reconcile',
@@ -788,7 +791,9 @@ test('strong reconciliation resolves the bound acceptance unknown and resumes th
   assert.equal(authority.claimNextCandidate().direction.ordinal, 2)
   assert.equal(listCrownCapabilities().find((item) => item.mode === direction.mode
     && item.period === direction.period && item.marketType === direction.marketType
-    && item.lineVariant === direction.lineVariant && item.selectionSide === direction.selectionSide).submitAllowed, false)
+    && item.lineVariant === direction.lineVariant && item.selectionSide === direction.selectionSide).submitAllowed, staticSubmitAllowed)
+  assert.equal(listCrownCapabilities().filter((item) => item.mode === 'live')
+    .every((item) => item.submitAllowed === false), true)
   context.handle.close()
 })
 

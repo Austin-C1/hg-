@@ -98,14 +98,19 @@ function currentEnvelopeWithIdentityDrift(field) {
   return envelope
 }
 
-test('canonical matrix enables exactly one accepted-only row and keeps reconciliation closed', () => {
+test('canonical matrix enables the four accepted prematch rows and keeps reconciliation closed', () => {
   const rows = listCrownCapabilities()
   const enabled = rows.filter((row) => row.submitAllowed)
   assert.equal(rows.filter((row) => row.previewAllowed).length, 8)
-  assert.deepEqual(enabled.map((row) => row.key), [CAPABILITY_KEY])
-  assert.equal(enabled[0].reconciliationAllowed, false)
-  assert.equal(assertCrownCapability(enabled[0], { operation: 'preview' }).key, CAPABILITY_KEY)
-  assert.equal(assertCrownCapability(enabled[0], { operation: 'submit' }).key, CAPABILITY_KEY)
+  assert.deepEqual(enabled.map((row) => row.key), [
+    'prematch|full_time|asian_handicap|main|home',
+    CAPABILITY_KEY,
+    'prematch|full_time|total|main|over',
+    'prematch|full_time|total|main|under',
+  ])
+  assert.ok(enabled.every((row) => row.reconciliationAllowed === false))
+  assert.equal(assertCrownCapability(enabled[1], { operation: 'preview' }).key, CAPABILITY_KEY)
+  assert.equal(assertCrownCapability(enabled[1], { operation: 'submit' }).key, CAPABILITY_KEY)
   assert.throws(() => assertCrownCapability(enabled[0], { operation: 'reconciliation' }), /reconciliation-blocked/)
 
   const verified = verifyCrownCapabilityMatrix()
@@ -114,7 +119,7 @@ test('canonical matrix enables exactly one accepted-only row and keeps reconcili
     verified.allowedPreviewCount,
     verified.allowedSubmitCount,
     verified.allowedReconciliationCount,
-  ], [8, 1, 0])
+  ], [8, 4, 0])
 })
 
 test('watcher marks exactly the eight verified full-time directions as main', () => {
@@ -165,10 +170,18 @@ test('strict Preview and Submit map exact home and away fields; opaque f=1R stay
     assert.equal(mapped.identity.period, 'full_time')
   }
 
-  assert.throws(() => buildStrictCrownSubmitWireFields({
+  const homeSubmit = buildStrictCrownSubmitWireFields({
     lockedIdentity: lockedIdentity('home'), currentIdentity: lockedIdentity('home'),
     preview: preview('home'), amountMinor: 50,
-  }, { capability: homeCapability }), /unverified-crown-submit-capability/)
+  }, {
+    capability: homeCapability,
+    protocolVersion: 'verified-version',
+    protocolVersionEvidence: {
+      source: 'production-session-metadata', captured: true, verified: true,
+    },
+  })
+  assert.equal(homeSubmit.chose_team, 'H')
+  assert.equal(homeSubmit.rtype, 'RH')
 
   const before = Date.now()
   const submit = buildStrictCrownSubmitWireFields({
@@ -216,7 +229,7 @@ test('strict Preview and Submit map exact home and away fields; opaque f=1R stay
 test('production Preview returns the evidence-complete B2 execution contract for the exact row', async () => {
   const account = {
     id: 'account-preview', username: 'owner-preview', loginUrl: 'https://crown.example.com',
-    currency: 'CNY', perBetLimitMinor: 50,
+    currency: 'CNY', amountScale: 0, stakeStepMinor: 1, perBetLimitMinor: 50,
   }
   const session = {
     accountId: account.id, username: account.username, baseUrl: account.loginUrl,
@@ -276,8 +289,8 @@ test('production Preview returns the evidence-complete B2 execution contract for
   assert.equal(result.realExecutionEligible, true)
   assert.deepEqual(result.realExecutionBlockers, [])
   assert.deepEqual(result.executionPreview, {
-    minStakeMinor: 50, maxStakeMinor: 20000, stakeStepMinor: null,
-    stakeStepProvenance: 'not-evidenced-in-preview-response', odds: '0.96', line: '0.5 / 1',
+    minStakeMinor: 50, maxStakeMinor: 20000, stakeStepMinor: 1,
+    stakeStepProvenance: 'verified-account-policy', odds: '0.96', line: '0.5 / 1',
     submitCon: '1', submitRatio: '50',
     currency: 'CNY', amountScale: 0, lockedIdentity: lockedIdentity(),
   })

@@ -161,13 +161,14 @@ export default function OperationsConsole() {
   const browserCampaignUnknownCount = browserCampaign?.unknownCount ?? 0
   const hasBrowserCampaignRisk = Boolean(browserCampaign
     && (browserCampaign.state === 'failed' || browserCampaignUnknownCount > 0))
-  const hasRisk = Boolean(data && (
+  const hasBlockingRisk = Boolean(data && (
     data.batches.unknownAmountMinor > 0 || data.accounts.unknown > 0 || data.reconciliation.open > 0
-    || data.notifications.backlog > 0 || hasBrowserCampaignRisk
+    || hasBrowserCampaignRisk
   ))
+  const hasRisk = Boolean(hasBlockingRisk || (data && data.notifications.backlog > 0))
   const verifiedRuleCards = safeRuleCards(data?.ruleCards)
   const ruleCards = verifiedRuleCards || emptyRuleCards
-  const startSafe = Boolean(data && !offline && !stale && !hasRisk
+  const startSafe = Boolean(data && !offline && !stale && !hasBlockingRisk
     && verifiedRuleCards && data.readiness.monitor.ready && data.readiness.rules.ready && data.readiness.accounts.ready)
   const realRequested = Boolean(data?.runtime.requested || ['running', 'armed_waiting', 'stopping'].includes(data?.runtime.state || ''))
   const watcherProcess = data?.watcher.process

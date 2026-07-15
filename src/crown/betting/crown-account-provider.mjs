@@ -300,16 +300,28 @@ export class CrownAccountPreviewProvider {
     const minStakeMinor = exactCnyInteger(parsed.minStake.exact, 'crown-preview-cny-integer-required')
     const maxStakeMinor = exactCnyInteger(parsed.maxStake.exact, 'crown-preview-cny-integer-required')
     const submitValue = (value) => /^-?(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(String(value || ''))
-    const verifiedStakeStep = parsed.stakeStep?.verified === true
+    const providerStakeStep = parsed.stakeStep?.verified === true
       && Number.isSafeInteger(parsed.stakeStep.value)
       && parsed.stakeStep.value > 0
       ? parsed.stakeStep.value
       : null
+    const accountStakeStep = Number.isSafeInteger(account.stakeStepMinor)
+      && account.stakeStepMinor > 0
+      ? account.stakeStepMinor
+      : null
+    const verifiedStakeStep = providerStakeStep ?? accountStakeStep
+    const stakeStepProvenance = providerStakeStep !== null
+      ? parsed.stakeStep.source
+      : accountStakeStep !== null
+        ? 'verified-account-policy'
+        : parsed.stakeStep.source
     const exactExecutionRow = parsed.ok === true
       && capability.previewAllowed === true
       && capability.submitAllowed === true
       && capability.selectionSide === lockedIdentity.side
       && account.currency === 'CNY'
+      && account.amountScale === 0
+      && accountStakeStep !== null
       && Number.isSafeInteger(account.perBetLimitMinor)
       && account.perBetLimitMinor >= minStakeMinor
       && freshBalanceCny >= minStakeMinor
@@ -321,7 +333,7 @@ export class CrownAccountPreviewProvider {
       minStakeMinor,
       maxStakeMinor,
       stakeStepMinor: verifiedStakeStep,
-      stakeStepProvenance: parsed.stakeStep.source,
+      stakeStepProvenance,
       odds: parsed.odds.exact,
       line: parsed.line.exact,
       submitCon: parsed.submitCon.exact,

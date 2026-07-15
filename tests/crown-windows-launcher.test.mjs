@@ -312,6 +312,16 @@ function launchStart(fixture, extra = [], envOverrides = {}) {
   })
 }
 
+function holdFixturePostProcessStartReservation(fixture, milliseconds = 5_000) {
+  const file = path.join(fixture.root, 'launcher', 'start.ps1')
+  const source = fs.readFileSync(file, 'utf8')
+  const marker = '    $dashboardStartTime = Get-ProcessStartTime $dashboardProcess'
+  const holdFile = '.launcher-test-hold-post-process-start'
+  assert.equal(source.split(marker).length, 2, 'post-Process.Start launcher marker')
+  fs.writeFileSync(path.join(fixture.root, holdFile), '')
+  fs.writeFileSync(file, source.replace(marker, `    $testHold = Join-Path -Path $AppRoot -ChildPath '${holdFile}'\n    if ([IO.File]::Exists($testHold)) {\n      [IO.File]::Delete($testHold)\n      Start-Sleep -Milliseconds ${milliseconds}\n    }\n${marker}`))
+}
+
 function runPowerShell(script, { env = process.env, extra = [] } = {}) {
   return childResult(spawn(powershell, psArgs(script, extra), {
     cwd: os.tmpdir(),
@@ -778,6 +788,7 @@ test('reserved pre-child claim recovers when its exact parent dies before launch
 
 test('reserved post-Process.Start claim is cleaned by its bound wrapper before immediate restart', async (t) => {
   const fixture = makePortableFixture(t)
+  holdFixturePostProcessStartReservation(fixture)
   const runtimeDir = path.join(fixture.dataRoot, 'runtime')
   const claimFile = path.join(runtimeDir, 'launcher-startup-claim.json')
   const first = launchStart(fixture)

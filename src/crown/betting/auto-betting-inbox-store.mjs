@@ -4,6 +4,7 @@ const SKIP_REASONS = new Set([
   'global-real-betting-off', 'target-odds-out-of-range', 'market-changed',
   'signal-invalid', 'preview-incomplete', 'no-account-capacity', 'market-already-claimed',
   'water-down-alert-only', 'rule-deleted',
+  'signal-expired',
   'card-version-changed', 'card-snapshot-changed',
 ])
 const ERROR_CODES = new Set([
@@ -84,6 +85,18 @@ export class AutoBettingInboxStore {
     const expiresAt = plusSeconds(now, leaseSeconds)
     this.db.exec('BEGIN IMMEDIATE')
     try {
+      this.db.prepare(`
+        UPDATE auto_betting_signal_inbox AS inbox
+        SET status='skipped', skip_reason='signal-expired', next_attempt_at='',
+            lease_owner='', lease_expires_at='', updated_at=?
+        WHERE inbox.batch_id IS NULL
+          AND (inbox.status IN ('pending','retry')
+            OR (inbox.status='processing' AND inbox.lease_expires_at<=?))
+          AND EXISTS (
+            SELECT 1 FROM monitor_signals AS signal
+            WHERE signal.signal_id=inbox.signal_id AND signal.expires_at<=?
+          )
+      `).run(now, now, now)
       const rows = this.db.prepare(`
         SELECT inbox.*, signal.payload_json
         FROM auto_betting_signal_inbox AS inbox
@@ -117,6 +130,20 @@ export class AutoBettingInboxStore {
       try { this.db.exec('ROLLBACK') } catch {}
       throw error
     }
+  }
+
+  renew({ signalId, cardId, leaseOwner, leaseSeconds = 30 } = {}) {
+    if (!Number.isSafeInteger(leaseSeconds) || leaseSeconds < 1) throw new TypeError('leaseSeconds')
+    if (text(leaseOwner) !== this.ownerId) throw new Error('inbox-lease-stale')
+    const now = canonicalNow(this.now)
+    const expiresAt = plusSeconds(now, leaseSeconds)
+    const result = this.db.prepare(`
+      UPDATE auto_betting_signal_inbox
+      SET lease_expires_at=?, updated_at=?
+      WHERE signal_id=? AND card_id=? AND status='processing' AND lease_owner=? AND lease_expires_at>?
+    `).run(expiresAt, now, text(signalId), text(cardId), text(leaseOwner), now)
+    if (result.changes !== 1) throw new Error('inbox-lease-stale')
+    return { ownerId: this.ownerId, expiresAt }
   }
 
   complete({ signalId, cardId, leaseOwner, batchId } = {}) {

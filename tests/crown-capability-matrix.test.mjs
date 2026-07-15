@@ -65,7 +65,7 @@ test('side-aware runtime library exposes exactly eight proven templates', () => 
     rows.filter((row) => row.previewAllowed).length,
     rows.filter((row) => row.submitAllowed).length,
     rows.filter((row) => row.reconciliationAllowed).length,
-  ], [8, 8, 1, 0])
+  ], [8, 8, 4, 0])
 
   for (const direction of DIRECTIONS) {
     const [mode, marketType, selectionSide, ratioField, oddsField, wtype, choseTeam, rtype, isRB] = direction
@@ -93,7 +93,7 @@ test('side-aware runtime library exposes exactly eight proven templates', () => 
     assert.match(row.acceptanceCandidate.evidenceId, /^hmac-sha256:[a-f0-9]{64}$/)
     assert.match(row.protocolEvidenceDigest, /^sha256:[a-f0-9]{64}$/)
     assert.equal(row.acceptanceCandidate.protocolEvidenceDigest, row.protocolEvidenceDigest)
-    assert.equal(row.submitAllowed, mode === 'prematch' && marketType === 'asian_handicap' && selectionSide === 'away')
+    assert.equal(row.submitAllowed, mode === 'prematch')
     for (const dynamic of ['gid', 'odds', 'stake', 'balance', 'con', 'ratio', 'timestamp', 'uid', 'ver']) {
       assert.equal(Object.hasOwn(row.mapperEvidence.wireDefaults, dynamic), false)
       assert.equal(Object.hasOwn(row.mapperEvidence.previewWireBySide[selectionSide], dynamic), false)
@@ -146,11 +146,13 @@ test('all eight Preview mappings come only from their side-specific template', (
   )
 })
 
-test('only direct-accepted away capability can build Submit wire fields', () => {
+test('all accepted prematch handicap and total capabilities can build Submit wire fields', () => {
   const home = getCrownCapability(inputFor(DIRECTIONS[0]))
   const away = getCrownCapability(inputFor(DIRECTIONS[1]))
-  assert.throws(() => assertCrownCapability(home, { operation: 'submit' }), /submit-blocked/)
+  assert.equal(assertCrownCapability(home, { operation: 'submit' }).selectionSide, 'home')
   assert.equal(assertCrownCapability(away, { operation: 'submit' }).selectionSide, 'away')
+  assert.equal(assertCrownCapability(getCrownCapability(inputFor(DIRECTIONS[2])), { operation: 'submit' }).selectionSide, 'over')
+  assert.equal(assertCrownCapability(getCrownCapability(inputFor(DIRECTIONS[3])), { operation: 'submit' }).selectionSide, 'under')
 
   const lockedIdentity = {
     provider: 'crown', gid: 'gid-away', mode: 'prematch', period: 'full_time',
@@ -221,7 +223,7 @@ test('explicit protocol audit verifies Task2 artifacts and accepted evidence', (
     rowCount: 8,
     provisionalCount: 0,
     allowedPreviewCount: 8,
-    allowedSubmitCount: 1,
+    allowedSubmitCount: 4,
     allowedReconciliationCount: 0,
     errors: [],
   })
@@ -258,15 +260,15 @@ test('explicit verifier rejects self-consistent row forgery and cannot skip evid
 test('matrix version excludes capture-specific acceptance candidates but binds Submit authority', () => {
   const rows = structuredClone(listCrownCapabilities())
   const baseline = computeCrownCapabilityMatrixVersion(rows)
-  rows[0].acceptanceCandidate = {
+  rows[4].acceptanceCandidate = {
     allowed: true,
     evidenceId: `hmac-sha256:${'1'.repeat(64)}`,
     protocolEvidenceDigest: `sha256:${'2'.repeat(64)}`,
   }
-  rows[0].evidenceId = 'replacement-preview-capture'
+  rows[4].evidenceId = 'replacement-preview-capture'
   assert.equal(computeCrownCapabilityMatrixVersion(rows), baseline)
 
-  rows[1].evidenceId = 'replacement-direct-accepted-evidence'
+  rows[0].evidenceId = 'replacement-promoted-evidence'
   assert.notEqual(computeCrownCapabilityMatrixVersion(rows), baseline)
 })
 
@@ -281,6 +283,18 @@ test('Task2 artifact drift invalidates explicit audit without affecting runtime 
   assert.equal(result.ok, false)
   assert.match(result.errors.join('\n'), /task2:(?:candidates|prematch-full-time-asian-handicap-home)/)
   assert.equal(getCrownCapability(inputFor(DIRECTIONS[0])).previewAllowed, true)
+})
+
+test('accepted prematch promotion drift invalidates explicit audit', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-prematch-promotion-drift-'))
+  fs.cpSync(FIXTURES_ROOT, root, { recursive: true })
+  const file = path.join(root, 'artifacts', '20260715-prematch-submit-accepted.safe.json')
+  const artifact = JSON.parse(fs.readFileSync(file, 'utf8'))
+  artifact.directions[0].dispatchCount = 2
+  fs.writeFileSync(file, `${JSON.stringify(artifact, null, 2)}\n`)
+  const result = verifyCrownCapabilityMatrix({ fixturesRoot: root })
+  assert.equal(result.ok, false)
+  assert.match(result.errors.join('\n'), /accepted-prematch/)
 })
 
 test('legacy execution evidence validator remains fail-closed', () => {
@@ -300,6 +314,7 @@ test('all committed evidence files remain sanitized', () => {
     'prematch-full-time-asian-handicap-main.accepted.json',
     'artifacts/20260714-085221-accepted.safe.json',
     'artifacts/20260714-085221-watcher.safe.json',
+    'artifacts/20260715-prematch-submit-accepted.safe.json',
   ]
   for (const relative of files) {
     const text = fs.readFileSync(path.join(FIXTURES_ROOT, relative), 'utf8')

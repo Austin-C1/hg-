@@ -337,6 +337,24 @@ const PREVIEW_ENDPOINT = Object.freeze({ path: '/transform.php', functionName: '
 const SUBMIT_ENDPOINT = Object.freeze({ path: '/transform.php', functionName: 'FT_bet' })
 const NO_RECONCILIATION_ENDPOINT = Object.freeze({ path: null, functionName: null })
 
+const ACCEPTED_PREMATCH_PROMOTIONS = deepFreeze({
+  'prematch-full-time-asian-handicap-home': {
+    campaignId: '06147fbb59e147d31c190427422c5606a2d72b08311ce72f6412952462d621f0',
+    resultEvidenceDigest: 'sha256:ad6579ed867f50ff47019a36a238c162050ad08fd7329fe36be152c4615aab5c',
+    executionEvidenceSchema: 'crown-acceptance-submit-promotion-v1',
+  },
+  'prematch-full-time-total-over': {
+    campaignId: '06147fbb59e147d31c190427422c5606a2d72b08311ce72f6412952462d621f0',
+    resultEvidenceDigest: 'sha256:fd209b4aead6881c31f0e98015065d697e98a65ef4d89314966946146217a5aa',
+    executionEvidenceSchema: 'crown-acceptance-submit-promotion-v1',
+  },
+  'prematch-full-time-total-under': {
+    campaignId: '06147fbb59e147d31c190427422c5606a2d72b08311ce72f6412952462d621f0',
+    resultEvidenceDigest: 'sha256:866b3686fa28c1a296f6d4b0a0dfed82c7c078e19ca46b3f6a8d8928483f6338',
+    executionEvidenceSchema: 'crown-acceptance-submit-promotion-v1',
+  },
+})
+
 const DYNAMIC_FIELD_SOURCES = Object.freeze({
   balance: 'account-summary:current-balance',
   con: 'preview-response:con',
@@ -408,10 +426,14 @@ function deepFreeze(value) {
 
 function runtimeCapability(direction) {
   const directAccepted = direction.id === 'prematch-full-time-asian-handicap-away'
+  const promotion = ACCEPTED_PREMATCH_PROMOTIONS[direction.id] || null
+  const submitAccepted = directAccepted || promotion !== null
   const previewResponseFieldSet = ACCEPTED_PREVIEW_RESPONSE_FIELD_SET
-  const submitResponseFieldSet = directAccepted ? ACCEPTED_SUBMIT_RESPONSE_FIELD_SET : []
+  const submitResponseFieldSet = submitAccepted ? ACCEPTED_SUBMIT_RESPONSE_FIELD_SET : []
   const evidenceId = directAccepted
     ? 'crown-capture-20260714-085221-prematch-full-time-asian-handicap-main-accepted'
+    : promotion
+      ? `crown-acceptance-${promotion.campaignId}-${direction.id}-${promotion.resultEvidenceDigest.slice(-16)}`
     : `crown-capture-20260714-1848-${direction.id}`
   const row = {
     mode: direction.mode,
@@ -433,7 +455,7 @@ function runtimeCapability(direction) {
       submitWireBySide: { [direction.selectionSide]: direction.submit },
       wireDefaults: {
         preview: { langx: 'zh-cn', odd_f_type: 'H' },
-        ...(directAccepted ? {
+        ...(submitAccepted ? {
           submit: {
             autoOdd: 'Y', imp: 'N', isYesterday: 'N', langx: 'zh-cn',
             odd_f_type: 'H', ptype: '', timestamp2: '',
@@ -458,10 +480,10 @@ function runtimeCapability(direction) {
       protocolEvidenceDigest: PROTOCOL_EVIDENCE_DIGEST,
     },
     previewAllowed: true,
-    submitAllowed: directAccepted,
+    submitAllowed: submitAccepted,
     reconciliationAllowed: false,
     blockedReason: '',
-    submitBlockedReason: directAccepted ? '' : 'crown-submit-direct-acceptance-missing',
+    submitBlockedReason: submitAccepted ? '' : 'crown-submit-direct-acceptance-missing',
     reconciliationBlockedReason: 'crown-reconciliation-evidence-missing',
     evidenceId,
     protocolEvidenceDigest: PROTOCOL_EVIDENCE_DIGEST,
@@ -471,10 +493,12 @@ function runtimeCapability(direction) {
     responseFieldSetFingerprint: fingerprintCrownFieldSet(previewResponseFieldSet),
     submitRequestFieldSet: ACCEPTED_SUBMIT_REQUEST_FIELD_SET,
     submitRequestFieldSetFingerprint: fingerprintCrownFieldSet(ACCEPTED_SUBMIT_REQUEST_FIELD_SET),
-    ...(directAccepted ? {
+    ...(submitAccepted ? {
       submitResponseFieldSet: ACCEPTED_SUBMIT_RESPONSE_FIELD_SET,
       submitResponseFieldSetFingerprint: fingerprintCrownFieldSet(ACCEPTED_SUBMIT_RESPONSE_FIELD_SET),
-      executionEvidenceSchema: 'crown-execution-evidence-candidate-v3',
+      executionEvidenceSchema: directAccepted
+        ? 'crown-execution-evidence-candidate-v3'
+        : promotion.executionEvidenceSchema,
     } : {}),
   }
   row.key = capabilityKey(row)
@@ -961,8 +985,13 @@ function runtimeCapabilityErrors(rows) {
   if (rows.length !== 8) errors.push('runtime:row-count')
   if (keys.size !== canonicalRows.size
     || [...canonicalRows.keys()].some((key) => !keys.has(key))) errors.push('runtime:canonical-coverage')
-  if (submitRows.length !== 1
-    || submitRows[0]?.key !== 'prematch|full_time|asian_handicap|main|away') {
+  const expectedSubmitKeys = [
+    'prematch|full_time|asian_handicap|main|home',
+    'prematch|full_time|asian_handicap|main|away',
+    'prematch|full_time|total|main|over',
+    'prematch|full_time|total|main|under',
+  ]
+  if (!same(submitRows.map((row) => row.key), expectedSubmitKeys)) {
     errors.push('runtime:submit-authority')
   }
   return errors
@@ -1065,12 +1094,60 @@ function auditTaskTwoProtocol(fixturesRoot, rows, errors) {
   }
 }
 
+function auditAcceptedPrematchPromotions(fixturesRoot, rows, errors) {
+  const relativePath = 'artifacts/20260715-prematch-submit-accepted.safe.json'
+  const artifact = readAuditArtifact(fixturesRoot, relativePath, errors)
+  if (!artifact) return
+  const promotionEntries = Object.entries(ACCEPTED_PREMATCH_PROMOTIONS)
+  if (artifact.schemaVersion !== 'crown-acceptance-submit-promotion-v1'
+    || artifact.campaignId !== '06147fbb59e147d31c190427422c5606a2d72b08311ce72f6412952462d621f0'
+    || artifact.observedCapabilityVersion !== 'crown-protocol-capabilities-v2:c9139fcb53c51012'
+    || artifact.artifactSafeDigest !== fingerprintCrownProtocolArtifact(artifact)
+    || artifact.directions?.length !== promotionEntries.length) {
+    errors.push('accepted-prematch:artifact')
+  }
+  const seen = new Set()
+  for (const direction of artifact.directions || []) {
+    const promotion = ACCEPTED_PREMATCH_PROMOTIONS[direction.directionId]
+    const row = rows.find((item) => item.mode === direction.mode
+      && item.period === direction.period
+      && item.marketType === direction.marketType
+      && item.lineVariant === direction.lineVariant
+      && item.selectionSide === direction.selectionSide)
+    const expectedEvidenceId = promotion
+      ? `crown-acceptance-${promotion.campaignId}-${direction.directionId}-${promotion.resultEvidenceDigest.slice(-16)}`
+      : ''
+    if (!promotion || seen.has(direction.directionId)
+      || direction.mode !== 'prematch'
+      || direction.period !== 'full_time'
+      || direction.lineVariant !== 'main'
+      || direction.state !== 'accepted'
+      || direction.outcome !== 'accepted'
+      || direction.authorizedMinimumMinor !== 50
+      || direction.dispatchCount !== 1
+      || direction.validationPollCount !== 1
+      || direction.resultEvidenceDigest !== promotion.resultEvidenceDigest
+      || !Number.isFinite(Date.parse(direction.acceptedAt))
+      || row?.submitAllowed !== true
+      || row?.executionEvidenceSchema !== promotion.executionEvidenceSchema
+      || row?.evidenceId !== expectedEvidenceId
+      || !same(row?.submitResponseFieldSet, ACCEPTED_SUBMIT_RESPONSE_FIELD_SET)) {
+      errors.push(`accepted-prematch:${direction.directionId || 'direction'}`)
+    }
+    seen.add(direction.directionId)
+  }
+  if (promotionEntries.some(([directionId]) => !seen.has(directionId))) {
+    errors.push('accepted-prematch:coverage')
+  }
+}
+
 export function verifyCrownCapabilityMatrix({
   fixturesRoot = DEFAULT_FIXTURES_ROOT,
   rows = ROWS,
 } = {}) {
   const errors = runtimeCapabilityErrors(rows)
   auditTaskTwoProtocol(fixturesRoot, rows, errors)
+  auditAcceptedPrematchPromotions(fixturesRoot, rows, errors)
   const accepted = verifyAcceptedAwayCapabilityEvidence({ fixturesRoot })
   errors.push(...accepted.errors.map((error) => `accepted-away:${error}`))
   const runtimeAccepted = rows.find((row) => row.key === 'prematch|full_time|asian_handicap|main|away')

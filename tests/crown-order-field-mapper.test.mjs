@@ -107,10 +107,10 @@ test('strict Preview wire requires a verified runtime protocol version', () => {
   )
 })
 
-test('strict Submit mapper does not infer a wire for an unaccepted side', () => {
-  const home = capability(DIRECTIONS[0])
+test('strict Submit mapper does not infer a wire for an unaccepted live direction', () => {
+  const home = capability(DIRECTIONS[4])
   const identity = {
-    provider: 'crown', gid: '1', mode: 'prematch', period: 'full_time',
+    provider: 'crown', gid: '1', mode: 'live', period: 'full_time',
     market: 'asian_handicap', lineVariant: 'main', line: '0.5', side: 'home',
   }
   assert.throws(() => buildStrictCrownSubmitWireFields({

@@ -1,8 +1,9 @@
 # Crown Betting Protocol Module
 
-## 2026-07-15 Task 3 side-aware 程序内协议库
+## 2026-07-15 当前 side-aware 程序内协议库
 
-- 当前 canonical matrix 为 Preview/Submit/Reconciliation `8/1/0`：八个全场 main 方向均可 strict Preview；只有 `prematch/full_time/asian_handicap/main/away` 有 direct accepted 证据并允许 Submit；Reconciliation 全部关闭。
+- 当前 canonical matrix 为 Preview/Submit/Reconciliation `8/4/0`：八个全场 main 方向均可 strict Preview；赛前全场 main 的让球 home/away、大小球 over/under 有 direct accepted 证据并允许 Submit；Reconciliation 全部关闭。
+- `data/fixtures/crown/betting-protocol/artifacts/20260715-prematch-submit-accepted.safe.json` 保存三条新增方向的脱敏 promotion 证据；每条固定 `50 CNY`、`dispatchCount=1`、`validationPollCount=1`，并由 campaign、result digest 与 artifact digest 审计。该文件不含账号、session、Cookie、Token、订单引用或原始响应。
 - 五维 key 固定为 `mode|period|marketType|lineVariant|selectionSide`。运行时使用预构建只读 Map，不读 fixture、不扫描数组，也不允许一侧证据授权另一侧。
 - 八方向 endpoint、静态 wire、动态字段来源和字段集合来自 Task 2 safe artifacts。Task 2 观察到的 Preview response 字段集合在八方向一致；未取得方向级证据的 `score` 不加入生产 contract。
 - `protocolEvidenceDigest` 只绑定稳定协议。capture-specific blocked candidate 不进入 matrix version；每次 B2 prepare 另存 runtime `executionCandidateDigest`，两种摘要不混用。
@@ -29,7 +30,7 @@
 
 - 用户决定不执行 49 CNY rejected probe 或 51 CNY adjacent-step probe；Task 9B 曾准备的 CLI gate、request-intent/effective rewrite、probe pairing/session state 与合成测试均已从当前代码撤销。brief/report 只作为 superseded 历史记录。
 - 普通 capture 恢复 Task 9A 后契约：默认阻断 Submit；真实 capture 必须显式 `--allow-real-submit --confirm REAL_BET`、可见浏览器、正整数 `maxStake <= 50`；service workers 为 `block`，每个 BrowserContext 最多放行一次 exact `FT_bet`，route 不改写页面 body。
-- 金额策略当时改为已确认的最小 50 CNY，并保守采用 50 的正整数倍；仍必须同时满足账户 `perBetLimit` 与 fresh Preview 的直接上下限。该历史业务口径当时未改变 Preview/Submit/Reconciliation capability `0/0/0`；当前值以上方 Task 3 的 side-aware `8/1/0` 为准。
+- 金额策略当时改为已确认的最小 50 CNY，并保守采用 50 的正整数倍；仍必须同时满足账户 `perBetLimit` 与 fresh Preview 的直接上下限。该历史业务口径当时未改变 Preview/Submit/Reconciliation capability `0/0/0`；当前值以上方 Task 3 的 side-aware `8/4/0` 为准。
 - outcome 采用 accepted-only：只有 direct response 明确证明 accepted 才可分类 accepted；所有非明确 accepted 的响应与恢复场景统一为 `unknown`，不自动重试或按 rejected 转投。
 - Task 9B 未运行浏览器、未访问 Crown/network、未发送 Submit、未改 capability/Provider/worker，也未执行 Git 操作。
 
@@ -39,20 +40,23 @@
 - 选取规则限定为唯一 direct `FT_bet`，并绑定最近的、wire identity 一致的成功 `FT_order_view`；Preview strong 只允许 `H/C`，Submit strong 只允许 `Y/N`，且必须满足已确认的 chose-team 关系。spread、currency、account、session、context 或字段集合漂移均 fail-closed。
 - capture `20260714-085221` 的 safe candidate digest 为 `sha256:93a640b1d3d7660553cd053e73cd73b4de2a14266e0321d0a298f1370e1afe1`；candidate raw-capture digest `sha256:6bc473a26020015ae3376168005197465d559079f6f2f3f1fa3841b51059827a` 是对 `private/raw-network.jsonl` 原始字节直接计算的 SHA-256。候选包含 4 条有序记录、6 个排除字段、8 个 HMAC binding。
 - independent review 修复后，direct Submit response 的 `gid/gtype/wtype/rtype` 必须在 field-set、outcome 和 result binding 处理前与 Submit request 逐一 canonical exact 对照；任一缺失或不等统一报 `submit-response-identity-drift`。
-- 该历史 candidate 当时仍保留 direct rejected attempt、integer CNY stake-step 与 exact capability proof 三项缺口，因此当时 Preview/Submit/Reconciliation capability 保持 `0/0/0`。用户随后取消 rejected/step probe，不再计划第二条 rejected capture 或跨 capture combiner；后续按 accepted-only 与 50 CNY 正整数倍口径处理，当前 capability 以上方 Task 3 的 side-aware `8/1/0` 为准。
+- 该历史 candidate 当时仍保留 direct rejected attempt、integer CNY stake-step 与 exact capability proof 三项缺口，因此当时 Preview/Submit/Reconciliation capability 保持 `0/0/0`。用户随后取消 rejected/step probe，不再计划第二条 rejected capture 或跨 capture combiner；后续按 accepted-only 与 50 CNY 正整数倍口径处理，当前 capability 以上方 Task 3 的 side-aware `8/4/0` 为准。
 - 验证：证据、redaction、classifier、capability matrix 测试共 `82/82` 通过；analyzer 与 capture syntax check 通过。capture 的 service-worker block、单次 exact `FT_bet`、正整数 stake、`--max-stake` 上限和第二次 Submit 阻断均未改。
 
 ## 2026-07-14 受控真实 accepted 证据（历史采集结论；当前 capability 以上方 Task 3 为准）
 
 - 在用户提交当刻确认下，抓包 `20260714-085221` 完成一笔 `50 CNY` 的真实 Preview→单次 `FT_bet`。直接 Submit 响应为 HTTP 200、`code=560`，回显金额 50、赔率 0.96、余额 950；Crown 页面同步显示已确认和一笔投注记录。
 - 抓包器在整个 BrowserContext 上记录和拦截，因此列表页与比赛详情页产生的新 tab 都受同一安全边界约束；本次 exact `FT_bet` 只出现一次且未被阻断。
-- 该 accepted 响应尚不能单独打开 canonical capability：本节描述的是 Task 9A 之前的历史 public artifact，其 `captureId` `sha256:75ec1ecb80c832ebd65f29196fac8f3409bc1a4ee9c99d747d2943968eb47f32` 是对 JSON 序列化后的 capture 目录 basename 计算的 SHA-256，不是 raw capture 内容摘要。随后形成的历史 exact evidence candidate 补齐了 account/session/execution/result HMAC bindings，但当时仍缺 exact capability/`lineVariant`、服务端 integer CNY stake step 来源和 rejected 直接响应，因此该历史阶段的 Preview/Submit/Reconciliation 为 `0/0/0`，自动 worker 保持 fail-closed；当前 capability 以上方 Task 3 的 side-aware `8/1/0` 为准。
+- 该 accepted 响应尚不能单独打开 canonical capability：本节描述的是 Task 9A 之前的历史 public artifact，其 `captureId` `sha256:75ec1ecb80c832ebd65f29196fac8f3409bc1a4ee9c99d747d2943968eb47f32` 是对 JSON 序列化后的 capture 目录 basename 计算的 SHA-256，不是 raw capture 内容摘要。随后形成的历史 exact evidence candidate 补齐了 account/session/execution/result HMAC bindings，但当时仍缺 exact capability/`lineVariant`、服务端 integer CNY stake step 来源和 rejected 直接响应，因此该历史阶段的 Preview/Submit/Reconciliation 为 `0/0/0`，自动 worker 保持 fail-closed；当前 capability 以上方 Task 3 的 side-aware `8/4/0` 为准。
 
 ## 2026-07-14 账号现场可执行性契约
 
 - 账号历史登录/余额检查时间不参与全局真实投注启动；每个 child 仅凭执行当刻登录或复用的有效 session、现场读取的皇冠账号信息和 strict `FT_order_view` Preview 取得执行证明。
 - 持久化的旧 `betting-account-login-not-fresh`、`betting-account-balance-not-fresh` 在启动和运行 tick 中按当前 preflight 重算。
 - exact Preview/Submit capability、`perBetLimit`、精确盘口/赔率/金额和每 child 单次 Submit 约束不变。
+- 多账号 fresh Preview 使用 `Promise.allSettled` 并发收集容量；Submit 仍逐 child 进入持久 lock、fence 与 durable attempt。同一账号不能并发 Submit，dispatch 后不明确的结果仍记为 unknown 且不重投。
+- Preview 响应未提供 stake step 时，只允许使用账户中已验证的正整数 `stakeStepMinor`，且账户必须为 CNY、`amountScale=0`；否则仍只允许 exact minimum 或 fail-closed。
+- Worker 对 processing inbox 续租；到期 Signal 在调用浏览器前终结为 `signal-expired`。
 
 ## 历史：2026-07-13 自动投注执行契约（当时口径；当前 capability 以上方 Task 3 为准）
 
@@ -60,9 +64,9 @@
 - 每个账号在同一 batch 最多使用一次。明确 `rejected` 证明没有创建注单后释放锁，剩余金额转给下一个未使用账号；`unknown` 保留金额与账号锁，禁止自动重试。
 - 一个 child 的 Submit 网络请求一旦开始，最多只允许一次提交；超时、断线、截断、未分类响应或无法证明请求未发送的恢复场景全部按 `unknown` 处理，不得再次发送。
 - B2 只接受 fresh Preview，并要求其赔率仍处于规则卡冻结快照的赔率区间；canonical 盘口身份使用实际 `handicapRaw`，不再用 `lineKey` 代替 handicap。
-- 生产 Preview/Submit capability 当时为 `0/0`。随后在 2026-07-14 取得一笔真实 accepted `FT_bet`，并生成带 account/session/execution/result HMAC bindings 的 exact evidence candidate；该段记录的历史阶段仍因 exact capability/`lineVariant`、服务端 integer CNY stake step 来源及 rejected 响应证据不完整而 fail-closed。当前 capability 只以上方 Task 3 的 side-aware Preview/Submit/Reconciliation `8/1/0` 为准。
+- 生产 Preview/Submit capability 当时为 `0/0`。随后在 2026-07-14 取得一笔真实 accepted `FT_bet`，并生成带 account/session/execution/result HMAC bindings 的 exact evidence candidate；该段记录的历史阶段仍因 exact capability/`lineVariant`、服务端 integer CNY stake step 来源及 rejected 响应证据不完整而 fail-closed。当前 capability 只以上方 Task 3 的 side-aware Preview/Submit/Reconciliation `8/4/0` 为准。
 
-本节及以下各节均保留为历史演进记录；任何 capability 表述与文件顶部 Task 3 冲突时，均以顶部 side-aware `8/1/0` 为准。
+本节及以下各节均保留为历史演进记录；任何 capability 表述与文件顶部 Task 3 冲突时，均以顶部 side-aware `8/4/0` 为准。
 
 ## 历史：2026-07-12 动态卡片执行契约
 
@@ -71,7 +75,7 @@
 - inbox、market-once、batch、ExecutionAuthorization 和 B2 prepare/recovery 均绑定 `cardId + cardVersion + immutable card snapshot`。market-once identity 还包含事件、Signal mode、时段、market、exact line 和对面盘。
 - B2 在任何 provider I/O 前校验 card scope 与 allowed Signal mode；`rejected` 不转投，`unknown` 不重投并保留金额和账号锁。卡片删除后已创建 batch 继续按不可变快照处理。
 - 普通卡片删除不删除订单历史；完全重置才清理 card inbox/snapshot、batch/child、claim、锁、授权预算、submit/reconciliation/notification 等运行证据，同时保留现存卡片配置。
-- app/frontend/schema contract 当时为 `dynamic-betting-cards-v1`。canonical Crown preview/submit/reconciliation capability 当时为 `0/0/0`；旧 adapter/CLI 已删除，不能作为替代执行入口。当前 capability 以上方 Task 3 的 side-aware `8/1/0` 为准。
+- app/frontend/schema contract 当时为 `dynamic-betting-cards-v1`。canonical Crown preview/submit/reconciliation capability 当时为 `0/0/0`；旧 adapter/CLI 已删除，不能作为替代执行入口。当前 capability 以上方 Task 3 的 side-aware `8/4/0` 为准。
 
 ## 2026-07-11 本机免密下的手动账号检测边界
 
@@ -93,7 +97,7 @@
 
 - B1 Task 1–9、B2 Task 10–12 已完成代码实现和安全复核。Task 12 focused 108/108、backend 749/749、syntax 162；三路最终复核均为 0 Critical/Important。
 - B2 提供 durable submit attempt、原子授权预算、同账号 fenced lock、unknown 不重投、单 child 恢复、持久对账证据/退避/截止时间、v2 AAD provider reference 和 outcome notification outbox。
-- 旧 adapter/CLI 已删除；生产 `CrownAccountExecutionProvider` 在当时 canonical submit capability 为 0 时零网络拒绝。当前 capability 以上方 Task 3 的 side-aware `8/1/0` 为准。
+- 旧 adapter/CLI 已删除；生产 `CrownAccountExecutionProvider` 在当时 canonical submit capability 为 0 时零网络拒绝。当前 capability 以上方 Task 3 的 side-aware `8/4/0` 为准。
 - 离线 fixtures 不能签发 Crown 能力；生产 reconciliation/manual resolution 未获验证能力时 fail-closed。
 - 真实小额验收记录为未执行：没有真实 Crown preview、`FT_bet` 或 Telegram 发送。详见 `.superpowers/sdd/task-12-report.md`。
 
@@ -124,7 +128,7 @@
 - 已新增脱敏抓包分析入口：`scripts/crown-betting-protocol-analyze.mjs`。
 - 协议字段地图入口：`docs/crown-betting-protocol-map.md`。
 - 非真实提交抓包现在会在网络层拦截 submit 请求；`FT_bet` 会被分类为 submit，`allowRealSubmit=false` 时会被 abort 并写入 `request-blocked` 记录。
-- Dashboard 的 `GET /api/app/bet-target-history` 直接从 `bet_batches` 与本页 `bet_child_orders` 生成只读历史；一行对应一个 `authorization_id IS NOT NULL` 的真实执行 batch，Preview/dry-run 不会混入。分页 cursor 使用 `created_at + batch_id` 稳定倒序，支持 status/mode 筛选。
+- Dashboard 的 `GET /api/app/bet-target-history` 直接从 `bet_batches` 与本页 `bet_child_orders`/attempt 生成只读历史；一行对应至少存在真实 dispatch 证据的 batch，Preview、dry-run 和未 dispatch 的 prepared 记录不会混入。分页 cursor 使用 `created_at + batch_id` 稳定倒序，支持 status/mode 筛选。
 - 历史金额只把 `accepted` child 计入完成额与金额加权平均赔率，`unknown` 独立显示且不算成功；比赛、方向和盘口从不可变 selection snapshot 读取。DTO 不返回账号、signal/child/batch 内部 ID、provider reference、submit attempt、session、ticket 或 cookie。
 - 当前 schema-v2 候选链路由持久 Signal 驱动，默认写 `data/runtime/betting-candidates-v2.jsonl`；`src/crown/betting/monitor-bet-signal.mjs` 负责方向和赔率门禁。`evaluateMonitorChange()`→`betting-candidates.jsonl` 只属于显式 schema-v1 legacy/history。
 - 已知旧 dry-run 占位规则/账号名会被 SQLite 打开流程精确迁移成中文，不影响用户自定义名称。
@@ -137,7 +141,7 @@
 - 不绕过 CAPTCHA、滑块、设备校验、签名、限速或账号保护。
 - `private/` 抓包目录可能包含本机认证材料，只能保存在 ignored runtime 路径。
 - 只靠人工提示不够安全；非提交抓包必须启用网络层提交拦截。
-- worker 的 `off|preview|simulated` 只用于离线调试；real worker 只能由 Dashboard 父进程通过私有 ready-ticket/GO IPC 启动。当前 canonical Crown Preview/Submit/Reconciliation 为 side-aware `8/1/0`，只有赛前全场让球 away 行允许 Submit；运行仍需 fresh identity/Preview 和所有 preflight 通过。
+- worker 的 `off|preview|simulated` 只用于离线调试；real worker 只能由 Dashboard 父进程通过私有 ready-ticket/GO IPC 启动。当前 canonical Crown Preview/Submit/Reconciliation 为 side-aware `8/4/0`，只有赛前全场让球 away 行允许 Submit；运行仍需 fresh identity/Preview 和所有 preflight 通过。
 - 已删除的旧 adapter CLI 不得从历史计划恢复或用来绕过 B2 闸门。
 
 ## 运行命令
@@ -265,7 +269,7 @@ npm run check
 # 历史：C4 readiness gate（2026-07-12；当前 capability 以上方 Task 3 为准）
 
 - Canonical capability matrix：`crown-protocol-capabilities-v2:23628f891d1edb9a`。
-- 当时 Exact coverage：preview `0`、submit `0`、reconciliation `0`；当前 capability 以上方 Task 3 的 side-aware `8/1/0` 为准。
+- 当时 Exact coverage：preview `0`、submit `0`、reconciliation `0`；当前 capability 以上方 Task 3 的 side-aware `8/4/0` 为准。
 - 动态 `ver` 的精确来源及 preview/submit/reconciliation 三段证据仍不完整；任何字段指纹、mode、period、marketType、lineVariant 不精确时均 fail-closed。
 - `rejected` 不进入 allocator；`unknown` 保留 authorization budget、child ledger 与账号锁，重启后只允许对账，不允许重投。
 - 当时 live readiness：`blocked`。当时没有任何 capability row 同时具备 verified preview+submit+reconciliation，因此不得启用真实 Crown 网络提交。
@@ -275,4 +279,4 @@ npm run check
 - 动态 `protocolVersion` 只接受当次成功 production login response 的 `<ver>`；strict betting session 文件不持久化、也不恢复该 provenance。Preview 要求 fresh verified-version refresh，伪造缓存文件不能自证。
 - `FT_order_view` request 与 response 使用原始 Playwright Request 的 sequence 关联；公开 linkage tag 使用私有 32-byte 以上 key 对已授权 event/line/side/stake context 做 HMAC-SHA256，原值和 key 均不进入证据。
 - request/response exact field set 对 extra、任意重复 XML tag、未知敏感字段 fail-closed；只允许把 transport `uid` 从公开 field set 中排除。raw body、ticket、origin、绝对路径和任意敏感值写出前会被拒绝。
-- 当时离线 focused `86/86`、相关 parser/mapper/evidence `96/96`、backend `1092/1092`、security `5/5`、syntax `217` 通过；最终独立复审 Critical/Important/Minor `0/0/0`。该历史阶段的 canonical matrix 为 preview/submit/reconciliation `0/0/0`；当前 capability 以上方 Task 3 的 side-aware `8/1/0` 为准。
+- 当时离线 focused `86/86`、相关 parser/mapper/evidence `96/96`、backend `1092/1092`、security `5/5`、syntax `217` 通过；最终独立复审 Critical/Important/Minor `0/0/0`。该历史阶段的 canonical matrix 为 preview/submit/reconciliation `0/0/0`；当前 capability 以上方 Task 3 的 side-aware `8/4/0` 为准。

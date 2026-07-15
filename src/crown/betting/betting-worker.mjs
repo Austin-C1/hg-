@@ -19,7 +19,7 @@ export function waitFor(milliseconds, signal) {
 }
 
 export class BettingWorker {
-  constructor({ mode = 'off', db = null, coordinator = null, inboxStore = null, consumer = null, acceptanceConsumer = null, lease = null, processLease = null, realExecutionGate = assertRealBettingRequested, accountPauseFinalizer = null, claimLimit = 10, claimLeaseSeconds = 30 } = {}) {
+  constructor({ mode = 'off', db = null, coordinator = null, inboxStore = null, consumer = null, acceptanceConsumer = null, lease = null, processLease = null, realExecutionGate = assertRealBettingRequested, accountPauseFinalizer = null, claimLimit = 1, claimLeaseSeconds = 30 } = {}) {
     if (!MODES.has(mode)) throw new TypeError('betting-worker-mode')
     if (!Number.isSafeInteger(claimLimit) || claimLimit < 1) throw new TypeError('claimLimit')
     if (!Number.isSafeInteger(claimLeaseSeconds) || claimLeaseSeconds < 1) throw new TypeError('claimLeaseSeconds')
@@ -99,8 +99,29 @@ export class BettingWorker {
     for (const item of items) {
       if (this.mode === 'real') this.realExecutionGate(this.db)
       this.lease.assertFence(this.lease.fencingToken)
+      let renewalTimer = null
+      let renewalError = null
+      if (typeof this.inboxStore.renew === 'function') {
+        renewalTimer = setInterval(() => {
+          try {
+            item.inboxLease = this.inboxStore.renew({
+              signalId: item.signalId,
+              cardId: item.cardId,
+              leaseOwner: item.inboxLease?.ownerId,
+              leaseSeconds: this.claimLeaseSeconds,
+            })
+          } catch (error) {
+            renewalError = error
+            clearInterval(renewalTimer)
+          }
+        }, Math.max(1, Math.floor(this.claimLeaseSeconds * 1_000 / 3)))
+        renewalTimer.unref?.()
+      }
       try {
         const result = await this.consumer.process(item, { executionMode: this.mode })
+        if (renewalTimer !== null) clearInterval(renewalTimer)
+        renewalTimer = null
+        if (renewalError) throw renewalError
         const inboxIdentity = {
           signalId: item.signalId,
           cardId: item.cardId,
@@ -128,6 +149,7 @@ export class BettingWorker {
         })
         results.push({ status: 'retry', errorCode: code })
       } finally {
+        if (renewalTimer !== null) clearInterval(renewalTimer)
         if (this.mode === 'real') this._finalizeAccountPauses()
       }
       this.lease.heartbeat()

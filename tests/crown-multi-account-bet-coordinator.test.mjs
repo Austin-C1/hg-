@@ -1231,14 +1231,14 @@ test('previews and submits accounts strictly in order and replays one Signal ide
   }
 })
 
-test('preview mode performs ordered read-only previews without creating a batch or submitting', async () => {
+test('preview mode performs concurrent read-only previews without creating a batch or submitting', async () => {
   const context = fixture()
   try {
     const result = await context.coordinator.processSignal(signal(), { mode: 'preview' })
     assert.equal(result.mode, 'preview')
     assert.equal(result.status, 'preview_only')
     assert.equal(result.allocations.reduce((sum, item) => sum + item.amountMinor, 0), 100)
-    assert.equal(context.provider.maxActivePreview, 1)
+    assert.equal(context.provider.maxActivePreview, 2)
     assert.equal(context.provider.submitCalls.length, 0)
     assert.equal(context.handle.db.prepare('SELECT COUNT(*) AS count FROM bet_batches').get().count, 0)
   } finally {

@@ -77,7 +77,7 @@ test('manifest fixes exactly eight unique canonical directions without promoting
     before.filter((row) => row.previewAllowed).length,
     before.filter((row) => row.submitAllowed).length,
     before.filter((row) => row.reconciliationAllowed).length,
-  ], [8, 1, 0])
+  ], [8, 4, 0])
 })
 
 test('runner counts only one direct accepted result per direction and terminal unknown stops all later claims', () => {

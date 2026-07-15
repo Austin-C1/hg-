@@ -106,6 +106,32 @@ function addChild(db, suffix, childSuffix, status, amount, odds) {
   )
 }
 
+function markChildDispatched(db, suffix, childSuffix, { status = 'accepted' } = {}) {
+  db.prepare(`UPDATE bet_child_orders
+    SET submit_dispatched_at=?, status=?, submitted_at=?, resolved_at=?
+    WHERE child_order_id=?`).run(T0, status, T0, T0, `child-${suffix}-${childSuffix}`)
+}
+
+function addAttempt(db, suffix, childSuffix, { status = 'accepted', amount = 50, odds = '0.80' } = {}) {
+  const childOrderId = `child-${suffix}-${childSuffix}`
+  const submitAttemptId = `attempt-${suffix}-${childSuffix}`
+  db.prepare(`INSERT INTO bet_submit_attempts (
+    submit_attempt_id,child_order_id,authorization_id,attempt_ordinal,amount_minor,
+    fencing_token,capability_version,capability_evidence_id,preview_odds,
+    locked_identity_json,preview_snapshot_json,prepared_at,created_at,updated_at
+  ) VALUES (?,?,NULL,1,?,1,'history-capability','history-evidence',?,'{}','{}',?,?,?)`)
+    .run(submitAttemptId, childOrderId, amount, odds, T0, T0, T0)
+  if (status === 'submit_prepared') return
+  db.prepare(`UPDATE bet_submit_attempts
+    SET status='submit_dispatched',dispatched_at=?,updated_at=?
+    WHERE submit_attempt_id=?`).run(T0, T0, submitAttemptId)
+  if (status !== 'submit_dispatched') {
+    db.prepare(`UPDATE bet_submit_attempts
+      SET status=?,result_at=?,updated_at=?
+      WHERE submit_attempt_id=?`).run(status, T0, T0, submitAttemptId)
+  }
+}
+
 test('bet target history returns one real batch per row and computes accepted-only weighted odds', () => {
   const { handle, repo, db } = setup()
   addBatch(db, { suffix: 'weighted', accepted: 400, unknown: 200, target: 1000, kind: 'card', status: 'partial' })
@@ -114,7 +140,8 @@ test('bet target history returns one real batch per row and computes accepted-on
   addChild(db, 'weighted', '2', 'rejected', 100, '9.99')
   addChild(db, 'weighted', '3', 'unknown', 200, '8.88')
   addChild(db, 'weighted', '4', 'cancelled', 200, '7.77')
-  addBatch(db, { suffix: 'preview', accepted: 100, authorized: false })
+  markChildDispatched(db, 'weighted', '0')
+  addBatch(db, { suffix: 'preview', accepted: 100, authorized: true })
   addChild(db, 'preview', '0', 'accepted', 100, '0.80')
 
   const page = repo.listBetTargetHistory({ limit: 20 })
@@ -149,6 +176,7 @@ test('bet target history includes dispatched acceptance batches but excludes neu
     suffix: 'acceptance', accepted: 50, target: 50, authorized: false, status: 'completed',
   })
   addChild(db, 'acceptance', '0', 'accepted', 50, '0.80')
+  markChildDispatched(db, 'acceptance', '0')
   addBatch(db, {
     suffix: 'preview', accepted: 50, target: 50, authorized: false, status: 'completed',
   })
@@ -177,11 +205,54 @@ test('bet target history includes dispatched acceptance batches but excludes neu
   assert.equal(page.items[0].averageAcceptedOdds, '0.8')
 })
 
+test('bet target history includes neutral card batches only after real child dispatch', () => {
+  const { handle, repo, db } = setup()
+  addBatch(db, {
+    suffix: 'neutral-direct', accepted: 150, unknown: 50, target: 250,
+    authorized: false, kind: 'card', status: 'partial', finishReason: 'partial_capacity',
+  })
+  addChild(db, 'neutral-direct', '0', 'accepted', 100, '0.90')
+  addChild(db, 'neutral-direct', '1', 'accepted', 50, '1.10')
+  markChildDispatched(db, 'neutral-direct', '0')
+  markChildDispatched(db, 'neutral-direct', '1')
+
+  addBatch(db, {
+    suffix: 'neutral-attempt', accepted: 50, target: 50,
+    authorized: false, kind: 'card', status: 'completed',
+  })
+  addChild(db, 'neutral-attempt', '0', 'accepted', 50, '0.80')
+  addAttempt(db, 'neutral-attempt', '0')
+
+  addBatch(db, {
+    suffix: 'neutral-preview', accepted: 50, target: 50,
+    authorized: false, kind: 'card', status: 'completed',
+  })
+  addChild(db, 'neutral-preview', '0', 'accepted', 50, '9.99')
+  addAttempt(db, 'neutral-preview', '0', { status: 'submit_prepared', odds: '9.99' })
+
+  const page = repo.listBetTargetHistory({ limit: 20 })
+  handle.close()
+
+  assert.equal(page.items.length, 2)
+  const partial = page.items.find((item) => item.status === 'partial')
+  assert.equal(partial.acceptedBetCount, 2)
+  assert.equal(partial.completedAmount, '150')
+  assert.equal(partial.averageAcceptedOdds, '0.97')
+  const completed = page.items.find((item) => item.status === 'completed')
+  assert.equal(completed.acceptedBetCount, 1)
+  assert.equal(completed.averageAcceptedOdds, '0.8')
+  assert.equal(page.items.some((item) => item.averageAcceptedOdds === '9.99'), false)
+})
+
 test('bet target history paginates equal timestamps without duplicates and supports status/mode filters', () => {
   const { handle, repo, db } = setup()
   addBatch(db, { suffix: 'a', kind: 'card', mode: 'prematch', status: 'completed' })
   addBatch(db, { suffix: 'b', kind: 'mode', mode: 'live', status: 'waiting_result', finishReason: '' })
   addBatch(db, { suffix: 'c', kind: 'legacy', mode: 'prematch', status: 'failed', finishReason: 'no_capacity' })
+  for (const suffix of ['a', 'b', 'c']) {
+    addChild(db, suffix, '0', 'rejected', 50, '0.90')
+    markChildDispatched(db, suffix, '0', { status: 'rejected' })
+  }
 
   const first = repo.listBetTargetHistory({ limit: 2 })
   const second = repo.listBetTargetHistory({ limit: 2, cursor: first.nextCursor })
@@ -199,6 +270,10 @@ test('bet target history uses legacy locked snapshot and fails closed on corrupt
   const { handle, repo, db } = setup()
   addBatch(db, { suffix: 'legacy', kind: 'legacy', mode: 'prematch' })
   addBatch(db, { suffix: 'damaged', kind: 'mode', mode: 'live', snapshot: { eventKey: 'internal-event' } })
+  for (const suffix of ['legacy', 'damaged']) {
+    addChild(db, suffix, '0', 'rejected', 50, '0.90')
+    markChildDispatched(db, suffix, '0', { status: 'rejected' })
+  }
   db.prepare("UPDATE bet_batches SET locked_selection_identity='not-json' WHERE batch_id='batch-damaged'").run()
 
   const items = repo.listBetTargetHistory({ limit: 20 }).items

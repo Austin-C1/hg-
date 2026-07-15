@@ -71,6 +71,46 @@ test('worker recovers unfinished batches before claiming and consuming inbox onl
   assert.deepEqual(order, ['recover:batch-old', 'claim', 'consume:signal-new', 'complete:signal-new:card-a:inbox-owner:batch-new'])
 })
 
+test('serial worker claims one inbox item and renews its lease during slow browser work', async () => {
+  let claimOptions = null
+  let renewCalls = 0
+  let completed = false
+  const item = {
+    signalId: 'signal-slow', cardId: 'card-slow',
+    inboxLease: { ownerId: 'inbox-owner' }, bettingMode: 'prematch',
+  }
+  const worker = new BettingWorker({
+    mode: 'preview', claimLeaseSeconds: 1,
+    db: { prepare() { throw new Error('unexpected-db-read') } },
+    coordinator: {},
+    inboxStore: {
+      claimDue(options) {
+        claimOptions = options
+        return completed ? [] : [item]
+      },
+      renew(input) {
+        renewCalls += 1
+        assert.deepEqual(input, {
+          signalId: 'signal-slow', cardId: 'card-slow', leaseOwner: 'inbox-owner', leaseSeconds: 1,
+        })
+        return true
+      },
+      complete() { completed = true },
+    },
+    consumer: {
+      async process() {
+        await new Promise((resolve) => setTimeout(resolve, 450))
+        return { status: 'batch_created', batchId: 'batch-slow' }
+      },
+    },
+    lease: { fencingToken: 1, acquire: () => ({ fencingToken: 1 }), assertFence() {}, heartbeat() {}, release() {} },
+  })
+  const result = await worker.runOnce()
+  assert.equal(result.processed, 1)
+  assert.deepEqual(claimOptions, { limit: 1, leaseSeconds: 1 })
+  assert.ok(renewCalls >= 1)
+})
+
 test('preview idempotency comes from persisted inbox status rather than a process seen set', async () => {
   const items = [[{ signalId: 'signal-a', bettingMode: 'prematch' }], []]
   let consumed = 0
@@ -186,7 +226,7 @@ test('card inbox waits for formal adapter readiness then terminalizes a deleted 
   }
   handle.db.prepare(`INSERT INTO monitor_signals
     (signal_id,signal_key,strategy_id,strategy_version,status,observed_at,expires_at,payload_json)
-    VALUES (?,'atomic-retry','strategy',1,'ready',?,'2026-07-12T01:00:00.000Z',?)`).run(signalId, observedAt, JSON.stringify(signal))
+    VALUES (?,'atomic-retry','strategy',1,'ready',?,'2099-01-01T00:00:00.000Z',?)`).run(signalId, observedAt, JSON.stringify(signal))
   handle.db.prepare(`INSERT INTO auto_betting_signal_inbox
     (signal_id,card_id,card_version,card_snapshot_json,mode,settings_version,settings_snapshot_json,next_attempt_at,created_at,updated_at)
     VALUES (?,'card-atomic',7,?,'prematch',7,?,?,?,?)`).run(signalId, JSON.stringify(card), JSON.stringify(card), observedAt, observedAt, observedAt)

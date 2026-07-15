@@ -230,7 +230,7 @@ test('operations summary composes safe browser sessions with the SQLite acceptan
   })
   assert.equal(item.browserBetting.directions.length, 8)
   assert.equal(item.browserBetting.directions.filter((direction) => direction.previewAllowed).length, 8)
-  assert.equal(item.browserBetting.directions.filter((direction) => direction.submitAllowed).length, 1)
+  assert.equal(item.browserBetting.directions.filter((direction) => direction.submitAllowed).length, 4)
   assert.equal(item.browserBetting.directions.filter((direction) => direction.reconciliationAllowed).length, 0)
   assert.equal(item.browserBetting.directions.filter((direction) => direction.blockedReason).length, 0)
   assert.deepEqual(item.browserBetting.campaign, {

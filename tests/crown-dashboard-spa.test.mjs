@@ -18,16 +18,20 @@ async function withServer(t, handler) {
   await handler(`http://127.0.0.1:${server.address().port}`)
 }
 
-test('static server returns React index for app routes and keeps unknown routes 404', async (t) => {
+test('static server returns React index for every client route and keeps API or asset misses 404', async (t) => {
   await withServer(t, async (baseUrl) => {
-    for (const route of ['/matches', '/default-leagues', '/monitor-account', '/monitor-alerts', '/betting-rules', '/monitor-settings', '/auto-bet-rules', '/betting-accounts', '/operations']) {
+    for (const route of ['/matches', '/default-leagues', '/monitor-account', '/monitor-alerts', '/betting-rules', '/monitor-settings', '/auto-bet-rules', '/betting-accounts', '/betting-history', '/operations']) {
       const response = await fetch(`${baseUrl}${route}`)
       assert.equal(response.status, 200)
       assert.match(response.headers.get('content-type'), /text\/html/)
       assert.match(await response.text(), /皇冠抓水投注/)
     }
 
-    const missing = await fetch(`${baseUrl}/missing`)
-    assert.equal(missing.status, 404)
+    const restoredTab = await fetch(`${baseUrl}/restored-browser-tab`)
+    assert.equal(restoredTab.status, 200)
+    assert.match(restoredTab.headers.get('content-type'), /text\/html/)
+
+    assert.equal((await fetch(`${baseUrl}/api/missing`)).status, 404)
+    assert.equal((await fetch(`${baseUrl}/assets/missing.js`)).status, 404)
   })
 })

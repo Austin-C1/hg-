@@ -422,6 +422,8 @@ function mapBettingAccountForExecution(row, secretOptions) {
     perBetLimit: String(row.per_bet_limit_minor),
     perBetLimitMinor: row.per_bet_limit_minor,
     currency: row.currency,
+    amountScale: row.amount_scale,
+    stakeStepMinor: row.stake_step_minor,
     balance: row.balance_minor === null ? null : String(row.balance_minor),
     balanceMinor: row.balance_minor,
     balanceUpdatedAt: row.balance_updated_at || null,
@@ -470,6 +472,9 @@ function assertBettingAccountExecutionContract(row) {
   }
   if (!Number.isSafeInteger(row.per_bet_limit_minor) || row.per_bet_limit_minor < 1) {
     throw new Error('betting-account-per-bet-limit')
+  }
+  if (!Number.isSafeInteger(row.stake_step_minor) || row.stake_step_minor < 1) {
+    throw new Error('betting-account-stake-step')
   }
 }
 
@@ -1857,16 +1862,18 @@ export function createAppRepository(db, {
       }
       const pageLimit = boundedLimit(limit, { fallback: 20, max: 50 })
       const decodedCursor = parseHistoryCursor(cursor)
-      const where = [`(
-        batch.authorization_id IS NOT NULL
-        OR EXISTS (
-          SELECT 1
-          FROM bet_child_orders AS acceptance_child
-          INNER JOIN crown_browser_acceptance_cases AS acceptance
-            ON acceptance.child_order_id = acceptance_child.child_order_id
-          WHERE acceptance_child.batch_id = batch.batch_id
-            AND acceptance.dispatch_count = 1
-        )
+      const where = [`EXISTS (
+        SELECT 1
+        FROM bet_child_orders AS dispatched_child
+        LEFT JOIN bet_submit_attempts AS dispatched_attempt
+          ON dispatched_attempt.child_order_id = dispatched_child.child_order_id
+        WHERE dispatched_child.batch_id = batch.batch_id
+          AND (
+            dispatched_child.submit_dispatched_at <> ''
+            OR dispatched_attempt.status IN (
+              'submit_dispatched', 'accepted', 'rejected', 'unknown', 'odds_changed_unsent'
+            )
+          )
       )`]
       const params = []
       if (status === 'active') where.push("batch.status IN ('queued','allocating','waiting_capacity','submitting')")

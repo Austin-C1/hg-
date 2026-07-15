@@ -234,6 +234,25 @@ test('claim order is deterministic by created_at then signal_id', () => {
   } finally { handle.close() }
 })
 
+test('claim sweep terminalizes expired Signals before browser Preview', () => {
+  const handle = openAppDatabase({ dbPath: ':memory:' })
+  try {
+    insert(handle)
+    const store = new AutoBettingInboxStore({
+      db: handle.db,
+      now: () => '2026-07-12T01:00:00.001Z',
+      ownerId: 'owner',
+    })
+    assert.deepEqual(store.claimDue({ limit: 1, leaseSeconds: 30 }), [])
+    assert.deepEqual({ ...handle.db.prepare(`
+      SELECT status,skip_reason,lease_owner,lease_expires_at
+      FROM auto_betting_signal_inbox
+    `).get() }, {
+      status: 'skipped', skip_reason: 'signal-expired', lease_owner: '', lease_expires_at: '',
+    })
+  } finally { handle.close() }
+})
+
 test('expired lease can be taken over and stale owner cannot mutate it', () => {
   const handle = openAppDatabase({ dbPath: ':memory:' })
   try {
@@ -246,6 +265,27 @@ test('expired lease can be taken over and stale owner cannot mutate it', () => {
     assert.deepEqual({ ...handle.db.prepare('SELECT status,batch_id,lease_owner FROM auto_betting_signal_inbox').get() }, {
       status: 'batch_created', batch_id: 'batch-current', lease_owner: '',
     })
+  } finally { handle.close() }
+})
+
+test('current owner can renew a processing lease during slow browser work', () => {
+  const handle = openAppDatabase({ dbPath: ':memory:' })
+  let now = T0
+  try {
+    insert(handle)
+    const current = new AutoBettingInboxStore({ db: handle.db, now: () => now, ownerId: 'owner-a' })
+    const other = new AutoBettingInboxStore({ db: handle.db, now: () => now, ownerId: 'owner-b' })
+    assert.equal(current.claimDue({ limit: 1, leaseSeconds: 30 }).length, 1)
+    now = '2026-07-12T00:00:20.000Z'
+    assert.deepEqual(current.renew(identity('owner-a', { leaseSeconds: 30 })), {
+      ownerId: 'owner-a', expiresAt: '2026-07-12T00:00:50.000Z',
+    })
+    assert.equal(handle.db.prepare('SELECT lease_expires_at FROM auto_betting_signal_inbox').get().lease_expires_at,
+      '2026-07-12T00:00:50.000Z')
+    now = '2026-07-12T00:00:31.000Z'
+    assert.deepEqual(other.claimDue({ limit: 1, leaseSeconds: 30 }), [])
+    now = '2026-07-12T00:00:51.000Z'
+    assert.equal(other.claimDue({ limit: 1, leaseSeconds: 30 }).length, 1)
   } finally { handle.close() }
 })
 

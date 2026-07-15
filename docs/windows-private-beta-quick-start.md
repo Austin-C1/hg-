@@ -95,6 +95,6 @@ Launcher 日志位于：
 
 ## 安全边界
 
-当前只开放 exact row `prematch/full_time/asian_handicap/main`，Preview/Submit/Reconciliation capability 固定为 `1/1/0`；其他 row 与 Reconciliation 关闭。该版本可以配置监控和人工登录，但真实 runtime 默认 off，登录或启动本身不会发送 `FT_bet`；只有规则卡、账号、fresh Preview、lease/fence 和单次 Submit 等全部门禁通过后，exact row 才可执行。
+当前 Preview/Submit/Reconciliation capability 固定为 `8/4/0`：八个全场 main 方向可 Preview，赛前全场 main 的让球 home/away、大小球 over/under 可 Submit；滚球 Submit 与 Reconciliation 关闭。该版本可以配置监控和人工登录，但真实 runtime 默认 off，登录或启动本身不会发送 `FT_bet`；只有规则卡、账号、fresh Preview、lease/fence 和单次 Submit 等全部门禁通过后，已开放方向才可执行。
 
 任何要求复制他人 session、上传用户数据目录、绕过验证码或手工开启真实投注 capability 的说明，都不属于本项目的受支持使用方式。

@@ -7,9 +7,11 @@
 - 卡片普通保存要求至少一个今日联赛；联赛选项由默认联赛命中与 exact 手动追踪赛事合并产生。手动联赛必须显式选择；其他现存卡片占用的联赛禁用并显示 owner name，当前卡片的 stale 联赛允许保留。
 - 同一联赛只能被一张现存卡片占用，停用不释放。删除使用 expectedVersion CAS 和物理删除，成功后立即释放联赛；未绑定 batch 的 inbox 终结，已创建历史保留。
 - Operations 只读取 `ruleCards:{total,enabled,reviewRequired,ownedLeagues}`，不再投影固定 prematch/live 投注设置。“每日开工完全重置”保留卡片和联赛占用，清理 card snapshot 在内的运行历史。
-- frontend mutation 在发送前核对 app/frontend/schema `dynamic-betting-cards-v1`；缺失或不一致时 fail-closed 并提示重启。当前只开放 exact row `prematch/full_time/asian_handicap/main`，Preview/Submit/Reconciliation capability 为 `1/1/0`；其他 row 与 Reconciliation 继续关闭，真实 runtime 默认 off。
+- frontend mutation 在发送前核对 app/frontend/schema `dynamic-betting-cards-v1`；缺失或不一致时 fail-closed 并提示重启。当前 Preview/Submit/Reconciliation capability 为 `8/4/0`：八个全场 main 方向可 Preview，赛前全场 main 的让球 home/away、大小球 over/under 可 Submit；滚球 Submit 与 Reconciliation 继续关闭，真实 runtime 默认 off。
 - canonical 字段为 API `waterMoveThreshold`、SQLite `water_move_threshold`；旧 `water_rise_threshold` 只作为数据库迁移输入。
 - 未配置的赔率和目标金额在输入框显示为空，不显示字符串 `null`。
+- `/operations` 继续显示通知 backlog 风险，但 backlog 不再单独禁用 Start；unknown、open reconciliation、campaign unknown/failed 等安全状态仍阻断。
+- `/betting-history` 使用 `GET /api/app/bet-target-history` 的真实 dispatch 口径。所有无扩展名、非 API/asset 的客户端路由都回退到 React index，因此刷新历史页或挂机后恢复页面不再返回 `not found`。
 
 ## 历史快照：2026-07-12 C 阶段契约（当前以上方动态卡片为准）
 
@@ -44,7 +46,7 @@
 
 - B1/B2 Task 1–12 的后台账本、安全门禁、对账和通知基础设施已完成并通过复核。
 - Dashboard 仍没有真实投注开关、人工对账入口或自动提交入口；普通 CRUD 不能把规则升级为 `real_eligible`。
-- 当时 canonical Crown preview/submit capability 为 0，production Provider fail-closed，因此该历史 B 阶段完成不等于已开放真实投注；当前 capability 以上方动态卡片契约中的 exact row `1/1/0` 为准。
+- 当时 canonical Crown preview/submit capability 为 0，production Provider fail-closed，因此该历史 B 阶段完成不等于已开放真实投注；当前 capability 以上方动态卡片契约中的 `8/4/0` 为准。
 - Dashboard 继续只展示脱敏 batch/child/accepted 统计；provider reference、session、ticket、token 和密码不进入 API 投影。
 
 ## 历史：2026-07-11 B1 Dashboard 当时状态
@@ -54,7 +56,7 @@
 - Dashboard 可查看近期 batch/child 的 target/reserved/accepted/unknown/unfilled、finish reason 和模拟标记；provider reference 仅返回 null/掩码。
 - `/matches` 显示北京时间、时间质量和 warning，按 UTC 升序且空值置后；`/monitor-settings` 保留赛前/滚球两个独立 Switch，并提供默认折叠的逐赛事“数据质量与诊断”。
 - Dashboard child 和手动 watcher CLI 使用同一 canonical SQLite lease。`restart:true` 遇到相同 key 的未退出受管 child 时返回 `alreadyRunning` 并复用，不 kill；不同 key 明确冲突。
-- 当时 Dashboard 没有真实投注开关或自动提交入口。B2 后台基础设施已完成，但该历史阶段 canonical Crown capability 为 0；旧 `crown-bet-execute*` CLI 不属于现行多账号 Executor。当前 capability 以上方动态卡片契约中的 exact row `1/1/0` 为准。
+- 当时 Dashboard 没有真实投注开关或自动提交入口。B2 后台基础设施已完成，但该历史阶段 canonical Crown capability 为 0；旧 `crown-bet-execute*` CLI 不属于现行多账号 Executor。当前 capability 以上方动态卡片契约中的 `8/4/0` 为准。
 
 ## 2026-07-09 投注账号顺序与预览失败显示
 
@@ -90,7 +92,7 @@
 
 ## 目标
 
-提供 Docker-first 的本地 Crown 配置与赔率监控界面。当前版本用 React + Ant Design 展示赔率监控数据；比赛追踪仍复用 SQLite，本地默认联赛、监控模式和 Telegram 配置保存到 `config/*.json`。Dashboard 管理规则/账号并读取 batch/child 账本，不因页面加载、登录或普通配置自动提交。B2 后台基础设施已完成；当前仅开放 exact row `prematch/full_time/asian_handicap/main` 的 capability `1/1/0`，其他 row 与 Reconciliation 关闭，真实 runtime 默认 off。历史独立 CLI 不是当前多账号真实执行入口。
+提供 Docker-first 的本地 Crown 配置与赔率监控界面。当前版本用 React + Ant Design 展示赔率监控数据；比赛追踪仍复用 SQLite，本地默认联赛、监控模式和 Telegram 配置保存到 `config/*.json`。Dashboard 管理规则/账号并读取 batch/child 账本，不因页面加载、登录或普通配置自动提交。B2 后台基础设施已完成；当前 capability 为 `8/4/0`，滚球 Submit 与 Reconciliation 关闭，真实 runtime 默认 off。历史独立 CLI 不是当前多账号真实执行入口。
 
 ## 文件
 

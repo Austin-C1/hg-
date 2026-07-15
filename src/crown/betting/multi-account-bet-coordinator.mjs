@@ -186,7 +186,7 @@ export class MultiAccountBetCoordinator {
       targetOddsMin: card.targetOddsMin, targetOddsMax: card.targetOddsMax }
     const accounts = this._accounts(previewBatch, new Set())
     if (accounts.length === 0) return { status: 'skipped', reason: 'no-account-capacity' }
-    const previews = await this._firstUsablePreview(previewBatch, input.lockedSelection, accounts)
+    const previews = await this._previewAccounts(previewBatch, input.lockedSelection, accounts)
     this._fence()
     if (previews.length === 0) return { status: 'skipped', reason: 'preview-incomplete' }
     const allocation = allocateStake(card.targetAmountMinor, previews.map((item) => item.capability))
@@ -252,7 +252,7 @@ export class MultiAccountBetCoordinator {
     }
     const accounts = this._accounts(previewBatch, new Set())
     if (accounts.length === 0) return { status: 'skipped', reason: 'no-account-capacity' }
-    const previews = await this._firstUsablePreview(previewBatch, input.lockedSelection, accounts)
+    const previews = await this._previewAccounts(previewBatch, input.lockedSelection, accounts)
     this._fence()
     if (previews.length === 0) return { status: 'skipped', reason: 'preview-incomplete' }
     const allocation = allocateStake(settings.targetAmountMinor, previews.map((item) => item.capability))
@@ -621,21 +621,14 @@ export class MultiAccountBetCoordinator {
 
   async _previewAccounts(batch, lockedSelection, accounts) {
     this.provider.assertNextOperations?.(accounts.map(() => 'preview'))
-    const settled = []
-    for (const account of accounts) {
-      try {
-        settled.push({ status: 'fulfilled', value: {
+    const settled = await Promise.allSettled(accounts.map(async (account) => ({
           account,
           preview: await this.provider.preview({
             accountId: account.id,
             batchId: batch.batch_id,
             lockedSelection,
           }),
-        } })
-      } catch (reason) {
-        settled.push({ status: 'rejected', reason })
-      }
-    }
+        })))
     return settled.flatMap((entry) => {
       if (entry.status !== 'fulfilled' || entry.value.preview?.ok !== true) return []
       const { account, preview } = entry.value

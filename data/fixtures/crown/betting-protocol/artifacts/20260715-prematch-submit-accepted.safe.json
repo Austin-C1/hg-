@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "crown-acceptance-submit-promotion-v1",
+  "campaignId": "06147fbb59e147d31c190427422c5606a2d72b08311ce72f6412952462d621f0",
+  "observedCapabilityVersion": "crown-protocol-capabilities-v2:c9139fcb53c51012",
+  "directions": [
+    {
+      "directionId": "prematch-full-time-asian-handicap-home",
+      "mode": "prematch",
+      "period": "full_time",
+      "marketType": "asian_handicap",
+      "lineVariant": "main",
+      "selectionSide": "home",
+      "state": "accepted",
+      "outcome": "accepted",
+      "authorizedMinimumMinor": 50,
+      "dispatchCount": 1,
+      "validationPollCount": 1,
+      "resultEvidenceDigest": "sha256:ad6579ed867f50ff47019a36a238c162050ad08fd7329fe36be152c4615aab5c",
+      "acceptedAt": "2026-07-15T07:18:49.965Z"
+    },
+    {
+      "directionId": "prematch-full-time-total-over",
+      "mode": "prematch",
+      "period": "full_time",
+      "marketType": "total",
+      "lineVariant": "main",
+      "selectionSide": "over",
+      "state": "accepted",
+      "outcome": "accepted",
+      "authorizedMinimumMinor": 50,
+      "dispatchCount": 1,
+      "validationPollCount": 1,
+      "resultEvidenceDigest": "sha256:fd209b4aead6881c31f0e98015065d697e98a65ef4d89314966946146217a5aa",
+      "acceptedAt": "2026-07-15T07:48:58.281Z"
+    },
+    {
+      "directionId": "prematch-full-time-total-under",
+      "mode": "prematch",
+      "period": "full_time",
+      "marketType": "total",
+      "lineVariant": "main",
+      "selectionSide": "under",
+      "state": "accepted",
+      "outcome": "accepted",
+      "authorizedMinimumMinor": 50,
+      "dispatchCount": 1,
+      "validationPollCount": 1,
+      "resultEvidenceDigest": "sha256:866b3686fa28c1a296f6d4b0a0dfed82c7c078e19ca46b3f6a8d8928483f6338",
+      "acceptedAt": "2026-07-15T07:49:00.926Z"
+    }
+  ],
+  "artifactSafeDigest": "sha256:89971a2a467be4bd2a7d55aa4df2b58317e3782227043d7229378957ea54b392"
+}

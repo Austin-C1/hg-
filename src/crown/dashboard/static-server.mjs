@@ -350,7 +350,11 @@ function staticTarget(staticDir, pathname) {
 }
 
 function isSpaRoute(pathname) {
-  return ['/matches', '/default-leagues', '/monitor-account', '/monitor-alerts', '/monitor-settings', '/auto-bet-rules', '/betting-rules', '/betting-accounts', '/operations', '/settings'].includes(pathname)
+  return pathname.startsWith('/')
+    && pathname !== '/api'
+    && !pathname.startsWith('/api/')
+    && !pathname.startsWith('/assets/')
+    && path.posix.extname(pathname) === ''
 }
 
 async function serveStatic(pathname, res, staticDir) {

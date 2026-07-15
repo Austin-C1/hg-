@@ -1229,7 +1229,7 @@ test('app API exposes masked decimal-string batch and child projections', async 
   }, {}, { prepareDatabase: seedBatchProjection })
 })
 
-test('app API exposes only authorized bet target history through stable cursor filters', async (t) => {
+test('app API exposes only dispatched bet target history through stable cursor filters', async (t) => {
   await withAppServer(t, async (baseUrl) => {
     const result = await jsonFetch(`${baseUrl}/api/app/bet-target-history?limit=1&status=completed&mode=prematch`)
     assert.equal(result.response.status, 200)
@@ -1266,6 +1266,7 @@ test('app API exposes only authorized bet target history through stable cursor f
       db.prepare(`UPDATE bet_batches SET authorization_id='auth-api', locked_selection_identity=?,
         rule_snapshot_json=?, source_league='英超' WHERE batch_id='batch-api'`)
         .run(JSON.stringify(locked), JSON.stringify({ lockedSelection: locked }))
+      db.prepare("UPDATE bet_child_orders SET submit_dispatched_at='2026-07-11T02:00:01.000Z' WHERE batch_id='batch-api'").run()
     },
   })
 })

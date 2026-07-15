@@ -310,10 +310,19 @@ test('temp SQLite fake provider keeps market ownership per card and exact line w
     fixture(handle.db, { signalId: 'signal-d', cardId: 'card-a', lineKey: 'RATIO_RE', accountId: 'account-d' }),
   ]
   let previewCalls = 0
+  let activePreviews = 0
+  let maxActivePreviews = 0
   let submitCalls = 0
   const provider = {
-    async preview() { previewCalls += 1; return { ok: true, minStakeMinor: 10, maxStakeMinor: 1000,
-      balanceMinor: 1000, stakeStepMinor: 10, odds: '0.91', currency: 'CNY', amountScale: 0 } },
+    async preview() {
+      previewCalls += 1
+      activePreviews += 1
+      maxActivePreviews = Math.max(maxActivePreviews, activePreviews)
+      await new Promise((resolve) => setImmediate(resolve))
+      activePreviews -= 1
+      return { ok: true, minStakeMinor: 10, maxStakeMinor: 1000,
+        balanceMinor: 1000, stakeStepMinor: 10, odds: '0.91', currency: 'CNY', amountScale: 0 }
+    },
     async submit() { submitCalls += 1; return { kind: 'accepted' } },
   }
   const run = (data) => {
@@ -332,7 +341,9 @@ test('temp SQLite fake provider keeps market ownership per card and exact line w
   assert.deepEqual(await run(cases[3]), { status: 'already-claimed', batchId: first.batchId })
   assert.equal(handle.db.prepare('SELECT COUNT(*) count FROM bet_market_once_claims').get().count, 3)
   assert.equal(handle.db.prepare('SELECT COUNT(*) count FROM bet_batches').get().count, 3)
-  assert.deepEqual({ previewCalls, submitCalls }, { previewCalls: 3, submitCalls: 0 })
+  assert.deepEqual({ previewCalls, maxActivePreviews, submitCalls }, {
+    previewCalls: 9, maxActivePreviews: 4, submitCalls: 0,
+  })
   handle.close()
   fs.rmSync(tempDir, { recursive: true, force: true })
 })

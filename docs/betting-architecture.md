@@ -1,9 +1,9 @@
 # Betting Architecture
 
-## 2026-07-14 Task 10 Current Capability
+## 2026-07-15 Current Capability
 
-- The only enabled row is `prematch/full_time/asian_handicap/main`, with Preview/Submit/Reconciliation `1/1/0`; every other row and production Reconciliation remain closed.
-- This `1/1/0` records strict Provider capability evidence, not completed canonical Worker live acceptance. The real runtime stays off by default, and all rule-card, account, fresh-Preview, lease/fence, and single-Submit gates still apply.
+- Preview/Submit/Reconciliation is `8/4/0`: all eight full-time main directions support strict Preview; prematch full-time main handicap home/away and total over/under support Submit. Live Submit and production Reconciliation remain closed.
+- Accepted promotions are audited from the public-safe 2026-07-15 artifact. The real runtime stays off by default, and all rule-card, account, fresh-Preview, lease/fence, durable-attempt, and at-most-once Submit gates still apply.
 
 ## Historical: 2026-07-11 B2 Safety Baseline
 
@@ -11,7 +11,7 @@
 - The production path is `ExecutionAuthorization -> deterministic batch/child -> durable submit attempt -> definite outcome or unknown -> reconciliation -> notification outbox`.
 - Prepared, dispatched, and unknown attempts are never automatically resubmitted after recovery. A submission-time recovery is scoped to one child; explicit startup recovery is authorization-wide.
 - Provider references use v2 context-bound encryption. Reconciliation evidence is append-only and notifications persist retry/lease state.
-- At that historical stage, the canonical Crown capability matrix allowed neither preview nor submit. Production submit, automatic reconciliation, and manual Crown resolution therefore failed closed, and no real `FT_bet` acceptance had been run. The current capability is the Task 10 exact row `1/1/0` above.
+- At that historical stage, the canonical Crown capability matrix allowed neither preview nor submit. Production submit, automatic reconciliation, and manual Crown resolution therefore failed closed, and no real `FT_bet` acceptance had been run. The current capability is `8/4/0` as stated above.
 - Historical adapter/CLI real entrypoints are disabled and are not a fallback execution route.
 
 Betting execution is split into staged modules. The monitor remains read-only; betting code must live outside the monitor path.

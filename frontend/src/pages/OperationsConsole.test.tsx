@@ -220,6 +220,22 @@ describe('OperationsConsole', () => {
     expect(screen.getByText('全局真实投注')).toBeInTheDocument()
   })
 
+  test('keeps notification backlog visible without circularly blocking Worker startup', async () => {
+    vi.mocked(api.getOperationsSummary).mockResolvedValue({ item: {
+      ...summary,
+      accounts: { ...summary.accounts, unknown: 0 },
+      batches: { ...summary.batches, unknownAmountMinor: 0 },
+      reconciliation: { due: 0, manualReview: 0, deadLetter: 0, open: 0 },
+      notifications: { backlog: 8, pending: 8, delivering: 0, deadLetter: 0 },
+      browserBetting: { ...browserBettingSummary, campaign: null },
+    } })
+    render(<OperationsConsole />)
+
+    expect(await screen.findByText('通知积压')).toBeInTheDocument()
+    expect(screen.getByText('8')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '开启真实投注' })).toBeEnabled()
+  })
+
   test('treats a failed browser campaign with unknown cases as highest-priority risk and blocks start', async () => {
     vi.mocked(api.getOperationsSummary).mockResolvedValueOnce({ item: {
       ...summary,
