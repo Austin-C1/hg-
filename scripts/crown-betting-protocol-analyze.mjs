@@ -9,6 +9,9 @@ import {
   CROWN_BROWSER_TARGETS,
   classifyProtocolRecord,
   classifyProtocolWebSocketFrame,
+  parseLooseJsonFragmentEntries,
+  parseStrictMultipartFormData,
+  UNINSPECTABLE_JSON_FRAGMENT_FIELD,
 } from '../src/crown/betting-protocol/protocol-classifier.mjs'
 import {
   assertSafeCrownProtocolEvidence,
@@ -75,7 +78,7 @@ const CATALOG_KNOWN_SENSITIVE_FIELDS = new Set([
   'secret', 'username', 'user', 'password', 'passwd', 'pwd', 'token', 'cookie',
   'session', 'uid', 'ticket', 'ticket_id', 'authorization', 'auth', 'csrf', 'xsrf',
   'jwt', 'signature', 'sign', 'order_id', 'account', 'member', 'provider', 'reference',
-  'mid', 'tid', 'w_id', 'set-cookie',
+  'mid', 'tid', 'w_id', 'set-cookie', 'useragent', 'passwd_safe', 'passcode',
 ])
 const STATIC_WIRE_VALUE_ALLOWLIST = Object.freeze({
   FT_order_view: Object.freeze([{ field: 'p', value: 'FT_order_view' }]),
@@ -557,6 +560,14 @@ function catalogEndpointDescriptor(rawUrl, key) {
   }
 }
 
+const CATALOG_STATIC_RESOURCE_TYPES = new Set(['document', 'stylesheet', 'script', 'image', 'font', 'media'])
+
+function catalogStaticAssetRequest(record) {
+  if (!['GET', 'HEAD'].includes(String(record?.method || '').toUpperCase())) return false
+  if (!CATALOG_STATIC_RESOURCE_TYPES.has(String(record?.resourceType || '').toLowerCase())) return false
+  return classificationRiskRank(rawTransportClassification(record)) === 0
+}
+
 function catalogParams(value) {
   const output = {}
   for (const [field, child] of new URLSearchParams(String(value || '')).entries()) {
@@ -623,46 +634,30 @@ function appendTransportField(output, field, value) {
   else output[field] = [output[field], value]
 }
 
-function multipartTransportFields(value) {
-  const text = String(value || '')
-  if (!/content-disposition\s*:\s*form-data\b/i.test(text)) return null
+function multipartTransportFields(value, headers) {
+  const parsed = parseStrictMultipartFormData(value, headers)
+  if (!parsed) return null
+  if (!parsed.valid) catalogFail('multipart-invalid')
   const output = {}
-  const lines = text.split(/\r?\n/)
-  for (let index = 0; index < lines.length; index += 1) {
-    const match = lines[index].match(
-      /^content-disposition\s*:\s*form-data\s*;[^\r\n]*\bname\s*=\s*(?:"([^"]+)"|'([^']+)'|([^;\s]+))/i,
-    )
-    if (!match) continue
-    let valueIndex = index + 1
-    while (valueIndex < lines.length && lines[valueIndex] !== '') valueIndex += 1
-    if (valueIndex + 1 >= lines.length) continue
-    appendTransportField(output, match[1] || match[2] || match[3], lines[valueIndex + 1])
+  for (const { name, value: body } of parsed.entries) {
+    appendTransportField(output, name, body)
   }
-  return Object.keys(output).length ? output : null
+  return output
 }
 
 function jsonFragmentTransportFields(value) {
-  const text = String(value || '')
   const output = {}
-  const fieldPattern = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')\s*:\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|(-?\d+(?:\.\d+)?|true|false|null|[A-Za-z_][A-Za-z0-9_.-]*))/g
-  for (const match of text.matchAll(fieldPattern)) {
-    let field
-    try {
-      field = match[1].startsWith('"')
-        ? parseJsonRejectDuplicateKeys(match[1])
-        : parseJsonRejectDuplicateKeys(`"${match[1].slice(1, -1).replace(/"/g, '\\"')}"`)
-    } catch {
-      continue
-    }
-    if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(field)) continue
-    appendTransportField(output, field, match[2] ?? match[3] ?? match[4] ?? '')
+  for (const { name, value: fieldValue } of parseLooseJsonFragmentEntries(value)) {
+    if (name === UNINSPECTABLE_JSON_FRAGMENT_FIELD) catalogFail('json-fragment-invalid')
+    if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(name)) continue
+    appendTransportField(output, name, fieldValue)
   }
   return Object.keys(output).length ? output : null
 }
 
-function rawTransportFields(value) {
+function rawTransportFields(value, headers) {
   if (typeof value !== 'string') return null
-  return multipartTransportFields(value) || jsonFragmentTransportFields(value)
+  return multipartTransportFields(value, headers) || jsonFragmentTransportFields(value)
 }
 
 function classificationRiskRank(classification) {
@@ -676,7 +671,7 @@ function classificationRiskRank(classification) {
 
 function rawTransportClassification(record) {
   const baseline = classifyProtocolRecord(record)
-  const fields = rawTransportFields(record.postData)
+  const fields = rawTransportFields(record.postData, record.headers)
   if (!fields) return baseline
   const structured = classifyProtocolRecord({
     type: 'request', method: record.method, url: record.url, postData: fields,
@@ -686,7 +681,7 @@ function rawTransportClassification(record) {
     : baseline
 }
 
-function catalogPayload(value) {
+function catalogPayload(value, headers) {
   if (value === undefined || value === null || value === '') return {}
   if (Buffer.isBuffer(value) || value instanceof Uint8Array) return Buffer.from(value)
   if (value && typeof value === 'object') {
@@ -701,7 +696,7 @@ function catalogPayload(value) {
     catalogCheckFields(strictJson.value)
     return strictJson.value
   }
-  const rawFields = rawTransportFields(text)
+  const rawFields = rawTransportFields(text, headers)
   if (rawFields) {
     catalogCheckFields(rawFields)
     return rawFields
@@ -722,12 +717,15 @@ function catalogRequestPayload(record) {
     catalogFail('unsafe-request-url')
   }
   const query = catalogParams(requestUrl.search)
-  const body = catalogPayload(record.postData)
+  const body = catalogPayload(record.postData, record.headers)
   if (!body || typeof body !== 'object' || Array.isArray(body) || Buffer.isBuffer(body)) {
     return Object.keys(query).length ? query : body
   }
   for (const field of Object.keys(body)) {
-    if (Object.hasOwn(query, field)) catalogFail('duplicate-field')
+    if (!Object.hasOwn(query, field)) continue
+    if (field !== 'ver' || typeof body[field] !== 'string' || query[field] !== body[field]) {
+      catalogFail('duplicate-field')
+    }
   }
   const merged = { ...query, ...body }
   catalogCheckFields(merged)
@@ -992,14 +990,16 @@ function catalogGroupEntry(group, key) {
 
   const request = group.records.find((record) => record.type === 'request')
   const response = group.records.find((record) => record.type === 'response')
-  const requestPayload = catalogRequestPayload(request)
-  const responsePayload = catalogPayload(response?.responseBody)
+  const endpoint = catalogEndpointDescriptor(request.url, key)
+  const staticAsset = catalogStaticAssetRequest(request)
+  const requestPayload = staticAsset ? {} : catalogRequestPayload(request)
+  const responsePayload = staticAsset ? {} : catalogPayload(response?.responseBody)
   const classification = rawTransportClassification(request)
   const routeDecision = group.records.find((record) => (
     ['route-decision', 'request-blocked'].includes(record.type)
   ))
   return {
-    ...catalogEndpointDescriptor(request.url, key),
+    ...endpoint,
     functionName: catalogFunctionName(requestPayload),
     method: /^[A-Z]{1,16}$/.test(String(request.method || '').toUpperCase())
       ? String(request.method).toUpperCase() : 'OTHER',
@@ -1069,7 +1069,8 @@ export function buildCrownProtocolCatalogCandidate(records, {
 }
 
 export function buildCrownStaticWireEvidence(records, options = {}) {
-  const catalog = buildCrownProtocolCatalogCandidate(records, options)
+  const { eightDirectionCandidates: suppliedCandidates, ...catalogOptions } = options
+  const catalog = buildCrownProtocolCatalogCandidate(records, catalogOptions)
   const entries = catalog.entries.filter((entry) => (
     entry.endpointPathAllowlisted && entry.transport !== 'websocket'
   )).map((entry) => ({
@@ -1082,10 +1083,27 @@ export function buildCrownStaticWireEvidence(records, options = {}) {
     staticValues: STATIC_WIRE_VALUE_ALLOWLIST[entry.functionName] || [],
     sourceBinding: entry.evidenceBinding,
   }))
+  const expectedDirections = catalogOptions.expectedDirections || CROWN_BROWSER_TARGETS
+  const hasExpectedDirection = records.some((record) => (
+    expectedDirections.some((direction) => directionId(direction) === record.direction)
+  ))
+  const candidateArtifact = suppliedCandidates || (hasExpectedDirection
+    ? buildCrownEightDirectionCandidates(records, catalogOptions)
+    : null)
+  const directionTemplates = (candidateArtifact?.candidates || [])
+    .filter((candidate) => candidate.status === 'candidate' && candidate.wireTemplate)
+    .map((candidate) => ({
+      ordinal: candidate.ordinal,
+      direction: candidate.direction,
+      previewStaticValues: candidate.wireTemplate.previewStaticValues,
+      submitStaticValues: candidate.wireTemplate.submitStaticValues,
+      sourceBinding: candidate.directionWireBinding,
+    }))
   const content = {
     schemaVersion: 'crown-static-wire-evidence-v1',
     sourceBinding: catalog.sourceBinding,
     entries,
+    directionTemplates,
   }
   assertSafeCrownProtocolEvidence(content)
   const artifact = { ...content, evidenceDigest: fingerprint(content) }
@@ -1102,7 +1120,10 @@ function directionId(direction) {
 }
 
 function exactOperationRequests(records, operation) {
-  return records.filter((record) => record.type === 'request').map((record) => ({
+  const expectedStage = operation === 'FT_order_view' ? 'preview' : 'submit'
+  return records.filter((record) => (
+    record.type === 'request' && rawTransportClassification(record).stage === expectedStage
+  )).map((record) => ({
     record,
     body: catalogRequestPayload(record),
   })).filter(({ body }) => body && typeof body === 'object' && body.p === operation)
@@ -1142,7 +1163,7 @@ function verifiedAsianHandicapDirection(previewBody, submitBody) {
   if (submitBody.wtype === 'RE'
     && submitBody.rtype === `RE${sideCode}`
     && submitBody.isRB === 'Y'
-    && submitBody.f === '') {
+    && submitBody.f === '1R') {
     return `live-full-time-asian-handicap-${side}`
   }
   return null
@@ -1150,7 +1171,9 @@ function verifiedAsianHandicapDirection(previewBody, submitBody) {
 
 function directionWireAssessment(direction, previewBody, submitBody) {
   const target = expectedDirectionTarget(direction)
-  const sideCode = ['home', 'over'].includes(target.side) ? 'H' : 'C'
+  const sideCode = target.marketType === 'total'
+    ? (target.side === 'over' ? 'C' : 'H')
+    : (target.side === 'home' ? 'H' : 'C')
   const verifiedDirection = verifiedAsianHandicapDirection(previewBody, submitBody)
   const looksAsianHandicap = ['R', 'RE'].includes(String(previewBody.wtype || ''))
     || ['R', 'RE'].includes(String(submitBody.wtype || ''))
@@ -1167,10 +1190,14 @@ function directionWireAssessment(direction, previewBody, submitBody) {
     || submitBody.gtype !== 'FT'
     || previewBody.chose_team !== sideCode
     || submitBody.chose_team !== sideCode
-    || !String(submitBody.rtype || '').endsWith(sideCode)) {
+    || previewBody.wtype !== (target.mode === 'live' ? 'ROU' : 'OU')
+    || submitBody.wtype !== previewBody.wtype
+    || submitBody.rtype !== `${previewBody.wtype}${sideCode}`
+    || submitBody.isRB !== (target.mode === 'live' ? 'Y' : 'N')
+    || submitBody.f !== '1R') {
     eightDirectionFail('direction-wire-mismatch')
   }
-  return { verified: false, target }
+  return { verified: true, target }
 }
 
 function websocketSubmitDecisions(records) {
@@ -1254,12 +1281,14 @@ function websocketFrameEvidence(records) {
 function classifiedHttpBettingTraffic(records) {
   const traffic = { requests: [], routes: [] }
   for (const record of records) {
+    if (catalogStaticAssetRequest(record)) continue
     const bucket = record.type === 'request'
       ? traffic.requests
       : (['route-decision', 'request-blocked'].includes(record.type) ? traffic.routes : null)
     if (!bucket) continue
     const classification = rawTransportClassification({
       type: 'request', method: record.method, url: record.url, postData: record.postData,
+      headers: record.headers,
     })
     if (['preview', 'submit'].includes(classification.stage)) {
       bucket.push({ record, stage: classification.stage })
@@ -1286,6 +1315,7 @@ export function buildCrownEightDirectionCandidates(records, {
     byRun.set(run, rows)
   }
   const runsByDirection = new Map()
+  const runGenerations = new Set()
   for (const [run, runRecords] of byRun) {
     const directions = new Set(runRecords.map((record) => record.direction))
     const generations = new Set(runRecords.map((record) => record.sessionGeneration))
@@ -1293,8 +1323,11 @@ export function buildCrownEightDirectionCandidates(records, {
       eightDirectionFail('run-integrity')
     }
     const [direction] = directions
+    const [generation] = generations
+    if (runGenerations.has(generation)) eightDirectionFail('session-generation-reused')
+    runGenerations.add(generation)
     const runs = runsByDirection.get(direction) || []
-    runs.push({ run, generation: [...generations][0], records: runRecords })
+    runs.push({ run, generation, records: runRecords })
     runsByDirection.set(direction, runs)
   }
 
@@ -1381,6 +1414,15 @@ export function buildCrownEightDirectionCandidates(records, {
       eightDirectionFail('submit-not-blocked')
     }
     if (routeDecisions[0].dispatchCount !== 0) eightDirectionFail('submit-dispatched')
+    const submitFailures = selected.records.filter((record) => (
+      record.type === 'requestfailed' && record.seq === submit[0].record.seq
+    ))
+    if (submitFailures.length !== 1
+      || String(submitFailures[0].method || '').toUpperCase() !== String(submit[0].record.method || '').toUpperCase()
+      || String(submitFailures[0].url || '') !== String(submit[0].record.url || '')
+      || !/ERR_BLOCKED_BY_CLIENT/i.test(String(submitFailures[0].failure || ''))) {
+      eightDirectionFail('submit-block-unconfirmed')
+    }
     const routeBody = catalogRequestPayload(routeDecisions[0])
     if (String(routeDecisions[0].method || '').toUpperCase() !== String(submit[0].record.method || '').toUpperCase()
       || String(routeDecisions[0].url || '') !== String(submit[0].record.url || '')
@@ -1389,7 +1431,8 @@ export function buildCrownEightDirectionCandidates(records, {
     }
     if (!(preview[0].record.eventOrdinal < previewResponse.eventOrdinal
       && previewResponse.eventOrdinal < submit[0].record.eventOrdinal
-      && submit[0].record.eventOrdinal < routeDecisions[0].eventOrdinal)) {
+      && submit[0].record.eventOrdinal < routeDecisions[0].eventOrdinal
+      && submit[0].record.eventOrdinal < submitFailures[0].eventOrdinal)) {
       eightDirectionFail('chronology')
     }
     if (previewLikeRequests.length !== 1
@@ -1424,6 +1467,23 @@ export function buildCrownEightDirectionCandidates(records, {
     const directionWireBinding = catalogBinding(
       key, 'crown-eight-direction/direction-wire/v1', wireIdentity,
     )
+    const wireTemplate = {
+      previewStaticValues: [
+        { field: 'p', value: 'FT_order_view' },
+        { field: 'gtype', value: previewBody.gtype },
+        { field: 'wtype', value: previewBody.wtype },
+        { field: 'chose_team', value: previewBody.chose_team },
+      ],
+      submitStaticValues: [
+        { field: 'p', value: 'FT_bet' },
+        { field: 'gtype', value: submitBody.gtype },
+        { field: 'wtype', value: submitBody.wtype },
+        { field: 'rtype', value: submitBody.rtype },
+        { field: 'isRB', value: submitBody.isRB },
+        { field: 'chose_team', value: submitBody.chose_team },
+        { field: 'f', value: submitBody.f },
+      ],
+    }
     const identity = [
       selected.generation, previewBody.uid, previewBody.gid, previewBody.chose_team,
       previewBody.gtype, previewBody.wtype, submitBody.rtype, submitBody.isRB, submitBody.f,
@@ -1441,6 +1501,7 @@ export function buildCrownEightDirectionCandidates(records, {
         capabilityPromoted: false,
         runBinding: catalogBinding(key, 'crown-eight-direction/run/v1', selected.records),
         directionWireBinding,
+        wireTemplate,
         lifecycle: ['preview-request', 'preview-response', 'submit-request', 'submit-route-blocked'],
       }
     }
@@ -1455,7 +1516,8 @@ export function buildCrownEightDirectionCandidates(records, {
       runBinding: catalogBinding(key, 'crown-eight-direction/run/v1', selected.records),
       identityBinding: catalogBinding(key, 'crown-eight-direction/identity/v1', identity),
       directionWireBinding,
-      lifecycle: ['preview-request', 'preview-response', 'submit-request', 'submit-route-blocked'],
+      wireTemplate,
+      lifecycle: ['preview-request', 'preview-response', 'submit-request', 'submit-route-blocked', 'submit-request-failed'],
     }
   })
   const directionWireBindings = candidates
@@ -1982,13 +2044,15 @@ function buildCrownProtocolArtifactSet(sourceRecords, {
   const key = catalogHmacKey(hmacKey || readOrCreateLocalSecretKey())
   const options = { expectedDirections, captureId, hmacKey: key }
   const protocolCatalog = buildCrownProtocolCatalogCandidate(sourceRecords, options)
-  const staticWireEvidence = buildCrownStaticWireEvidence(sourceRecords, options)
   const hasExpectedDirection = sourceRecords.some((record) => (
     expectedDirections.some((direction) => directionId(direction) === record.direction)
   ))
   const eightDirectionCandidates = allowIncompleteEightDirection && !hasExpectedDirection
     ? incompleteEightDirectionArtifact(expectedDirections, key, captureId)
     : buildCrownEightDirectionCandidates(sourceRecords, options)
+  const staticWireEvidence = buildCrownStaticWireEvidence(sourceRecords, {
+    ...options, eightDirectionCandidates,
+  })
   return { protocolCatalog, eightDirectionCandidates, staticWireEvidence }
 }
 
@@ -2206,7 +2270,28 @@ export function analyzeCrownProtocolCaptureSet(captureDir, runDirs, options = {}
   removePublicOutputs(publicDir, CATALOG_PUBLIC_OUTPUTS)
   try {
     if (!Array.isArray(runDirs) || runDirs.length === 0) catalogFail('capture-set-empty')
-    const records = runDirs.flatMap((runDir) => (
+    const scenarioRoot = path.resolve(captureDir)
+    let realScenarioRoot
+    try {
+      realScenarioRoot = fs.realpathSync.native(scenarioRoot)
+    } catch {
+      catalogFail('capture-set-root-invalid')
+    }
+    const checkedRunDirs = runDirs.map((runDir) => {
+      const resolvedRun = path.resolve(String(runDir || ''))
+      if (path.dirname(resolvedRun) !== scenarioRoot) catalogFail('capture-set-run-outside-root')
+      if (fs.existsSync(resolvedRun)) {
+        let realRun
+        try {
+          realRun = fs.realpathSync.native(resolvedRun)
+        } catch {
+          catalogFail('capture-set-run-invalid')
+        }
+        if (path.dirname(realRun) !== realScenarioRoot) catalogFail('capture-set-run-outside-root')
+      }
+      return resolvedRun
+    })
+    const records = checkedRunDirs.flatMap((runDir) => (
       readCapturePair(runDir, { layout: 'modern', requireModernMetadata: true }).rawRecords
     ))
     return writeCrownProtocolCatalogArtifacts(captureDir, {

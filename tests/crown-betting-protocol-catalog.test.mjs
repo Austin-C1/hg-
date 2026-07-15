@@ -99,13 +99,15 @@ function directionRecords(target, ordinal, overrides = {}) {
   const sessionGeneration = overrides.sessionGeneration || `private-generation-${ordinal}`
   const gid = overrides.gid || `private-gid-${ordinal}`
   const uid = overrides.uid || `private-uid-${ordinal}`
-  const sideCode = overrides.sideCode || (['home', 'over'].includes(target.side) ? 'H' : 'C')
+  const sideCode = overrides.sideCode || (target.marketType === 'total'
+    ? (target.side === 'over' ? 'C' : 'H')
+    : (target.side === 'home' ? 'H' : 'C'))
   const wtype = overrides.wtype || (target.marketType === 'asian_handicap'
     ? (target.mode === 'live' ? 'RE' : 'R')
     : (target.mode === 'live' ? 'ROU' : 'OU'))
   const rtype = overrides.rtype || `${wtype}${sideCode}`
   const isRB = overrides.isRB || (target.mode === 'live' ? 'Y' : 'N')
-  const f = overrides.f ?? (target.mode === 'live' ? '' : '1R')
+  const f = overrides.f ?? '1R'
   const line = overrides.line || (target.marketType === 'total' ? '2.5' : '-0.5')
   const odds = overrides.odds || '0.96'
   const common = { captureRunId, direction: target.id, sessionGeneration }
@@ -416,6 +418,38 @@ test('static wire evidence uses an explicit allowlist and never promotes repeate
   assert.doesNotThrow(() => assertSafeCrownProtocolEvidence(artifact))
 })
 
+test('checked-in Task 2 fixtures contain one consumable eight-direction static wire set', () => {
+  const fixtureDir = path.resolve('data/fixtures/crown/betting-protocol/artifacts')
+  const files = fs.readdirSync(fixtureDir)
+  const readOnly = (suffix) => {
+    const matches = files.filter((name) => name.endsWith(suffix))
+    assert.equal(matches.length, 1, suffix)
+    return JSON.parse(fs.readFileSync(path.join(fixtureDir, matches[0]), 'utf8'))
+  }
+  const catalog = readOnly('-protocol-catalog.safe.json')
+  const candidates = readOnly('-eight-direction-candidates.safe.json')
+  const staticWire = readOnly('-static-wire-evidence.safe.json')
+
+  for (const artifact of [catalog, candidates, staticWire]) {
+    assert.doesNotThrow(() => assertSafeCrownProtocolEvidence(artifact))
+  }
+  assert.match(candidates.candidateDigest, /^sha256:[a-f0-9]{64}$/)
+  assert.match(staticWire.evidenceDigest, /^sha256:[a-f0-9]{64}$/)
+  assert.deepEqual(candidates.candidates.map((candidate) => candidate.direction.id), CROWN_BROWSER_TARGETS.map(({ id }) => id))
+  assert.ok(candidates.candidates.every((candidate) => candidate.status === 'candidate' && candidate.dispatchCount === 0))
+  assert.deepEqual(staticWire.directionTemplates.map((template) => template.direction.id), CROWN_BROWSER_TARGETS.map(({ id }) => id))
+
+  for (let index = 0; index < staticWire.directionTemplates.length; index += 1) {
+    const template = staticWire.directionTemplates[index]
+    assert.deepEqual(template.previewStaticValues, candidates.candidates[index].wireTemplate.previewStaticValues)
+    assert.deepEqual(template.submitStaticValues, candidates.candidates[index].wireTemplate.submitStaticValues)
+    assert.deepEqual(template.previewStaticValues.map(({ field }) => field), ['p', 'gtype', 'wtype', 'chose_team'])
+    assert.deepEqual(template.submitStaticValues.map(({ field }) => field), [
+      'p', 'gtype', 'wtype', 'rtype', 'isRB', 'chose_team', 'f',
+    ])
+  }
+})
+
 test('WebSocket route-decision catalog recomputes URL stage and enforces frame fail-closed invariants', () => {
   const buildUrlDecision = (overrides) => buildCrownProtocolCatalogCandidate([{
     seq: 1,
@@ -559,17 +593,12 @@ test('builds eight isolated zero-Submit candidates without enabling production S
   assert.equal(artifact.schemaVersion, 'crown-eight-direction-candidates-v1')
   assert.equal(artifact.candidates.length, 8)
   assert.deepEqual(artifact.candidates.map((candidate) => candidate.ordinal), [1, 2, 3, 4, 5, 6, 7, 8])
-  assert.deepEqual(artifact.candidates.map((candidate) => candidate.status), [
-    'candidate', 'candidate', 'incomplete', 'incomplete',
-    'candidate', 'candidate', 'incomplete', 'incomplete',
-  ])
-  assert.ok(artifact.candidates.filter((candidate) => candidate.status === 'incomplete')
-    .every((candidate) => candidate.reason === 'EVIDENCE_REQUIRED'))
+  assert.ok(artifact.candidates.every((candidate) => candidate.status === 'candidate'))
   assert.ok(artifact.candidates.every((candidate) => candidate.dispatchCount === 0))
   assert.ok(artifact.candidates.every((candidate) => candidate.submitAllowed === false))
   assert.ok(artifact.candidates.every((candidate) => candidate.capabilityPromoted === false))
   assert.ok(artifact.candidates.every((candidate) => /^hmac-sha256:[a-f0-9]{64}$/.test(candidate.runBinding)))
-  assert.ok(artifact.candidates.filter((candidate) => candidate.status === 'candidate')
+  assert.ok(artifact.candidates
     .every((candidate) => /^hmac-sha256:[a-f0-9]{64}$/.test(candidate.identityBinding)))
   assert.ok(artifact.candidates.every((candidate) => /^hmac-sha256:[a-f0-9]{64}$/.test(candidate.directionWireBinding)))
   assert.doesNotThrow(() => assertSafeCrownProtocolEvidence(artifact))
@@ -865,20 +894,24 @@ test('catalog and eight-direction gates recompute multipart and JSON-fragment or
       '--boundary--', '',
     ].join('\r\n'),
     'prefix"action":"submit","amount":50,"selection":"home"',
+    'prefix "telemetry":"ok", p:"FT_bet", golds:"50"',
   ]
 
   for (const [index, postData] of bodies.entries()) {
     await t.test(index === 0 ? 'multipart' : 'JSON fragment', () => {
+      const headers = index === 0
+        ? { 'content-type': 'multipart/form-data; boundary=boundary' }
+        : undefined
       const common = {
         captureRunId: 'private-run-extra', direction: target.id,
         sessionGeneration: 'private-generation-extra',
       }
       const extra = [{
         ...common, seq: 3, eventOrdinal: 6, type: 'request', method: 'POST', resourceType: 'xhr',
-        url: 'https://offline.invalid/transform.php', postData,
+        url: 'https://offline.invalid/transform.php', postData, ...(headers ? { headers } : {}),
       }, {
         ...common, seq: 3, eventOrdinal: 7, type: 'route-decision', method: 'POST',
-        url: 'https://offline.invalid/transform.php', postData,
+        url: 'https://offline.invalid/transform.php', postData, ...(headers ? { headers } : {}),
         decision: 'continued', dispatchCount: 1,
       }]
       const catalog = buildCrownProtocolCatalogCandidate(extra, {
@@ -896,8 +929,164 @@ test('catalog and eight-direction gates recompute multipart and JSON-fragment or
         ...extra,
       ], {
         expectedDirections: [target], captureId: 'capture', hmacKey: HMAC_KEY,
-      }), /eight-direction:betting-traffic-count/)
+      }), /eight-direction:(?:betting-traffic-count|submit-count)/)
     })
+  }
+})
+
+test('catalog rejects unsupported multipart field-name encodings instead of proving zero Submit', () => {
+  const [target] = CROWN_BROWSER_TARGETS
+  const common = {
+    captureRunId: 'private-run-invalid-multipart', direction: target.id,
+    sessionGeneration: 'private-generation-invalid-multipart',
+  }
+  const bodies = [[
+    '--boundary',
+    "Content-Disposition: form-data; name*0*=UTF-8''%70; name*1*=", '', 'FT_bet',
+    '--boundary',
+    'Content-Disposition: form-data; name="golds"', '', '999999',
+    '--boundary--', '',
+  ].join('\r\n'), [
+    '--boundary',
+    "Content-Disposition: form-data; name=\"p\"; name*=UTF-8''%ZZ", '', 'FT_bet',
+    '--boundary',
+    'Content-Disposition: form-data; name="golds"', '', '999999',
+    '--boundary--', '',
+  ].join('\r\n'), [
+    '--boundary',
+    'Content-Disposition: form-data; name="telemetry"; name="p"', '', 'FT_bet',
+    '--boundary--', '',
+  ].join('\r\n'), [
+    '--boundary',
+    "Content-Disposition: form-data; name*=UTF-8''telemetry; name*=UTF-8''%70", '', 'FT_bet',
+    '--boundary--', '',
+  ].join('\r\n'), [
+    '--boundary',
+    'Content-Disposition: form-data; name="telemetry"',
+    'Content-Disposition: form-data; name="p"', '', 'FT_bet',
+    '--boundary--', '',
+  ].join('\r\n'), [
+    '--boundary',
+    'Content-Disposition: form-data; name="\\p"', '', 'FT_bet',
+    '--boundary',
+    'Content-Disposition: form-data; name="\\golds"', '', '999999',
+    '--boundary--', '',
+  ].join('\r\n'), [
+    '--boundary',
+    `Content-Disposition: form-data; name="p${String.fromCharCode(1)}"`, '', 'FT_bet',
+    '--boundary--', '',
+  ].join('\r\n'), [
+    '--SAFE',
+    'Content-Disposition: form-data; name="telemetry"', '', 'ok',
+    '--SAFE--',
+    '--EVIL',
+    'Content-Disposition: form-data; name="p"', '', 'FT_bet',
+    '--EVIL',
+    'Content-Disposition: form-data; name="golds"', '', '50',
+    '--EVIL--', '',
+  ].join('\r\n')]
+
+  for (const postData of bodies) {
+    const extra = [{
+      ...common, seq: 3, eventOrdinal: 6, type: 'request', method: 'POST', resourceType: 'xhr',
+      url: 'https://offline.invalid/transform.php',
+      headers: { 'content-type': 'multipart/form-data; boundary=boundary' },
+      postData,
+    }, {
+      ...common, seq: 3, eventOrdinal: 7, type: 'route-decision', method: 'POST',
+      url: 'https://offline.invalid/transform.php', postData,
+      decision: 'continued', dispatchCount: 1,
+    }]
+    assert.throws(() => buildCrownProtocolCatalogCandidate(extra, {
+      captureId: 'capture', hmacKey: HMAC_KEY,
+    }), /catalog:multipart-invalid/)
+    assert.throws(() => buildCrownEightDirectionCandidates([
+      ...directionRecords(target, 1, common),
+      ...extra,
+    ], {
+      expectedDirections: [target], captureId: 'capture', hmacKey: HMAC_KEY,
+    }), /catalog:multipart-invalid/)
+  }
+})
+
+test('catalog treats delimiter substrings inside multipart values as data and still sees later Submit', () => {
+  const postData = [
+    '--SAFE',
+    'Content-Disposition: form-data; name="telemetry"', '', 'ok--SAFE--junk',
+    '--SAFE',
+    'Content-Disposition: form-data; name="p"', '', 'FT_bet',
+    '--SAFE',
+    'Content-Disposition: form-data; name="golds"', '', '50',
+    '--SAFE--', '',
+  ].join('\r\n')
+  const records = [{
+    captureRunId: 'private-run-boundary', direction: CROWN_BROWSER_TARGETS[0].id,
+    sessionGeneration: 'private-generation-boundary', seq: 1, eventOrdinal: 1,
+    type: 'request', method: 'POST', resourceType: 'xhr',
+    url: 'https://offline.invalid/transform.php', postData,
+    headers: { 'content-type': 'multipart/form-data; boundary=SAFE' },
+  }, {
+    captureRunId: 'private-run-boundary', direction: CROWN_BROWSER_TARGETS[0].id,
+    sessionGeneration: 'private-generation-boundary', seq: 1, eventOrdinal: 2,
+    type: 'route-decision', method: 'POST', url: 'https://offline.invalid/transform.php',
+    postData, headers: { 'content-type': 'multipart/form-data; boundary=SAFE' },
+    decision: 'continued', dispatchCount: 1,
+  }]
+  const catalog = buildCrownProtocolCatalogCandidate(records, {
+    captureId: 'capture', hmacKey: HMAC_KEY,
+  })
+  assert.equal(catalog.entries[0].stage, 'submit')
+})
+
+test('catalog rejects multipart without one exact declared boundary', () => {
+  const postData = [
+    '--SAFE',
+    'Content-Disposition: form-data; name="p"', '', 'FT_bet',
+    '--SAFE',
+    'Content-Disposition: form-data; name="golds"', '', '50',
+    '--SAFE--', '',
+  ].join('\r\n')
+  const headersList = [{
+    'content-type': 'multipart/form-data',
+  }, {
+    'content-type': 'application/octet-stream',
+  }, {
+    'content-type': 'multipart/form-data; boundary="SAFE "',
+  }, {
+    'content-type': 'multipart/form-data; boundary=SAFE; boundary=EVIL',
+  }]
+  for (const headers of headersList) {
+    const records = [{
+      captureRunId: 'private-run-strict-boundary', direction: CROWN_BROWSER_TARGETS[0].id,
+      sessionGeneration: 'private-generation-strict-boundary', seq: 1, eventOrdinal: 1,
+      type: 'request', method: 'POST', resourceType: 'xhr',
+      url: 'https://offline.invalid/transform.php', headers, postData,
+    }]
+    assert.throws(() => buildCrownProtocolCatalogCandidate(records, {
+      captureId: 'capture', hmacKey: HMAC_KEY,
+    }), /catalog:multipart-invalid/)
+  }
+})
+
+test('catalog rejects unsupported JSON-like fragments instead of proving zero Submit', () => {
+  for (const postData of [
+    'p/*comment*/:"FT_bet",golds:"50"',
+    '"p"/*comment*/:"FT_bet","golds":"50"',
+  ]) {
+    const records = [{
+      captureRunId: 'private-run-json-fragment', direction: CROWN_BROWSER_TARGETS[0].id,
+      sessionGeneration: 'private-generation-json-fragment', seq: 1, eventOrdinal: 1,
+      type: 'request', method: 'POST', resourceType: 'xhr',
+      url: 'https://offline.invalid/transform.php', postData,
+    }, {
+      captureRunId: 'private-run-json-fragment', direction: CROWN_BROWSER_TARGETS[0].id,
+      sessionGeneration: 'private-generation-json-fragment', seq: 1, eventOrdinal: 2,
+      type: 'route-decision', method: 'POST', url: 'https://offline.invalid/transform.php',
+      postData, decision: 'continued', dispatchCount: 1,
+    }]
+    assert.throws(() => buildCrownProtocolCatalogCandidate(records, {
+      captureId: 'capture', hmacKey: HMAC_KEY,
+    }), /catalog:json-fragment-invalid/)
   }
 })
 

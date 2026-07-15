@@ -50,11 +50,11 @@ function fixture() {
   const marketIdentity = `${eventKey}|full_time|asian_handicap|RATIO_RE`
   const signal = { signalId: 'signal-processing', observedAt: NOW,
     target: { eventIdentity: eventKey, marketIdentity, selectionIdentity: `${marketIdentity}|home`, side: 'home' },
-    evidence: { mode: 'prematch', period: 'full_time', marketType: 'asian_handicap', handicap: -0.5, livePhase: null } }
+    evidence: { mode: 'prematch', period: 'full_time', marketType: 'asian_handicap', handicap: -0.5, handicapRaw: '-0.5', livePhase: null } }
   handle.db.prepare("UPDATE monitor_signals SET payload_json=? WHERE signal_id='signal-processing'").run(JSON.stringify(signal))
   const selection = { provider: 'crown', mode: 'prematch', capturedAt: '2026-07-12T00:00:01.000Z',
     event: { eventKey, mode: 'prematch', livePhase: null },
-    market: { marketIdentity, period: 'full_time', marketType: 'asian_handicap', lineKey: 'RATIO_RE', handicap: -0.5 },
+    market: { marketIdentity, period: 'full_time', marketType: 'asian_handicap', lineKey: 'RATIO_RE', handicap: -0.5, handicapRaw: '-0.50' },
     selection: { selectionIdentity: `${marketIdentity}|away`, side: 'away', odds: '0.91', suspended: false } }
   handle.db.prepare('INSERT INTO monitor_selection_state(selection_identity,event_key,captured_at,snapshot_json) VALUES (?,?,?,?)')
     .run(selection.selection.selectionIdentity, eventKey, selection.capturedAt, JSON.stringify(selection))

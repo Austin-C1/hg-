@@ -11,6 +11,17 @@ function tempDbPath() {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'crown-app-db-')), 'crown.sqlite')
 }
 
+test('app and runtime database connections wait briefly for concurrent WAL writers', () => {
+  const dbPath = tempDbPath()
+  const app = openAppDatabase({ dbPath })
+  assert.equal(app.db.prepare('PRAGMA busy_timeout').get().timeout, 5000)
+  app.close()
+
+  const runtime = openRuntimeDatabase({ dbPath })
+  assert.equal(runtime.db.prepare('PRAGMA busy_timeout').get().timeout, 5000)
+  runtime.close()
+})
+
 test('runtime database connection opens an initialized file without running schema work', () => {
   const dbPath = tempDbPath()
   const seed = new DatabaseSync(dbPath)
@@ -112,6 +123,8 @@ test('app database creates the required SQLite tables', () => {
     'betting_history',
     'betting_rule_leagues',
     'betting_rules',
+    'crown_browser_acceptance_campaigns',
+    'crown_browser_acceptance_cases',
     'execution_authorization_child_budgets',
     'execution_authorizations',
     'execution_security_audit',
@@ -160,6 +173,7 @@ test('app database creates integer money columns and stable betting defaults', (
     ],
     execution_authorization_child_budgets: ['amount_minor'],
     bet_submit_attempts: ['amount_minor'],
+    crown_browser_acceptance_cases: ['authorized_min_minor'],
   }
 
   for (const [table, expectedColumns] of Object.entries(expectedMoneyColumns)) {
@@ -195,11 +209,30 @@ test('app database creates integer money columns and stable betting defaults', (
   handle.close()
 })
 
+test('acceptance validation state persists bounded polling metadata and evidence digest', () => {
+  const handle = openAppDatabase({ dbPath: ':memory:' })
+  const columns = new Map(handle.db.prepare('PRAGMA table_info(crown_browser_acceptance_cases)').all()
+    .map((row) => [row.name, row]))
+  assert.equal(columns.get('validation_poll_count')?.type, 'INTEGER')
+  assert.equal(columns.get('validation_poll_count')?.dflt_value, '0')
+  assert.equal(columns.get('validation_next_poll_at')?.type, 'TEXT')
+  assert.equal(columns.get('validation_deadline_at')?.type, 'TEXT')
+  assert.equal(columns.get('result_evidence_digest')?.type, 'TEXT')
+  const sql = handle.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='crown_browser_acceptance_cases'").get().sql
+  assert.match(sql, /state IN \([^)]*'validating'/)
+  assert.match(sql, /validation_poll_count[^,]+CHECK \(typeof\(validation_poll_count\) = 'integer'/s)
+  assert.match(sql, /result_evidence_digest[^,]+length\(result_evidence_digest\) = 64/s)
+  handle.close()
+})
+
 test('submit attempts allow the new virtual-account execution path without an authorization row', () => {
   const handle = openAppDatabase({ dbPath: ':memory:' })
-  const authorization = handle.db.prepare('PRAGMA table_info(bet_submit_attempts)').all()
-    .find((row) => row.name === 'authorization_id')
+  const columns = handle.db.prepare('PRAGMA table_info(bet_submit_attempts)').all()
+  const authorization = columns.find((row) => row.name === 'authorization_id')
+  const candidateDigest = columns.find((row) => row.name === 'execution_candidate_digest')
   assert.equal(authorization?.notnull, 0)
+  assert.equal(candidateDigest?.type, 'TEXT')
+  assert.equal(candidateDigest?.notnull, 0)
   handle.close()
 })
 
@@ -262,7 +295,9 @@ test('submit attempt migration preserves authorized history and accepts neutral 
   const legacySql = currentSql
     .replace('CREATE TABLE bet_submit_attempts', 'CREATE TABLE bet_submit_attempts__legacy_not_null')
     .replace('authorization_id TEXT,', 'authorization_id TEXT NOT NULL,')
+    .replace(/\n  execution_candidate_digest TEXT CHECK \([^\n]+\),/, '')
   assert.match(legacySql, /authorization_id TEXT NOT NULL/)
+  assert.doesNotMatch(legacySql, /execution_candidate_digest/)
   legacy.exec('PRAGMA foreign_keys=OFF')
   legacy.exec('DROP TRIGGER bet_submit_attempts_immutable_update')
   legacy.exec('DROP TRIGGER bet_submit_attempts_immutable_delete')
@@ -270,7 +305,10 @@ test('submit attempt migration preserves authorized history and accepts neutral 
   legacy.exec('DROP TRIGGER bet_submit_attempts_status_transition')
   legacy.exec('DROP INDEX bet_submit_attempts_child_status_idx')
   legacy.exec(legacySql)
-  legacy.exec('INSERT INTO bet_submit_attempts__legacy_not_null SELECT * FROM bet_submit_attempts')
+  const legacyColumns = legacy.prepare('PRAGMA table_info(bet_submit_attempts__legacy_not_null)').all()
+    .map((row) => `"${row.name}"`).join(', ')
+  legacy.exec(`INSERT INTO bet_submit_attempts__legacy_not_null (${legacyColumns})
+    SELECT ${legacyColumns} FROM bet_submit_attempts`)
   legacy.exec('DROP TABLE bet_submit_attempts')
   legacy.exec('ALTER TABLE bet_submit_attempts__legacy_not_null RENAME TO bet_submit_attempts')
   legacy.exec('PRAGMA foreign_keys=ON')
@@ -280,6 +318,11 @@ test('submit attempt migration preserves authorized history and accepts neutral 
   const authorizationColumn = migrated.db.prepare('PRAGMA table_info(bet_submit_attempts)').all()
     .find((row) => row.name === 'authorization_id')
   assert.equal(authorizationColumn?.notnull, 0)
+  assert.equal(migrated.db.prepare(`SELECT execution_candidate_digest FROM bet_submit_attempts
+    WHERE submit_attempt_id='migration-submit-authorized'`).get().execution_candidate_digest, null)
+  assert.throws(() => migrated.db.prepare(`UPDATE bet_submit_attempts
+    SET execution_candidate_digest='${'a'.repeat(64)}'
+    WHERE submit_attempt_id='migration-submit-authorized'`).run(), /bet-submit-attempt-immutable/)
   assert.equal(migrated.db.prepare(`SELECT authorization_id FROM bet_submit_attempts
     WHERE submit_attempt_id='migration-submit-authorized'`).get().authorization_id, 'migration-authorization')
   assert.deepEqual({ ...migrated.db.prepare(`SELECT batch_id,account_id,child_order_id

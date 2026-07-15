@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import BettingAccounts from './BettingAccounts'
 import { api } from '../services/api'
+import { browserBettingSummary } from '../test/browserBettingFixture'
 
 vi.mock('../services/api', () => ({
   isDashboardAuthenticationError: (error: unknown) => error instanceof Error && error.message === 'authentication-required',
@@ -58,6 +59,20 @@ vi.mock('../services/api', () => ({
       events: { items: [] },
       changes: { items: [] },
     })),
+    getOperationsSummary: vi.fn(async () => ({ item: {
+      runtime: { requested: false, state: 'off', reasonCode: '', updatedAt: '' },
+      browserBetting: {
+        ...browserBettingSummary,
+        sessions: [
+          { accountId: 'bet_1', state: 'stopped', lastHeartbeatAt: null, sessionGeneration: 4, lastApiSuccessAt: null },
+          { accountId: 'bet_2', state: 'ready', lastHeartbeatAt: '2026-07-15T01:00:00.000Z', sessionGeneration: 4, lastApiSuccessAt: '2026-07-15T00:59:59.000Z' },
+          { accountId: 'bet_unset', state: 'login_required', lastHeartbeatAt: null, sessionGeneration: 4, lastApiSuccessAt: null },
+        ],
+      },
+    } })),
+    openBettingManualLogin: vi.fn(async (accountId) => ({ challengeId: 'challenge-safe', accountId, status: 'awaiting-user', errorCode: '', expiresAt: Date.now() + 60_000 })),
+    confirmBettingManualLogin: vi.fn(async (accountId, challengeId) => ({ challengeId, accountId, status: 'verified', errorCode: '', expiresAt: Date.now() + 60_000 })),
+    cancelBettingManualLogin: vi.fn(async (accountId, challengeId) => ({ challengeId, accountId, status: 'failed', errorCode: 'manual-login-cancelled', expiresAt: Date.now() + 60_000 })),
     createBettingAccount: vi.fn(async (payload) => ({
       id: 'bet_new',
       username: payload.username,
@@ -144,6 +159,19 @@ describe('BettingAccounts', () => {
     expect(screen.getByLabelText('账号卡片 first-user')).toHaveTextContent('投注顺序：1')
     expect(screen.getByLabelText('账号卡片 second-user')).toHaveTextContent('投注顺序：2')
     expect(screen.getByLabelText('账号卡片 unset-user')).toHaveTextContent('投注顺序：未设置')
+  })
+
+  test('shows per-account browser state and opens manual login only for a stopped global worker', async () => {
+    render(<BettingAccounts />)
+    expect(await screen.findByText('浏览器会话：已停止')).toBeInTheDocument()
+    expect(screen.getByText('浏览器会话：就绪')).toBeInTheDocument()
+    expect(screen.getByText('浏览器会话：需要人工登录')).toBeInTheDocument()
+    const open = screen.getByRole('button', { name: '打开登录窗口 first-user' })
+    expect(open).toBeEnabled()
+    fireEvent.click(open)
+    await waitFor(() => expect(api.openBettingManualLogin).toHaveBeenCalledWith('bet_1'))
+    expect(await screen.findByRole('dialog', { name: '人工登录 first-user' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /停止会话|重启会话/ })).not.toBeInTheDocument()
   })
 
   test('saves manual betting order when creating an account', async () => {

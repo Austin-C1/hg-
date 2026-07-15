@@ -1,38 +1,61 @@
 # Crown betting protocol capability map
 
-Updated: 2026-07-11
+Updated: 2026-07-15
 
-Matrix version: `crown-protocol-capabilities-v2:23628f891d1edb9a`
+Matrix version: `crown-protocol-capabilities-v2:c9139fcb53c51012`
 
-## Evidence inventory
+## Evidence
 
-| Capture ID | Safe analyzer result | Capability use |
+| Safe evidence | Result | Runtime use |
 |---|---|---|
-| `20260709-110033` | Preview plus one submit exchange and later status observations | Submit chain rejected: the sanitized status observations cannot be bound to the exact submitted identity |
-| `20260709-111046` | Preview response, HTTP 200, stable request/response fingerprints | Verifies live/full-time/asian-handicap/main preview only |
-| `20260709-112647` | Preview response, HTTP 200, stable request/response fingerprints | Verifies live/first-half/total/main preview only |
+| `20260714-1848-protocol-catalog.safe.json` | Eight directions observed | Endpoint and lifecycle audit |
+| `20260714-1848-static-wire-evidence.safe.json` | Preview and Submit field contracts | Stable protocol digest and field sets |
+| `20260714-1848-eight-direction-candidates.safe.json` | Eight successful Preview requests; eight Submit candidates blocked before dispatch | Preview enabled for all eight directions; acceptance candidate only |
+| `20260714-085221-accepted.safe.json` plus watcher evidence | Direct accepted Submit bound to the away selection | Submit enabled only for prematch/full-time/asian-handicap/main/away |
 
-The analyzer publishes only endpoint kind, method, HTTP status, field-name sets, stable fingerprints and response codes. It omits origins, private locations and body values.
+Task 2 dispatched zero `FT_bet` requests. A blocked Submit candidate never enables Submit by itself. No exact status-query contract exists, so Reconciliation remains disabled for every row.
 
-## Capability rows
+## Side-aware rows
 
-| Evidence ID | Mode | Period | Market | Line | Request field fingerprint | Response field fingerprint | Preview | Submit | Reconciliation |
+All rows use Preview `/transform.php` + `FT_order_view` and Submit `/transform.php` + `FT_bet`. Reconciliation has no endpoint.
+
+| Mode | Market | Side | Ratio field | Odds field | Preview `wtype/chose_team` | Submit `rtype/isRB/f` | Preview | Submit | Reconciliation |
 |---|---|---|---|---|---|---|---:|---:|---:|
-| `crown-capture-20260709-111046-live-full-time-asian-handicap-main` | live | full_time | asian_handicap | main | `sha256:50a9c1ffe0efeeed144c2c8fb0d027e49856b73caebb89675250caf0994b661e` | `sha256:4682fa69edf56ee85cf7328948994e79163afce45277c413e805f01fb2c529ad` | false | false | false |
-| `crown-capture-20260709-112647-live-first-half-total-main` | live | first_half | total | main | `sha256:50a9c1ffe0efeeed144c2c8fb0d027e49856b73caebb89675250caf0994b661e` | `sha256:4682fa69edf56ee85cf7328948994e79163afce45277c413e805f01fb2c529ad` | false | false | false |
+| prematch | asian_handicap | home | `RATIO_R` | `IOR_RH` | `R/H` | `RH/N/1R` | true | false | false |
+| prematch | asian_handicap | away | `RATIO_R` | `IOR_RC` | `R/C` | `RC/N/1R` | true | true | false |
+| prematch | total | over | `RATIO_OUO` | `IOR_OUC` | `OU/C` | `OUC/N/1R` | true | false | false |
+| prematch | total | under | `RATIO_OUU` | `IOR_OUH` | `OU/H` | `OUH/N/1R` | true | false | false |
+| live | asian_handicap | home | `RATIO_RE` | `IOR_REH` | `RE/H` | `REH/Y/1R` | true | false | false |
+| live | asian_handicap | away | `RATIO_RE` | `IOR_REC` | `RE/C` | `REC/Y/1R` | true | false | false |
+| live | total | over | `RATIO_ROUO` | `IOR_ROUC` | `ROU/C` | `ROUC/Y/1R` | true | false | false |
+| live | total | under | `RATIO_ROUU` | `IOR_ROUH` | `ROU/H` | `ROUH/Y/1R` | true | false | false |
 
-The evidenced safe wire request field set is `chose_team`, `gid`, `gtype`, `langx`, `odd_f_type`, `p`, `ver`, `wtype`. The response fingerprint covers the complete safe response structure, not only the six parser values. Any missing, added or renamed field changes the fingerprint and blocks the row.
+The opaque `f=1R` value is the captured full-time wire value; it is not interpreted as a period label.
 
-The dynamic `ver` value has no proven production source. Both rows therefore carry `blockedReason=crown-preview-field-source-unproven` and preview remains disabled. Submit separately remains blocked by `crown-submit-evidence-missing`.
+## Field contracts
 
-Each fixture references an independent safe artifact by capture ID, request/response record evidence IDs and artifact digest. Matrix verification recomputes the artifact digest and record identities before accepting provenance.
+Preview request fields:
 
-## Live acceptance
+`chose_team`, `gid`, `gtype`, `langx`, `odd_f_type`, `p`, `ver`, `wtype`
 
-The betting worker was stopped and no active execution lease existed. Two enabled execution accounts were present, but the exact betting-origin allowlist was not configured in the acceptance environment. Live login, game-list, member-data and order-preview calls were therefore blocked before network access. The gate was not bypassed or changed.
+Submit request fields:
 
-Network audit for this acceptance: zero preview calls and zero submit calls. No live balance, limit, step, line or odds fingerprint was adopted.
+`autoOdd`, `chose_team`, `con`, `f`, `gid`, `golds`, `gtype`, `imp`, `ioratio`, `isRB`, `isYesterday`, `langx`, `odd_f_type`, `p`, `ptype`, `ratio`, `rtype`, `timestamp`, `timestamp2`, `ver`, `wtype`
 
-## Production gates
+| Contract | Fingerprint |
+|---|---|
+| Preview request | `sha256:50a9c1ffe0efeeed144c2c8fb0d027e49856b73caebb89675250caf0994b661e` |
+| Prematch Preview response | `sha256:efedaa6220496cc356c24dcd195c85aaf3090cfcd345ffe90da98671e337ebec` |
+| Live Preview response | `sha256:efedaa6220496cc356c24dcd195c85aaf3090cfcd345ffe90da98671e337ebec` |
+| Submit request | `sha256:f17f48df8bc9697c033f07450f9d363f4e0934755588854806b3303ae1ebd37a` |
+| Direct-accepted Submit response | `sha256:046d372d24a12413fec6298bac72c7d036c7d28ddf0d9e84aad2f139952daf93` |
 
-`assertCrownCapability(value, { operation })` is the canonical production decision point. A provider factory does not create capability. The execution provider has no injectable real transport and remains fail-closed. Production reconciliation is unavailable; fixture-only reconciliation cannot attest a Crown row.
+`username` is removed from the safe Preview response contract. Task 2 observed the same safe Preview response field set for all eight directions; `score` is not required without direction-specific response evidence.
+
+## Runtime boundary
+
+The capability library stores only endpoints, field names, proven static wire values, dynamic-value source names, and evidence digests. Current `gid`, odds, stake, balance, `con`, `ratio`, timestamp, `uid`, and `ver` are injected from the current list, Preview, account, clock, and verified session data.
+
+The matrix version excludes capture-specific blocked-request candidate bindings. It binds stable protocol behavior and the direct-accepted Submit authority only. Each B2 attempt separately stores a runtime `executionCandidateDigest`; that digest is never reused as the protocol digest or matrix version.
+
+`getCrownCapability()` uses the five-part key `{mode, period, marketType, lineVariant, selectionSide}` through a prebuilt read-only index. Runtime lookup does not read fixtures or access the network. Fixture verification is an explicit development audit.

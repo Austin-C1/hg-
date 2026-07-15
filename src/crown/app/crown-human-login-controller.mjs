@@ -1,15 +1,20 @@
 import crypto from 'node:crypto'
 import path from 'node:path'
 
-import { CrownApiClient } from '../login/crown-api-login-manager.mjs'
+import { CrownBrowserApiClient } from '../login/crown-browser-api-client.mjs'
 import {
   ManualLoginBridge,
   ManualLoginError,
 } from '../login/manual-login-bridge.mjs'
 import { normalizePublicHttpsExactOrigin } from '../login/crown-origin.mjs'
-import { launchPortableChromium } from '../login/portable-chromium.mjs'
+import {
+  launchPortableChromium,
+  takePortableChromiumFailureOwnership,
+} from '../login/portable-chromium.mjs'
+import { BrowserProfileLease } from '../runtime/browser-profile-lease.mjs'
 import { assertPathWithin, normalizeFullyQualifiedWindowsPath } from '../runtime/portable-paths.mjs'
 import { writeAtomicJson } from '../runtime/atomic-json-file.mjs'
+import { openAppDatabase } from './app-db.mjs'
 
 const SAFE_STATES = new Set(['idle', 'opening', 'awaiting-user', 'verifying', 'verified', 'failed'])
 
@@ -158,8 +163,12 @@ export class CrownHumanLoginController {
     profileRoot,
     chromiumExecutable,
     chromium,
+    dbPath,
+    env = process.env,
+    bettingProcess = null,
+    createProfileLease = (options) => new BrowserProfileLease(options),
+    openLeaseDatabase = (options) => openAppDatabase(options),
     apiClient,
-    fetchImpl = globalThis.fetch,
     randomBytes = crypto.randomBytes,
     shutdownWaitMs = 15_000,
     maxActiveChallenges = 64,
@@ -176,6 +185,7 @@ export class CrownHumanLoginController {
     this.contexts = new Map()
     this.operations = new Map()
     this.closing = false
+    this.bettingStartGated = false
     this.shutdownPromise = null
     this.shutdownWaitMs = shutdownWaitMs
     this.maxActiveChallenges = maxActiveChallenges
@@ -185,27 +195,151 @@ export class CrownHumanLoginController {
       return
     }
 
-    const client = apiClient || new CrownApiClient({ fetchImpl })
+    if (!String(dbPath || '').trim()) fail('manual-login-db-path-required')
+    if (typeof createProfileLease !== 'function' || typeof openLeaseDatabase !== 'function') {
+      fail('manual-login-profile-lease-dependency-invalid')
+    }
+    if (bettingProcess && (typeof bettingProcess.isRunning !== 'function' || typeof bettingProcess.stop !== 'function')) {
+      fail('manual-login-betting-process-invalid')
+    }
+    this.bettingProcess = bettingProcess
     this.bridge = new ManualLoginBridge({
       installationId,
       randomBytes,
       launchBrowser: async ({ accountId }) => {
-        const browser = await launchPortableChromium({
-          chromium,
-          appRoot,
-          dataRoot,
-          executablePath: chromiumExecutable,
-          profileRoot,
-          accountId,
-        })
         if (this.closing || this.contexts.size >= this.maxActiveChallenges) {
-          await browser.context?.close?.().catch(() => {})
           fail(this.closing ? 'manual-login-controller-closing' : 'manual-login-busy')
         }
-        this.contexts.set(browser.context, accountId)
-        return browser
+        if (this.bettingProcess?.isRunning()) fail('manual-login-busy')
+
+        let leaseDatabase
+        let lease
+        let leaseAcquired = false
+        let finalizeProfile = null
+        let heartbeatError = null
+        try {
+          leaseDatabase = openLeaseDatabase({ dbPath, env })
+          if (!leaseDatabase?.db || typeof leaseDatabase.close !== 'function') {
+            fail('manual-login-profile-lease-database-invalid')
+          }
+          lease = createProfileLease({ db: leaseDatabase.db, dbPath, accountId })
+          lease.acquire()
+          leaseAcquired = true
+          lease.startHeartbeat?.({
+            onError(error) {
+              heartbeatError = error
+              if (finalizeProfile) void finalizeProfile()
+            },
+          })
+          lease.assertFence()
+        } catch (error) {
+          try { lease?.stopHeartbeat?.() } catch {}
+          if (leaseAcquired) {
+            try { lease?.release?.() } catch {}
+          }
+          try { leaseDatabase?.close?.() } catch {}
+          if (error?.code === 'lease-active' || error?.message === 'lease-active') fail('manual-login-busy')
+          throw error
+        }
+
+        let browser
+        try {
+          browser = await launchPortableChromium({
+            chromium,
+            appRoot,
+            dataRoot,
+            executablePath: chromiumExecutable,
+            profileRoot,
+            accountId,
+          })
+        } catch (error) {
+          const failedBrowser = takePortableChromiumFailureOwnership(error)
+          try { lease.stopHeartbeat?.() } catch {}
+          if (failedBrowser?.context) {
+            const owned = {
+              accountId,
+              context: failedBrowser.context,
+              finalize: async () => {
+                const closed = await failedBrowser.finalize()
+                if (closed) {
+                  try { lease.release() } catch {}
+                  try { leaseDatabase.close() } catch {}
+                  this.contexts.delete(failedBrowser.context)
+                }
+                return closed
+              },
+            }
+            this.contexts.set(failedBrowser.context, owned)
+          } else if (failedBrowser) {
+            this.contexts.set(failedBrowser, {
+              accountId,
+              context: null,
+              finalize: async () => false,
+            })
+          } else {
+            try { lease.release() } catch {}
+          }
+          if (!failedBrowser?.context) {
+            try { leaseDatabase.close() } catch {}
+          }
+          throw error
+        }
+
+        let contextClosed = false
+        let finalizePromise = null
+        const owned = { accountId, context: browser.context, finalize: null }
+        const finalize = () => {
+          if (finalizePromise) return finalizePromise
+          finalizePromise = (async () => {
+            let closed = contextClosed
+            if (!closed) {
+              try {
+                await browser.context.close()
+                closed = true
+              } catch {
+                closed = false
+              }
+            }
+            try { lease.stopHeartbeat?.() } catch {}
+            if (closed) {
+              try { lease.release() } catch {}
+              this.contexts.delete(browser.context)
+            }
+            try { leaseDatabase.close() } catch {}
+            return closed
+          })()
+          return finalizePromise
+        }
+        finalizeProfile = finalize
+        owned.finalize = finalize
+        browser.context.on?.('close', () => {
+          contextClosed = true
+          if (!finalizePromise) void finalize()
+        })
+        this.contexts.set(browser.context, owned)
+
+        if (
+          heartbeatError
+          || this.closing
+          || this.contexts.size > this.maxActiveChallenges
+          || this.bettingProcess?.isRunning()
+        ) {
+          await finalize()
+          fail(this.closing ? 'manual-login-controller-closing' : 'manual-login-busy')
+        }
+        return { ...browser, finalize }
       },
-      verifyGameList: (session, { signal } = {}) => client.fetchGameList(session, { signal }),
+      verifyGameList: (session, { signal, page, origin } = {}) => {
+        const client = apiClient || new CrownBrowserApiClient({ page, origin })
+        const verificationSession = {
+          accountId: session.accountId,
+          username: session.username,
+          origin,
+          baseUrl: origin,
+          uid: session.uid,
+        }
+        return client.fetchGameList(verificationSession, { signal })
+      },
       replaceSessionAtomically: async ({ account, session }) => {
         const expected = {
           accountId: String(account?.accountId || account?.id || ''),
@@ -254,9 +388,11 @@ export class CrownHumanLoginController {
   }
 
   async _closeAccountContexts(accountId) {
-    const owned = [...this.contexts.entries()].filter(([, owner]) => owner === accountId)
-    for (const [context] of owned) this.contexts.delete(context)
-    await boundedAllSettled(owned.map(([context]) => Promise.resolve().then(() => context?.close?.())), this.shutdownWaitMs)
+    const owned = [...this.contexts.values()].filter((entry) => entry.accountId === accountId)
+    await boundedAllSettled(
+      owned.map((entry) => Promise.resolve().then(() => entry.finalize())),
+      this.shutdownWaitMs,
+    )
   }
 
   async _adopt(result, owner) {
@@ -295,6 +431,7 @@ export class CrownHumanLoginController {
 
   async openManualLogin(input = {}) {
     this._assertOpen()
+    if (this.bettingStartGated) fail('manual-login-busy')
     if (this.bindings.size + this.operations.size >= this.maxActiveChallenges) fail('manual-login-busy')
     return this._runOperation(async (signal) => {
       const { result, owner } = await this._openManualLogin(input, signal)
@@ -359,6 +496,26 @@ export class CrownHumanLoginController {
     })
   }
 
+  hasUnsafeContext() {
+    return this.bettingStartGated || this.operations.size > 0 || this.contexts.size > 0 || this.bindings.size > 0
+  }
+
+  runWithBettingStartGate(start) {
+    if (typeof start !== 'function') fail('manual-login-betting-start-invalid')
+    if (this.closing || this.hasUnsafeContext()) fail('manual-login-busy')
+    this.bettingStartGated = true
+    let result
+    try {
+      result = start()
+    } catch (error) {
+      this.bettingStartGated = false
+      throw error
+    }
+    return Promise.resolve(result).finally(() => {
+      this.bettingStartGated = false
+    })
+  }
+
   async shutdown() {
     if (this.shutdownPromise) return this.shutdownPromise
     this.closing = true
@@ -371,11 +528,13 @@ export class CrownHumanLoginController {
         challengeId,
       })))
       await boundedAllSettled([...cancellations, ...this.operations.keys()], this.shutdownWaitMs)
-      const contexts = [...this.contexts.keys()]
-      this.contexts.clear()
+      const contexts = [...this.contexts.values()]
       this.bindings.clear()
-      await boundedAllSettled(contexts.map((context) => Promise.resolve().then(() => context?.close?.())), this.shutdownWaitMs)
-      return { ok: true }
+      await boundedAllSettled(
+        contexts.map((entry) => Promise.resolve().then(() => entry.finalize())),
+        this.shutdownWaitMs,
+      )
+      return { ok: !this.hasUnsafeContext() }
     })()
     return this.shutdownPromise
   }

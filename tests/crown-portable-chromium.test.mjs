@@ -59,6 +59,7 @@ test('launches only the bundled executable with a visible persistent account pro
   assert.equal(chromium.calls[0].options.executablePath, fs.realpathSync(paths.executablePath))
   assert.equal(chromium.calls[0].options.headless, false)
   assert.equal(chromium.calls[0].options.acceptDownloads, false)
+  assert.equal(chromium.calls[0].options.serviceWorkers, 'block')
   assert.equal(Object.hasOwn(chromium.calls[0].options, 'channel'), false)
   assert.equal(fs.realpathSync(chromium.calls[0].profileDir).startsWith(fs.realpathSync(paths.profileRoot)), true)
 })
@@ -85,6 +86,25 @@ test('uses stable isolated profile directories without putting raw account ids i
   assert.equal(first, again)
   assert.notEqual(first, other)
   assert.doesNotMatch(first, /monitor-A/i)
+})
+
+test('rejects a restored persistent profile with more than one page', async (t) => {
+  const paths = fixture()
+  t.after(() => fs.rmSync(paths.root, { recursive: true, force: true }))
+  let closeCalls = 0
+  const context = {
+    pages: () => [{}, {}],
+    async close() { closeCalls += 1 },
+  }
+  await assert.rejects(() => launchPortableChromium({
+    chromium: { async launchPersistentContext() { return context } },
+    appRoot: paths.appRoot,
+    dataRoot: paths.dataRoot,
+    executablePath: paths.executablePath,
+    profileRoot: paths.profileRoot,
+    accountId: 'monitor-A',
+  }), /portable-chromium-unexpected-pages/)
+  assert.equal(closeCalls, 1)
 })
 
 test('rejects system or escaped executables and profiles outside their declared roots', async (t) => {

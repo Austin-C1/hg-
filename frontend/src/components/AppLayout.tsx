@@ -2,6 +2,7 @@ import {
   BankOutlined,
   ControlOutlined,
   BarChartOutlined,
+  HistoryOutlined,
   MenuOutlined,
   ProfileOutlined,
   RobotOutlined,
@@ -25,6 +26,7 @@ const items = [
   { key: '/monitor-alerts', icon: <SettingOutlined />, label: '监控报警' },
   { key: '/betting-rules', icon: <BarChartOutlined />, label: '投注规则' },
   { key: '/betting-accounts', icon: <BankOutlined />, label: '投注账号配置' },
+  { key: '/betting-history', icon: <HistoryOutlined />, label: '投注历史' },
   { key: '/settings', icon: <RobotOutlined />, label: '设置' },
 ]
 

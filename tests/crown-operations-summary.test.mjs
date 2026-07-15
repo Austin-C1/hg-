@@ -10,6 +10,10 @@ import { handleAppApi } from '../src/crown/app/app-api.mjs'
 import { Readable } from 'node:stream'
 import { watcherLeaseKey } from '../src/crown/app/watcher-lease-key.mjs'
 import { realBettingStatusCoreDto } from '../src/crown/app/real-betting-dto.mjs'
+import {
+  createCrownBrowserAcceptanceManifest,
+  initializeCrownBrowserAcceptanceCampaign,
+} from '../src/crown/betting/crown-browser-acceptance.mjs'
 
 const NOW = '2026-07-11T12:00:00.000Z'
 
@@ -178,6 +182,70 @@ test('operations summary aggregates bounded runtime, risk and backlog state with
   assert.deepEqual(Object.keys(item.recentBatches[0]).sort(), ['acceptedAmountMinor', 'batchId', 'createdAt', 'status', 'unknownAmountMinor'].sort())
   assert.doesNotMatch(JSON.stringify(item), /private|secret|providerReference|ownerId|leaseKey/i)
   assert.doesNotMatch(JSON.stringify(item), /targetOdds|targetAmount|remark|migrationReviewReason|eligibilityUpdatedAt/i)
+})
+
+test('operations summary composes safe browser sessions with the SQLite acceptance campaign read model', () => {
+  const { db, close, repo } = fixture()
+  db.prepare(`INSERT INTO betting_accounts
+    (id,label,username,website_url,status,archived,allocation_status,per_bet_limit_minor,
+     execution_status,secret_ciphertext,created_at,updated_at)
+    VALUES ('bet_browser','浏览器账号','private-user','https://crown.example.test','enabled',0,'enabled',100,
+      'idle','private-password-ciphertext',?,?)`).run(NOW, NOW)
+
+  const manifest = createCrownBrowserAcceptanceManifest()
+  initializeCrownBrowserAcceptanceCampaign(db, { manifest, secretKey: 'task-7-test-secret' })
+  const accepted = manifest.directions[0]
+  const unknown = manifest.directions[1]
+  const keyOf = (direction) => [direction.mode, direction.period, direction.marketType, direction.lineVariant, direction.selectionSide].join('|')
+  db.prepare(`UPDATE crown_browser_acceptance_cases
+    SET state='accepted',authorized_min_minor=50,dispatch_count=1,outcome='accepted',
+      account_id='bet_browser',context_generation='private-context-uuid',
+      sealed_provider_reference='private-provider-reference',updated_at=?
+    WHERE campaign_id=? AND direction_id=?`).run(NOW, manifest.campaignId, accepted.id)
+  db.prepare(`UPDATE crown_browser_acceptance_cases
+    SET state='unknown',authorized_min_minor=50,dispatch_count=1,outcome='unknown',
+      account_id='bet_browser',context_generation='private-context-uuid',
+      sealed_provider_reference='private-provider-reference',updated_at=?
+    WHERE campaign_id=? AND direction_id=?`).run(NOW, manifest.campaignId, unknown.id)
+  db.prepare("UPDATE crown_browser_acceptance_campaigns SET status='terminal_unknown',updated_at=? WHERE campaign_id=?")
+    .run(NOW, manifest.campaignId)
+
+  const item = repo.getOperationsSummary(null, {
+    generation: 7,
+    accounts: [{
+      accountId: 'bet_browser',
+      state: 'ready',
+      lastHeartbeatAt: '2026-07-11T11:59:59.000Z',
+      lastApiSuccessAt: '2026-07-11T11:59:58.000Z',
+    }],
+  })
+  close()
+
+  assert.equal(item.browserBetting.transportKind, 'browser-page-fetch')
+  assert.match(item.browserBetting.protocolLibraryVersion, /^crown-protocol-capabilities-v2:/)
+  assert.equal(item.browserBetting.sessions.length, 1)
+  assert.deepEqual(item.browserBetting.sessions[0], {
+    accountId: 'bet_browser', state: 'ready', lastHeartbeatAt: '2026-07-11T11:59:59.000Z',
+    sessionGeneration: 7, lastApiSuccessAt: '2026-07-11T11:59:58.000Z',
+  })
+  assert.equal(item.browserBetting.directions.length, 8)
+  assert.equal(item.browserBetting.directions.filter((direction) => direction.previewAllowed).length, 8)
+  assert.equal(item.browserBetting.directions.filter((direction) => direction.submitAllowed).length, 1)
+  assert.equal(item.browserBetting.directions.filter((direction) => direction.reconciliationAllowed).length, 0)
+  assert.equal(item.browserBetting.directions.filter((direction) => direction.blockedReason).length, 0)
+  assert.deepEqual(item.browserBetting.campaign, {
+    campaignId: manifest.campaignId,
+    state: 'failed',
+    acceptedCount: 1,
+    targetCount: 8,
+    unknownCount: 1,
+    totalAcceptedAmountMinor: 50,
+    queueDepth: 6,
+    inFlightCount: 0,
+  })
+  assert.equal(item.browserBetting.directions.find((direction) => direction.key === keyOf(accepted))?.acceptanceState, 'accepted')
+  assert.equal(item.browserBetting.directions.find((direction) => direction.key === keyOf(unknown))?.acceptanceState, 'unknown')
+  assert.doesNotMatch(JSON.stringify(item.browserBetting), /private|password|cookie|token|uid|contextGeneration|providerReference|profile/i)
 })
 
 test('operations readiness uses dynamic cards without a fixed mode intersection and keeps stable reasons', () => {
@@ -414,7 +482,7 @@ test('operations summary preserves allowlisted pure-mode armed waiting reasons a
   close()
 })
 
-async function callEndpoint({ dbPath, method, monitorProcess }) {
+async function callEndpoint({ dbPath, method, monitorProcess, bettingProcess }) {
   const req = Readable.from([])
   req.method = method
   let status = 0
@@ -427,6 +495,7 @@ async function callEndpoint({ dbPath, method, monitorProcess }) {
     dbPath,
     now: () => new Date(NOW),
     monitorProcess,
+    bettingProcess,
   })
   return { status, payload: JSON.parse(body) }
 }
@@ -444,6 +513,31 @@ test('operations summary endpoint is GET-only and returns the bounded safe DTO',
 
   const post = await callEndpoint({ dbPath, method: 'POST' })
   assert.deepEqual(post, { status: 405, payload: { error: 'method-not-allowed' } })
+})
+
+test('operations summary endpoint reads the current parent generation browser snapshot', async () => {
+  const { db, dbPath, close } = fixture()
+  db.prepare(`INSERT INTO betting_accounts
+    (id,label,username,website_url,status,archived,allocation_status,per_bet_limit_minor,
+     execution_status,secret_ciphertext,created_at,updated_at)
+    VALUES ('bet_ipc','IPC account','private-user','https://crown.example.test','enabled',0,'enabled',100,
+      'idle','private-secret',?,?)`).run(NOW, NOW)
+  close()
+  const result = await callEndpoint({
+    dbPath,
+    method: 'GET',
+    bettingProcess: {
+      getBrowserStatus() {
+        return { generation: 9, accounts: [{
+          accountId: 'bet_ipc', state: 'ready', lastHeartbeatAt: NOW,
+          lastApiSuccessAt: '2026-07-11T11:59:59.000Z',
+        }] }
+      },
+    },
+  })
+  assert.equal(result.status, 200)
+  assert.equal(result.payload.item.browserBetting.sessions[0].sessionGeneration, 9)
+  assert.equal(result.payload.item.browserBetting.sessions[0].lastApiSuccessAt, '2026-07-11T11:59:59.000Z')
 })
 
 test('operations summary projects bounded Watcher recovery diagnostics from the process controller', async () => {

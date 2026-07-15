@@ -179,6 +179,53 @@ test('mixed football and excluded virtual games remain an authoritative list bat
   assert.equal(batch.completeness, 'authoritative')
 })
 
+test('normalization keeps only normal-team full-time handicap and total markets', () => {
+  const normalized = normalizeCrownTransformBatch({
+    body: `<?xml version="1.0"?><serverresponse>
+      <game><GID>normal-1</GID><GIDM>match-1</GIDM><LID>league-1</LID><LEAGUE>World Cup</LEAGUE><TEAM_H>England</TEAM_H><TEAM_C>Argentina</TEAM_C>
+        <RATIO_R>0</RATIO_R><IOR_RH>0.81</IOR_RH><IOR_RC>1.08</IOR_RC><RATIO_OUO>2</RATIO_OUO><RATIO_OUU>2</RATIO_OUU><IOR_OUC>0.76</IOR_OUC><IOR_OUH>1.13</IOR_OUH>
+        <RATIO_HR>0</RATIO_HR><IOR_HRH>0.82</IOR_HRH><IOR_HRC>1.06</IOR_HRC><RATIO_HOUO>0.5</RATIO_HOUO><RATIO_HOUU>0.5</RATIO_HOUU><IOR_HOUC>0.85</IOR_HOUC><IOR_HOUH>1.03</IOR_HOUH>
+      </game>
+      <game><GID>cards-1</GID><LEAGUE>World Cup</LEAGUE><TEAM_H>England -罚牌数</TEAM_H><TEAM_C>Argentina -罚牌数</TEAM_C><RATIO_R>0</RATIO_R><IOR_RH>0.98</IOR_RH><IOR_RC>0.98</IOR_RC></game>
+      <game><GID>corners-1</GID><LEAGUE>World Cup</LEAGUE><TEAM_H>England -角球数</TEAM_H><TEAM_C>Argentina -角球数</TEAM_C><RATIO_OUO>10</RATIO_OUO><RATIO_OUU>10</RATIO_OUU><IOR_OUC>0.70</IOR_OUC><IOR_OUH>1.00</IOR_OUH></game>
+      <game><GID>player-1</GID><LEAGUE>World Cup-特定球员(进球数)</LEAGUE><TEAM_H>Player A</TEAM_H><TEAM_C>Player B</TEAM_C><RATIO_R>0</RATIO_R><IOR_RH>0.90</IOR_RH><IOR_RC>0.90</IOR_RC></game>
+      <game><GID>extra-1</GID><LEAGUE>World Cup</LEAGUE><TEAM_H>England -加时赛</TEAM_H><TEAM_C>Argentina -加时赛</TEAM_C><RATIO_R>0</RATIO_R><IOR_RH>0.90</IOR_RH><IOR_RC>0.90</IOR_RC></game>
+    </serverresponse>`,
+    metadata,
+  })
+
+  assert.equal(normalized.classification.gameCount, 5)
+  assert.equal(normalized.classification.eligibleGameCount, 1)
+  assert.equal(normalized.classification.excludedGameCount, 4)
+  assert.deepEqual(normalized.eventRefs.map((event) => event.eventKey), ['crown|football|gid=normal-1'])
+  assert.equal(normalized.records.length, 4)
+  assert.deepEqual([...new Set(normalized.records.map((record) => record.market.period))], ['full_time'])
+  assert.deepEqual([...new Set(normalized.records.map((record) => record.market.marketType))].sort(), ['asian_handicap', 'total'])
+})
+
+test('DOM compatibility normalization ignores half-time sections', () => {
+  const records = normalizeFootballResponse({
+    body: {
+      capturedAt: metadata.capturedAt,
+      prematch: [
+        {
+          id: 'dom-normal-1', league: 'World Cup', teams: ['England', 'Argentina'],
+          text: '让球 0 0.81 0 1.08 大/小 大 2 0.76 小 2 1.13 上半场 让球 0 0.82 0 1.06 大/小 大 0.5 0.85 小 0.5 1.03',
+        },
+        {
+          id: 'dom-cards-1', league: 'World Cup', teams: ['England -罚牌数', 'Argentina -罚牌数'],
+          text: '让球 0 0.90 0 0.90 大/小 大 4 0.80 小 4 1.00',
+        },
+      ],
+      live: [],
+    },
+    metadata,
+  })
+
+  assert.equal(records.length, 4)
+  assert.ok(records.every((record) => record.market.period === 'full_time'))
+})
+
 test('ordinary football with incomplete identity is invalid, not domain-excluded', () => {
   const normalized = normalizeCrownTransformBatch({
     body: `<?xml version="1.0"?><serverresponse><game>
@@ -314,9 +361,10 @@ test('detects Crown transform XML odds responses', () => {
 test('normalizes Crown transform XML with real Crown ids and IOR odds', () => {
   const records = normalizeFootballResponse({ body: sampleXml, metadata })
 
-  assert.equal(records.length, 12)
+  assert.equal(records.length, 8)
   assert.equal(new Set(records.map((record) => record.event.eventId)).size, 2)
   assert.deepEqual([...new Set(records.map((record) => record.market.marketType))].sort(), ['asian_handicap', 'total'])
+  assert.ok(records.every((record) => record.market.period === 'full_time'))
   assert.equal(records.some((record) => /EFootball/i.test(record.event.league)), false)
   assert.deepEqual(records.flatMap(validateNormalizedOddsRecord), [])
 
@@ -353,6 +401,103 @@ test('normalizes Crown transform XML with real Crown ids and IOR odds', () => {
 function readFixture(name) {
   return fs.readFileSync(path.join('data/fixtures/crown/transform-xml', name), 'utf8')
 }
+
+test('Task 2 full-time evidence normalizes all eight betting directions as main lines', () => {
+  const records = normalizeFootballResponse({
+    body: readFixture('get-game-list-today.xml'),
+    metadata: {
+      method: 'POST',
+      url: 'https://fixture.invalid/transform.php',
+      endpointKind: 'get_game_list',
+      capturedAt: '2026-07-08T10:00:00.000+08:00',
+      sampleFile: 'get-game-list-today.xml',
+    },
+  }).filter((record) => record.market.period === 'full_time')
+
+  const evidence = JSON.parse(fs.readFileSync(
+    path.join('data/fixtures/crown/betting-protocol/artifacts', '20260714-1848-eight-direction-candidates.safe.json'),
+    'utf8',
+  ))
+  const evidenceDirections = evidence.candidates.map(({ direction }) => [
+    direction.mode,
+    direction.period,
+    direction.marketType,
+    direction.side,
+    direction.lineVariant,
+  ].join('|')).sort()
+  const normalizedDirections = records.map((record) => [
+    record.mode,
+    record.market.period,
+    record.market.marketType,
+    record.selection.side,
+    record.market.lineVariant,
+  ].join('|')).sort()
+
+  assert.equal(records.length, 8)
+  assert.deepEqual(normalizedDirections, evidenceDirections)
+
+  const expectedFields = [
+    ['prematch', 'asian_handicap', 'home', 'RATIO_R', '0 / 0.5', 'IOR_RH', '0.790'],
+    ['prematch', 'asian_handicap', 'away', 'RATIO_R', '0 / 0.5', 'IOR_RC', '1.050'],
+    ['prematch', 'total', 'over', 'RATIO_OUO', '2.5', 'IOR_OUC', '0.800'],
+    ['prematch', 'total', 'under', 'RATIO_OUU', '2.5', 'IOR_OUH', '1.020'],
+    ['live', 'asian_handicap', 'home', 'RATIO_RE', '1', 'IOR_REH', '0.770'],
+    ['live', 'asian_handicap', 'away', 'RATIO_RE', '1', 'IOR_REC', '0.930'],
+    ['live', 'total', 'over', 'RATIO_ROUO', '3.5', 'IOR_ROUC', '0.880'],
+    ['live', 'total', 'under', 'RATIO_ROUU', '3.5', 'IOR_ROUH', '0.820'],
+  ]
+  for (const [mode, marketType, side, ratioField, handicapRaw, oddsField, oddsRaw] of expectedFields) {
+    const record = records.find((item) => (
+      item.mode === mode
+      && item.market.marketType === marketType
+      && item.selection.side === side
+    ))
+    assert.ok(record, `${mode}/${marketType}/${side}`)
+    assert.equal(record.event.mode, mode)
+    assert.equal(record.market.lineVariant, 'main')
+    assert.equal(record.market.isMainMarket, true)
+    assert.equal(record.market.ratioField, ratioField)
+    assert.equal(record.market.handicapRaw, handicapRaw)
+    assert.equal(record.selection.oddsField, oddsField)
+    assert.equal(record.selection.oddsRaw, oddsRaw)
+  }
+})
+
+test('unverified alternate Crown lines stay unknown instead of being promoted to main', () => {
+  const records = normalizeCrownTransformXml({
+    body: `<?xml version="1.0"?><serverresponse><game>
+      <SHOWTYPE>ft</SHOWTYPE><GID>alternate-line</GID><TEAM_H>Home</TEAM_H><TEAM_C>Away</TEAM_C>
+      <RATIO_AR>0.5</RATIO_AR><IOR_ARH>0.91</IOR_ARH><IOR_ARC>0.99</IOR_ARC>
+    </game></serverresponse>`,
+    metadata,
+  })
+
+  assert.equal(records.length, 2)
+  assert.deepEqual([...new Set(records.map((record) => record.market.lineVariant))], ['unknown'])
+  assert.deepEqual([...new Set(records.map((record) => record.market.isMainMarket))], ['unknown'])
+})
+
+test('cross-mode full-time fields stay unknown and first-half fields are ignored', () => {
+  const records = normalizeCrownTransformXml({
+    body: `<serverresponse>
+      <game><GID>prematch-cross</GID><TEAM_H>Home</TEAM_H><TEAM_C>Away</TEAM_C>
+        <RATIO_RE>0.5</RATIO_RE><IOR_REH>0.91</IOR_REH><IOR_REC>0.99</IOR_REC>
+        <RATIO_HR>0.25</RATIO_HR><IOR_HRH>0.92</IOR_HRH><IOR_HRC>0.98</IOR_HRC>
+      </game>
+      <game><SHOWTYPE>RB</SHOWTYPE><GID>live-cross</GID><TEAM_H>Home</TEAM_H><TEAM_C>Away</TEAM_C>
+        <RATIO_R>0.5</RATIO_R><IOR_RH>0.91</IOR_RH><IOR_RC>0.99</IOR_RC>
+        <RATIO_HRE>0.25</RATIO_HRE><IOR_HREH>0.92</IOR_HREH><IOR_HREC>0.98</IOR_HREC>
+      </game>
+    </serverresponse>`,
+    metadata,
+  })
+
+  assert.equal(records.length, 4)
+  assert.ok(records.every((record) => record.market.period === 'full_time'))
+  assert.ok(records.every((record) => (
+    record.market.lineVariant === 'unknown' && record.market.isMainMarket === 'unknown'
+  )))
+})
 
 test('normalizes fixed get_game_list XML fixture with local keys and field mapping', () => {
   const records = normalizeFootballResponse({

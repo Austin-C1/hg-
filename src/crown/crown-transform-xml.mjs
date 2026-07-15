@@ -7,10 +7,11 @@ import {
   marketIdentity,
   selectionIdentity,
 } from './monitor/snapshot-batch.mjs'
+import { getCrownCapability } from './betting/crown-capability-matrix.mjs'
 import { repairCrownText } from './crown-text.mjs'
 
-const MAPPER_VERSION = 'crown-transform-xml-v4'
-const EXCLUDED_FOOTBALL_RE = /(电竞|电子|虚拟|梦幻足球|e\s*[-_ ]?\s*football|efootball|esport|virtual|fantasy|GT体育|2\s*[xX]\s*6\s*分钟)/i
+const MAPPER_VERSION = 'crown-transform-xml-v5'
+const EXCLUDED_FOOTBALL_RE = /(电竞|电子|虚拟|梦幻足球|角球(?:数)?|罚牌(?:数)?|特定球员|加时赛|点球(?:大战)?|球队(?:进球|得分)|球员(?:进球|得分)|波胆|会晋级|e\s*[-_ ]?\s*football|efootball|esport|virtual|fantasy|\bcorners?\b|\bbookings?\b|\bcards?\b|\bplayer goals?\b|\bextra time\b|\bpenalty shootout\b|\bteam total\b|\bcorrect score\b|\bto qualify\b|GT体育|2\s*[xX]\s*6\s*分钟)/i
 
 const ALTERNATE_LINE_CODES = ['A', 'B', 'C', 'D', 'E', 'F']
 
@@ -42,16 +43,11 @@ function totalSpec({ period, code, overOdds = `IOR_${code}C`, underOdds = `IOR_$
 const PAIR_MARKETS = [
   { marketType: 'asian_handicap', period: 'full_time', ratio: 'RATIO_R', home: 'IOR_RH', away: 'IOR_RC' },
   { marketType: 'asian_handicap', period: 'full_time', ratio: 'RATIO_RE', home: 'IOR_REH', away: 'IOR_REC' },
-  { marketType: 'asian_handicap', period: 'first_half', ratio: 'RATIO_HR', home: 'IOR_HRH', away: 'IOR_HRC' },
-  { marketType: 'asian_handicap', period: 'first_half', ratio: 'RATIO_HRE', home: 'IOR_HREH', away: 'IOR_HREC' },
   { marketType: 'asian_handicap', period: 'full_time', ratio: 'RATIO_PR', lineKey: 'RATIO_PR', home: 'IOR_PRH', away: 'IOR_PRC' },
-  { marketType: 'asian_handicap', period: 'first_half', ratio: 'RATIO_HPR', lineKey: 'RATIO_HPR', home: 'IOR_HPRH', away: 'IOR_HPRC' },
   ...ALTERNATE_LINE_CODES.map((code) => handicapSpec({ period: 'full_time', code: `${code}R` })),
   ...ALTERNATE_LINE_CODES.map((code) => handicapSpec({ period: 'full_time', code: `${code}RE` })),
   totalSpec({ period: 'full_time', code: 'OU', overOdds: 'IOR_OUC', underOdds: 'IOR_OUH' }),
   totalSpec({ period: 'full_time', code: 'ROU', overOdds: 'IOR_ROUC', underOdds: 'IOR_ROUH' }),
-  totalSpec({ period: 'first_half', code: 'HOU', overOdds: 'IOR_HOUC', underOdds: 'IOR_HOUH' }),
-  totalSpec({ period: 'first_half', code: 'HROU', overOdds: 'IOR_HROUC', underOdds: 'IOR_HROUH' }),
   ...ALTERNATE_LINE_CODES.map((code) => totalSpec({ period: 'full_time', code: `${code}OU`, overOdds: `IOR_${code}OUO`, underOdds: `IOR_${code}OUU` })),
   ...ALTERNATE_LINE_CODES.map((code) => totalSpec({ period: 'full_time', code: `${code}ROU`, overOdds: `IOR_${code}ROUO`, underOdds: `IOR_${code}ROUU` })),
 ]
@@ -209,10 +205,11 @@ function upper(name) {
   return String(name || '').toUpperCase()
 }
 
-function modeOf(fields) {
+function modeOf(fields, metadata = {}) {
   const showtype = field(fields, 'showtype').toLowerCase()
   const isRb = field(fields, 'is_rb').toUpperCase()
   if (showtype === 'rb' || isRb === 'Y') return 'live'
+  if (metadata.endpointKind === 'get_game_more' && metadata.requestedMode === 'live') return 'live'
   return 'prematch'
 }
 
@@ -260,6 +257,7 @@ function baseEvent(fields, mode, metadata) {
     : { raw: rawClock || null, phase: null, elapsedMinute: null, warnings: [] }
   return {
     eventId: field(fields, 'gid'),
+    mode,
     eventKey: identity.eventKey,
     legacyEventKey: `crown|${legacyEventKey(fields)}`,
     matchGroupKey: identity.matchGroupKey,
@@ -333,11 +331,15 @@ function makeRecord({ fields, metadata, mode, period, marketType, ratioField = n
   const canonicalSelectionIdentity = selectionIdentity(identityRecord)
   const suspended = marketClosed(fields, period) || !isDecimal(oddsRaw)
   const warnings = baseWarnings()
-  const isVerifiedPrematchMain = mode === 'prematch'
-    && period === 'full_time'
-    && marketType === 'asian_handicap'
-    && upper(ratioField) === 'RATIO_R'
-    && ['IOR_RH', 'IOR_RC'].includes(upper(oddsField))
+  const capability = getCrownCapability({
+    mode,
+    period,
+    marketType,
+    lineVariant: 'main',
+    selectionSide: side,
+  })
+  const isVerifiedMain = capability?.mapperEvidence?.ratioFields?.[0] === upper(ratioField)
+    && capability?.mapperEvidence?.oddsFieldsBySide?.[side] === upper(oddsField)
   if (suspended) warnings.push('market-suspended')
   if (marketClosed(fields, period)) warnings.push('market-closed')
   if (ratioField && !handicapRaw) warnings.push('missing-ratio-field')
@@ -362,8 +364,8 @@ function makeRecord({ fields, metadata, mode, period, marketType, ratioField = n
       handicap,
       ratioField: ratioField ? upper(ratioField) : null,
       lineKey: marketLineKey,
-      lineVariant: isVerifiedPrematchMain ? 'main' : 'unknown',
-      isMainMarket: isVerifiedPrematchMain ? true : 'unknown',
+      lineVariant: isVerifiedMain ? 'main' : 'unknown',
+      isMainMarket: isVerifiedMain ? true : 'unknown',
       crownStrong: field(fields, 'strong') || null,
     },
     selection: {
@@ -420,12 +422,16 @@ function addPair(records, fields, metadata, mode, spec) {
   }
 }
 
+export function isNormalFootballMatch({ league = '', homeTeam = '', awayTeam = '' } = {}) {
+  return !EXCLUDED_FOOTBALL_RE.test([league, homeTeam, awayTeam].join(' '))
+}
+
 function isExcludedFootballGame(fields) {
-  return EXCLUDED_FOOTBALL_RE.test([
-    repairCrownText(field(fields, 'league')),
-    repairCrownText(field(fields, 'team_h')),
-    repairCrownText(field(fields, 'team_c')),
-  ].join(' '))
+  return !isNormalFootballMatch({
+    league: repairCrownText(field(fields, 'league')),
+    homeTeam: repairCrownText(field(fields, 'team_h')),
+    awayTeam: repairCrownText(field(fields, 'team_c')),
+  })
 }
 
 function hasCanonicalEventFields(fields) {
@@ -437,7 +443,7 @@ function isFootballGame(fields) {
 }
 
 function normalizeGame(fields, metadata) {
-  const mode = modeOf(fields)
+  const mode = modeOf(fields, metadata)
   if (!isFootballGame(fields)) return []
 
   const records = []
@@ -483,7 +489,7 @@ export function normalizeCrownTransformBatch({ body, metadata = {} } = {}) {
       excludedGameCount: parsedGames.length - eligibleGames.length,
       invalidEventRefCount: eligibleGames.length - games.length,
     },
-    eventRefs: games.map((fields) => baseEvent(fields, modeOf(fields), normalizedMetadata)),
+    eventRefs: games.map((fields) => baseEvent(fields, modeOf(fields, normalizedMetadata), normalizedMetadata)),
     records: games.flatMap((fields) => normalizeGame(fields, normalizedMetadata)),
   }
 }

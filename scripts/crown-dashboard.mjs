@@ -48,31 +48,44 @@ export function resolveDashboardRuntime({ env = process.env } = {}) {
 
   loadProjectEnv({ cwd: APP_DIR, env: runtimeEnv })
   const appDir = absoluteFromApp(APP_DIR, runtimeEnv.CROWN_APP_DIR, '.')
-  const runtimeDir = absoluteFromApp(appDir, runtimeEnv.CROWN_RUNTIME_DIR, 'data/runtime')
-  const configDir = absoluteFromApp(appDir, runtimeEnv.CROWN_CONFIG_DIR, 'config')
+  const dataRoot = absoluteFromApp(appDir, runtimeEnv.CROWN_DATA_ROOT, '.')
+  const runtimeDir = runtimeEnv.CROWN_RUNTIME_DIR
+    ? absoluteFromApp(appDir, runtimeEnv.CROWN_RUNTIME_DIR, 'data/runtime')
+    : absoluteFromApp(dataRoot, '', 'data/runtime')
+  const configDir = runtimeEnv.CROWN_CONFIG_DIR
+    ? absoluteFromApp(appDir, runtimeEnv.CROWN_CONFIG_DIR, 'config')
+    : absoluteFromApp(dataRoot, '', 'config')
   const paths = {
     appRoot: appDir,
     versionRoot: appDir,
     appDir,
     nodeExe: runtimeEnv.CROWN_NODE_EXECUTABLE_PATH || process.execPath,
     chromiumExe: runtimeEnv.CROWN_CHROMIUM_EXECUTABLE_PATH || '',
-    dataRoot: absoluteFromApp(appDir, runtimeEnv.CROWN_DATA_ROOT, '.'),
-    dbPath: absoluteFromApp(appDir, runtimeEnv.CROWN_DB_PATH, 'storage/crown.sqlite'),
-    secretKeyPath: absoluteFromApp(appDir, runtimeEnv.CROWN_LOCAL_SECRET_KEY_PATH, 'storage/crown-local-secret.key'),
+    dataRoot,
+    dbPath: runtimeEnv.CROWN_DB_PATH
+      ? absoluteFromApp(appDir, runtimeEnv.CROWN_DB_PATH, 'storage/crown.sqlite')
+      : absoluteFromApp(dataRoot, '', 'storage/crown.sqlite'),
+    secretKeyPath: runtimeEnv.CROWN_LOCAL_SECRET_KEY_PATH
+      ? absoluteFromApp(appDir, runtimeEnv.CROWN_LOCAL_SECRET_KEY_PATH, 'storage/crown-local-secret.key')
+      : absoluteFromApp(dataRoot, '', 'storage/crown-local-secret.key'),
     configDir,
     runtimeDir,
     sessionDir: absoluteFromApp(runtimeDir, runtimeEnv.CROWN_SESSION_DIR, 'crown-sessions'),
     profileDir: absoluteFromApp(runtimeDir, runtimeEnv.CROWN_BROWSER_PROFILE_DIR, 'browser-profiles'),
-    logDir: absoluteFromApp(appDir, runtimeEnv.CROWN_LOG_DIR, 'logs'),
+    logDir: runtimeEnv.CROWN_LOG_DIR
+      ? absoluteFromApp(appDir, runtimeEnv.CROWN_LOG_DIR, 'logs')
+      : absoluteFromApp(dataRoot, '', 'logs'),
     staticDir: absoluteFromApp(appDir, runtimeEnv.CROWN_STATIC_DIR, 'frontend/dist'),
   }
   return { portable: false, env: runtimeEnv, paths }
 }
 
 export async function shutdownDashboardRuntime({
+  waitForRealBettingTick,
   disableRealBetting,
   bettingProcess,
   humanLoginController,
+  bettingHumanLoginController,
   monitorProcess,
   convergeDatabase,
   closeHttp,
@@ -82,7 +95,8 @@ export async function shutdownDashboardRuntime({
   const step = async (stage, work) => {
     if (typeof work !== 'function') return true
     try {
-      await work()
+      const result = await work()
+      if (result === false || result?.ok === false) throw new Error(`${stage}-reported-unsafe`)
       return true
     } catch (error) {
       errors.push({ stage, error })
@@ -90,9 +104,13 @@ export async function shutdownDashboardRuntime({
       return false
     }
   }
+  await step('betting-tick', waitForRealBettingTick)
   await step('real-intent', disableRealBetting)
-  await step('betting-worker', () => bettingProcess?.stop?.())
-  await step('human-login', () => humanLoginController?.shutdown?.())
+  const bettingWorkerStoppedSafely = await step('betting-worker', () => bettingProcess?.stop?.({
+    suppressSafetyHandoff: true,
+  }))
+  const humanLoginStoppedSafely = await step('human-login', () => humanLoginController?.shutdown?.())
+  const bettingHumanLoginStoppedSafely = await step('betting-human-login', () => bettingHumanLoginController?.shutdown?.())
   const monitorStoppedSafely = await step('monitor', () => monitorProcess?.stopAndWait?.())
   let watcherStillRunning = !monitorStoppedSafely
   try {
@@ -100,8 +118,12 @@ export async function shutdownDashboardRuntime({
   } catch {
     watcherStillRunning = true
   }
-  if (watcherStillRunning) {
+  if (!bettingWorkerStoppedSafely) {
+    await step('database', () => { throw new Error('database-convergence-skipped-betting-worker-unsafe') })
+  } else if (watcherStillRunning) {
     await step('database', () => { throw new Error('database-convergence-skipped-watcher-unsafe') })
+  } else if (!humanLoginStoppedSafely || !bettingHumanLoginStoppedSafely) {
+    await step('database', () => { throw new Error('database-convergence-skipped-human-login-unsafe') })
   } else {
     await step('database', convergeDatabase)
   }
@@ -128,6 +150,10 @@ export function createSingleFlightRunner(run) {
     wait: () => inFlight || Promise.resolve(),
     current: () => inFlight,
   }
+}
+
+export function shouldSuperviseReconciliation(runtimeState) {
+  return ['off', 'blocked', 'stopping'].includes(runtimeState)
 }
 
 function closeServer(server) {
@@ -176,6 +202,7 @@ export async function startCrownDashboard({
   } finally {
     startupDatabase.close()
   }
+  await bettingProcess.stop({ startReconciliation: true })
 
   const humanLoginController = runtime.portable
     ? new CrownHumanLoginController({
@@ -185,6 +212,9 @@ export async function startCrownDashboard({
       runtimeDir: paths.runtimeDir,
       profileRoot: paths.profileDir,
       chromiumExecutable: paths.chromiumExe,
+      dbPath: paths.dbPath,
+      env: runtimeEnv,
+      bettingProcess,
       loadAccount(accountId) {
         const handle = openAppDatabase({ dbPath: paths.dbPath, env: runtimeEnv })
         try {
@@ -194,6 +224,32 @@ export async function startCrownDashboard({
             runtimeDir: paths.runtimeDir,
           })
           return repository.getMonitorAccountForManualLogin(accountId)
+        } finally {
+          handle.close()
+        }
+      },
+    })
+    : null
+  const bettingHumanLoginController = runtime.portable
+    ? new CrownHumanLoginController({
+      installationId: runtimeEnv.CROWN_INSTALLATION_ID,
+      appRoot: paths.appRoot,
+      dataRoot: paths.dataRoot,
+      runtimeDir: paths.runtimeDir,
+      profileRoot: paths.profileDir,
+      chromiumExecutable: paths.chromiumExe,
+      dbPath: paths.dbPath,
+      env: runtimeEnv,
+      bettingProcess,
+      loadAccount(accountId) {
+        const handle = openAppDatabase({ dbPath: paths.dbPath, env: runtimeEnv })
+        try {
+          const repository = createAppRepository(handle.db, {
+            env: runtimeEnv,
+            dbPath: paths.dbPath,
+            runtimeDir: paths.runtimeDir,
+          })
+          return repository.getBettingAccountForManualLogin(accountId)
         } finally {
           handle.close()
         }
@@ -226,6 +282,7 @@ export async function startCrownDashboard({
     monitorProcess,
     bettingProcess,
     humanLoginController,
+    bettingHumanLoginController,
     env: runtimeEnv,
     installationId: runtimeEnv.CROWN_INSTALLATION_ID || '',
     version: runtimeEnv.CROWN_APP_VERSION || APP_VERSION,
@@ -243,7 +300,9 @@ export async function startCrownDashboard({
         readyTicket: bettingProcess.getReadyTicket(),
       })
       const status = refreshRealBettingRuntime(tickDatabase.db, { checks })
-      if (status.state === 'blocked') await bettingProcess.stop()
+      if (shouldSuperviseReconciliation(status.state)) {
+        await bettingProcess.stop({ startReconciliation: true })
+      }
     } finally {
       tickDatabase.close()
     }
@@ -261,15 +320,16 @@ export async function startCrownDashboard({
     clearInterval(tickTimer)
     for (const [signal, handler] of signalHandlers) process.off(signal, handler)
     shutdownPromise = shutdownDashboardRuntime({
+      waitForRealBettingTick: () => realBettingTick.wait(),
       disableRealBetting: async () => {
         const handle = openRuntimeDatabase({ dbPath: paths.dbPath, env: runtimeEnv })
         try { requestRealBettingStop(handle.db) } finally { handle.close() }
       },
       bettingProcess,
       humanLoginController,
+      bettingHumanLoginController,
       monitorProcess,
       convergeDatabase: async () => {
-        await realBettingTick.wait()
         const handle = openRuntimeDatabase({ dbPath: paths.dbPath, env: runtimeEnv })
         try { handle.db.exec('PRAGMA wal_checkpoint(TRUNCATE)') } finally { handle.close() }
       },
@@ -286,7 +346,9 @@ export async function startCrownDashboard({
     }
   }
 
-  return { ...runtime, server, monitorProcess, bettingProcess, humanLoginController, shutdown }
+  return {
+    ...runtime, server, monitorProcess, bettingProcess, humanLoginController, bettingHumanLoginController, shutdown,
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -7,6 +7,7 @@ const MARKET_SIDES = new Map([
   ['total', new Set(['over', 'under'])],
 ])
 const PERIODS = new Set(['full_time', 'first_half'])
+const MODES = new Set(['prematch', 'live'])
 
 function canonicalTimestamp(value) {
   if (!UTC_TIMESTAMP.test(String(value || ''))) return null
@@ -15,11 +16,22 @@ function canonicalTimestamp(value) {
   return milliseconds
 }
 
+function handicapFromRaw(value) {
+  const parts = String(value ?? '').split('/').map((part) => part.trim())
+  if (parts.length < 1 || parts.length > 2 || parts.some((part) => !/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(part))) {
+    return null
+  }
+  const numbers = parts.map(Number)
+  if (numbers.some((number) => !Number.isFinite(number))) return null
+  return numbers.reduce((sum, number) => sum + number, 0) / numbers.length
+}
+
 function signalMarket(signal) {
   const eventKey = signal?.target?.eventIdentity
   const marketIdentity = signal?.target?.marketIdentity
   const sourceSide = signal?.target?.side
-  if (!CANONICAL_EVENT_IDENTITY.test(String(eventKey || ''))) return null
+  const eventMatch = CANONICAL_EVENT_IDENTITY.exec(String(eventKey || ''))
+  if (!eventMatch) return null
   if (typeof marketIdentity !== 'string' || !marketIdentity.startsWith(`${eventKey}|`)) return null
   const parts = marketIdentity.slice(eventKey.length + 1).split('|')
   if (parts.length !== 3 || parts.some((part) => !part)) return null
@@ -29,17 +41,23 @@ function signalMarket(signal) {
   if (signal.evidence?.period !== period || signal.evidence?.marketType !== marketType) return null
   const sourceHandicap = signal.evidence?.handicap
   if (typeof sourceHandicap !== 'number' || !Number.isFinite(sourceHandicap)) return null
+  const sourceHandicapRaw = signal.evidence?.handicapRaw
+  if (handicapFromRaw(sourceHandicapRaw) !== sourceHandicap) return null
+  const mode = signal.evidence?.mode
+  if (!MODES.has(mode)) return null
   const side = oppositeSide(sourceSide)
   if (!side) return null
   return {
     eventKey,
+    gid: eventMatch[0].slice('crown|football|gid='.length),
+    mode,
     marketIdentity,
     period,
     marketType,
     lineKey,
     sourceSide,
     sourceHandicap,
-    sourceHandicapRaw: signal.evidence?.handicapRaw,
+    sourceHandicapRaw,
     side,
   }
 }
@@ -53,21 +71,27 @@ export function lockReverseSelection(signal, findLatestSelection) {
   if (!market || typeof findLatestSelection !== 'function') return null
   const snapshot = unwrappedSnapshot(findLatestSelection({
     provider: 'crown',
+    gid: market.gid,
+    mode: market.mode,
     eventKey: market.eventKey,
     period: market.period,
     marketType: market.marketType,
     lineKey: market.lineKey,
     side: market.side,
+    selectionSide: market.side,
+    handicapRaw: market.sourceHandicapRaw,
   }))
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return null
 
   const expectedSelectionIdentity = `${market.marketIdentity}|${market.side}`
   if (snapshot.provider !== 'crown') return null
+  if (snapshot.mode !== market.mode || snapshot.event?.mode !== market.mode) return null
   if (snapshot.event?.eventKey !== market.eventKey) return null
   if (snapshot.market?.period !== market.period || snapshot.market?.marketType !== market.marketType) return null
   if (snapshot.market?.lineKey !== market.lineKey || snapshot.market?.marketIdentity !== market.marketIdentity) return null
   const handicap = snapshot.market?.handicap
   if (typeof handicap !== 'number' || !Number.isFinite(handicap) || handicap !== market.sourceHandicap) return null
+  if (handicapFromRaw(snapshot.market?.handicapRaw) !== handicap) return null
   if (snapshot.selection?.side !== market.side) return null
   if (snapshot.selection?.selectionIdentity !== expectedSelectionIdentity) return null
   if (snapshot.selection?.suspended !== false) return null

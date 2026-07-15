@@ -1,16 +1,17 @@
-const SECRET_KEY_RE = /(cookie|authorization|auth|token|session|secret|password|passwd|api[-_]?key|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket|ticket_id|\btid\b|w_id|order_id)/i
-const PROJECTION_SENSITIVE_FIELD_RE = /(cookie|authorization|auth|token|session|secret|password|passwd|api[-_]?key|user(?:name)?|uid|mid|account|member|provider|reference|csrf|xsrf|jwt|signature|sign|set-cookie|ticket|ticket_id|\btid\b|w_id|order_id)/i
-const SECRET_TEXT_FIELD_RE = /(cookie|authorization|auth|token|session|secret|password|passwd|api[-_]?key|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket_id|ticket|\btid\b|w_id|order_id)/i
-const SECRET_TEXT_FIELD_SOURCE = '(?:cookie|authorization|auth|token|session|secret|password|passwd|api[-_]?key|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket_id|ticket|tid|w_id|order_id)'
-const SECRET_TEXT_TAG_SOURCE = '(?:cookie|authorization|auth|token|session|secret|password|passwd|api[-_]?key|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket_id|ticket|tid|w_id|order_id)'
+const SECRET_KEY_RE = /(cookie|authorization|auth|token|session|secret|password|passwd|passcode|user[-_]?agent|user(?:name)?|mid|account|member|api[-_]?key|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket|ticket_id|\btid\b|w_id|order_id)/i
+const PROJECTION_SENSITIVE_FIELD_RE = /(cookie|authorization|auth|token|session|secret|password|passwd|passcode|user[-_]?agent|api[-_]?key|user(?:name)?|uid|mid|account|member|provider|reference|csrf|xsrf|jwt|signature|sign|set-cookie|ticket|ticket_id|\btid\b|w_id|order_id)/i
+const SECRET_TEXT_FIELD_RE = /(cookie|authorization|auth|token|session|secret|password|passwd|passcode|user[-_]?agent|user(?:name)?|mid|account|member|api[-_]?key|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket_id|ticket|\btid\b|w_id|order_id)/i
+const SECRET_TEXT_FIELD_SOURCE = '(?:cookie|authorization|auth|token|session|secret|password|passwd|passcode|user[-_]?agent|user(?:name)?|mid|account|member|api[-_]?key|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket_id|ticket|tid|w_id|order_id)'
+const SECRET_TEXT_TAG_SOURCE = '(?:cookie|authorization|auth|token|session|secret|password|passwd|passcode|user[-_]?agent|user(?:name)?|mid|account|member|api[-_]?key|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket_id|ticket|tid|w_id|order_id)'
 const JSON_LIKE_SECRET_FIELD_RE = new RegExp(
   `(?:^|[^A-Za-z0-9_])["']?${SECRET_TEXT_FIELD_SOURCE}["']?\\s*:`, 'i',
 )
-const EVIDENCE_FORBIDDEN_KEY_RE = /(?:^|_)(?:cookie|authorization|auth|token|session|secret|password|passwd|api[-_]?key|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket|ticket_id|tid|w_id|order_id)(?:$|_)/i
+const EVIDENCE_FORBIDDEN_KEY_RE = /(?:^|_)(?:cookie|authorization|auth|token|session|secret|password|passwd|passcode|user[-_]?agent|user(?:name)?|mid|account|member|api[-_]?key|uid|csrf|xsrf|jwt|signature|sign|set-cookie|ticket|ticket_id|tid|w_id|order_id)(?:$|_)/i
 const ABSOLUTE_PATH_RE = /(?:[A-Za-z]:\\|\/(?:Users|home|tmp|var|private)\/)/
 const ORIGIN_RE = /https?:\/\//i
 const EVIDENCE_SENSITIVE_KEY_PARTS = [
-  'cookie', 'authorization', 'auth', 'token', 'session', 'secret', 'password', 'passwd', 'apikey',
+  'cookie', 'authorization', 'auth', 'token', 'session', 'secret', 'password', 'passwd', 'passcode',
+  'useragent', 'user', 'username', 'mid', 'account', 'member', 'apikey',
   'uid', 'csrf', 'xsrf', 'jwt', 'signature', 'setcookie', 'ticket', 'ticketid', 'orderid',
 ]
 const EVIDENCE_HMAC_BINDING_KEYS = new Set([
@@ -350,6 +351,11 @@ export function redactCapturedBody(rawBody, headersOrContentType = {}) {
     } catch {
       return '[unparseable-json]'
     }
+  }
+  const contentType = capturedContentType(headersOrContentType).trim()
+  if (/^multipart\/form-data(?:\s*;|$)/i.test(contentType)) return '[redacted-multipart]'
+  if (contentType && !/^application\/x-www-form-urlencoded(?:\s*;|$)/i.test(contentType)) {
+    return redactScalar('', text)
   }
   return redactBody(parseBody(text))
 }

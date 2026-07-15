@@ -577,6 +577,7 @@ CREATE TABLE IF NOT EXISTS bet_submit_attempts (
     CHECK (length(capability_version) > 0),
   capability_evidence_id TEXT NOT NULL
     CHECK (length(capability_evidence_id) > 0),
+  execution_candidate_digest TEXT CHECK (execution_candidate_digest IS NULL OR (length(execution_candidate_digest) = 64 AND execution_candidate_digest = lower(execution_candidate_digest) AND execution_candidate_digest NOT GLOB '*[^0-9a-f]*')),
   preview_odds TEXT NOT NULL
     CHECK (length(preview_odds) > 0),
   locked_identity_json TEXT NOT NULL
@@ -619,7 +620,8 @@ CREATE TRIGGER IF NOT EXISTS bet_submit_attempts_immutable_update
 BEFORE UPDATE OF
   submit_attempt_id, child_order_id, authorization_id, attempt_ordinal,
   amount_minor, fencing_token, capability_version, capability_evidence_id,
-  preview_odds, locked_identity_json, preview_snapshot_json, prepared_at, created_at
+  execution_candidate_digest, preview_odds, locked_identity_json,
+  preview_snapshot_json, prepared_at, created_at
 ON bet_submit_attempts
 BEGIN
   SELECT RAISE(ABORT, 'bet-submit-attempt-immutable');
@@ -702,6 +704,102 @@ CREATE TABLE IF NOT EXISTS bet_reconciliation_evidence (
 
 CREATE INDEX IF NOT EXISTS bet_reconciliation_evidence_attempt_idx
 ON bet_reconciliation_evidence (submit_attempt_id, observed_at, evidence_id);
+
+CREATE TABLE IF NOT EXISTS crown_browser_acceptance_campaigns (
+  campaign_id TEXT PRIMARY KEY CHECK (length(campaign_id) = 64),
+  schema_version TEXT NOT NULL CHECK (schema_version = 'crown-browser-api-acceptance-v1'),
+  capability_version TEXT NOT NULL CHECK (length(capability_version) > 0),
+  manifest_json TEXT NOT NULL CHECK (json_valid(manifest_json) AND json_type(manifest_json) = 'object'),
+  manifest_hmac TEXT NOT NULL CHECK (
+    length(manifest_hmac) = 64
+    AND manifest_hmac = lower(manifest_hmac)
+    AND manifest_hmac NOT GLOB '*[^0-9a-f]*'
+  ),
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active','completed','terminal_unknown')),
+  created_at TEXT NOT NULL CHECK (length(created_at) > 0),
+  updated_at TEXT NOT NULL CHECK (length(updated_at) > 0)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS crown_browser_acceptance_one_active_idx
+ON crown_browser_acceptance_campaigns ((status = 'active'))
+WHERE status = 'active';
+
+CREATE TABLE IF NOT EXISTS crown_browser_acceptance_cases (
+  campaign_id TEXT NOT NULL,
+  direction_id TEXT NOT NULL CHECK (length(direction_id) > 0),
+  case_version INTEGER NOT NULL DEFAULT 1
+    CHECK (typeof(case_version) = 'integer' AND case_version >= 1),
+  ordinal INTEGER NOT NULL CHECK (typeof(ordinal) = 'integer' AND ordinal BETWEEN 1 AND 8),
+  mode TEXT NOT NULL CHECK (mode IN ('prematch','live')),
+  period TEXT NOT NULL CHECK (period = 'full_time'),
+  market_type TEXT NOT NULL CHECK (market_type IN ('asian_handicap','total')),
+  line_variant TEXT NOT NULL CHECK (line_variant = 'main'),
+  selection_side TEXT NOT NULL CHECK (selection_side IN ('home','away','over','under')),
+  protocol_evidence_digest TEXT NOT NULL CHECK (length(protocol_evidence_digest) > 0),
+  capability_evidence_id TEXT NOT NULL CHECK (length(capability_evidence_id) > 0),
+  execution_candidate_digest TEXT NOT NULL DEFAULT '' CHECK (
+    execution_candidate_digest = '' OR (
+      length(execution_candidate_digest) = 64
+      AND execution_candidate_digest = lower(execution_candidate_digest)
+      AND execution_candidate_digest NOT GLOB '*[^0-9a-f]*'
+    )
+  ),
+  frozen_preview_json TEXT NOT NULL DEFAULT '{}' CHECK (
+    json_valid(frozen_preview_json) AND json_type(frozen_preview_json) = 'object'
+  ),
+  context_generation TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending','dispatched','validating','accepted','rejected','unknown','cancelled')),
+  child_order_id TEXT NOT NULL DEFAULT '',
+  account_id TEXT NOT NULL DEFAULT '',
+  submit_attempt_id TEXT NOT NULL DEFAULT '',
+  authorized_min_minor INTEGER NOT NULL DEFAULT 0
+    CHECK (typeof(authorized_min_minor) = 'integer' AND authorized_min_minor >= 0),
+  dispatch_count INTEGER NOT NULL DEFAULT 0
+    CHECK (typeof(dispatch_count) = 'integer' AND dispatch_count BETWEEN 0 AND 1),
+  outcome TEXT NOT NULL DEFAULT ''
+    CHECK (outcome IN ('','accepted','rejected','unknown','pre-dispatch-cancelled')),
+  sealed_provider_reference TEXT NOT NULL DEFAULT '',
+  validation_poll_count INTEGER NOT NULL DEFAULT 0
+    CHECK (typeof(validation_poll_count) = 'integer' AND validation_poll_count >= 0 AND validation_poll_count <= 9007199254740991),
+  validation_next_poll_at TEXT NOT NULL DEFAULT '',
+  validation_deadline_at TEXT NOT NULL DEFAULT '',
+  result_evidence_digest TEXT NOT NULL DEFAULT '' CHECK (
+    result_evidence_digest = '' OR (
+      length(result_evidence_digest) = 64
+      AND result_evidence_digest = lower(result_evidence_digest)
+      AND result_evidence_digest NOT GLOB '*[^0-9a-f]*'
+    )
+  ),
+  created_at TEXT NOT NULL CHECK (length(created_at) > 0),
+  updated_at TEXT NOT NULL CHECK (length(updated_at) > 0),
+  PRIMARY KEY (campaign_id, direction_id, case_version),
+  UNIQUE (campaign_id, ordinal, case_version),
+  FOREIGN KEY (campaign_id) REFERENCES crown_browser_acceptance_campaigns(campaign_id)
+);
+
+CREATE INDEX IF NOT EXISTS crown_browser_acceptance_cases_state_idx
+ON crown_browser_acceptance_cases (campaign_id, state, ordinal, case_version);
+
+CREATE UNIQUE INDEX IF NOT EXISTS crown_browser_acceptance_attempt_once_idx
+ON crown_browser_acceptance_cases (campaign_id, submit_attempt_id)
+WHERE submit_attempt_id <> '';
+
+CREATE TRIGGER IF NOT EXISTS crown_browser_acceptance_case_identity_immutable
+BEFORE UPDATE OF
+  campaign_id, direction_id, case_version, ordinal, mode, period, market_type,
+  line_variant, selection_side, protocol_evidence_digest, capability_evidence_id, created_at
+ON crown_browser_acceptance_cases
+BEGIN
+  SELECT RAISE(ABORT, 'crown-browser-acceptance-case-immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS crown_browser_acceptance_case_delete_forbidden
+BEFORE DELETE ON crown_browser_acceptance_cases
+BEGIN
+  SELECT RAISE(ABORT, 'crown-browser-acceptance-case-immutable');
+END;
 
 CREATE TRIGGER IF NOT EXISTS bet_reconciliation_evidence_immutable_update
 BEFORE UPDATE ON bet_reconciliation_evidence
@@ -991,6 +1089,13 @@ const MIGRATIONS = [
   ['bet_market_once_claims', 'settings_version', "ALTER TABLE bet_market_once_claims ADD COLUMN settings_version INTEGER CHECK (settings_version IS NULL OR (typeof(settings_version) = 'integer' AND settings_version >= 1))"],
   ['bet_market_once_claims', 'card_id', 'ALTER TABLE bet_market_once_claims ADD COLUMN card_id TEXT'],
   ['bet_market_once_claims', 'card_version', "ALTER TABLE bet_market_once_claims ADD COLUMN card_version INTEGER CHECK (card_version IS NULL OR (typeof(card_version) = 'integer' AND card_version >= 1))"],
+  ['bet_submit_attempts', 'execution_candidate_digest', "ALTER TABLE bet_submit_attempts ADD COLUMN execution_candidate_digest TEXT CHECK (execution_candidate_digest IS NULL OR (length(execution_candidate_digest) = 64 AND execution_candidate_digest = lower(execution_candidate_digest) AND execution_candidate_digest NOT GLOB '*[^0-9a-f]*'))"],
+  ['crown_browser_acceptance_cases', 'frozen_preview_json', "ALTER TABLE crown_browser_acceptance_cases ADD COLUMN frozen_preview_json TEXT NOT NULL DEFAULT '{}'"],
+  ['crown_browser_acceptance_cases', 'context_generation', "ALTER TABLE crown_browser_acceptance_cases ADD COLUMN context_generation TEXT NOT NULL DEFAULT ''"],
+  ['crown_browser_acceptance_cases', 'validation_poll_count', "ALTER TABLE crown_browser_acceptance_cases ADD COLUMN validation_poll_count INTEGER NOT NULL DEFAULT 0 CHECK (typeof(validation_poll_count) = 'integer' AND validation_poll_count >= 0 AND validation_poll_count <= 9007199254740991)"],
+  ['crown_browser_acceptance_cases', 'validation_next_poll_at', "ALTER TABLE crown_browser_acceptance_cases ADD COLUMN validation_next_poll_at TEXT NOT NULL DEFAULT ''"],
+  ['crown_browser_acceptance_cases', 'validation_deadline_at', "ALTER TABLE crown_browser_acceptance_cases ADD COLUMN validation_deadline_at TEXT NOT NULL DEFAULT ''"],
+  ['crown_browser_acceptance_cases', 'result_evidence_digest', "ALTER TABLE crown_browser_acceptance_cases ADD COLUMN result_evidence_digest TEXT NOT NULL DEFAULT '' CHECK (result_evidence_digest = '' OR (length(result_evidence_digest) = 64 AND result_evidence_digest = lower(result_evidence_digest) AND result_evidence_digest NOT GLOB '*[^0-9a-f]*'))"],
 ]
 
 function tableColumns(db, table) {
@@ -1007,6 +1112,21 @@ function applyMigrations(db) {
     db.exec(sql)
     columns.add(column)
     added.add(`${table}.${column}`)
+  }
+  if (added.has('bet_submit_attempts.execution_candidate_digest')) {
+    db.exec(`
+      DROP TRIGGER IF EXISTS bet_submit_attempts_immutable_update;
+      CREATE TRIGGER bet_submit_attempts_immutable_update
+      BEFORE UPDATE OF
+        submit_attempt_id, child_order_id, authorization_id, attempt_ordinal,
+        amount_minor, fencing_token, capability_version, capability_evidence_id,
+        execution_candidate_digest, preview_odds, locked_identity_json,
+        preview_snapshot_json, prepared_at, created_at
+      ON bet_submit_attempts
+      BEGIN
+        SELECT RAISE(ABORT, 'bet-submit-attempt-immutable');
+      END;
+    `)
   }
   return added
 }
@@ -1530,6 +1650,13 @@ function needsCanonicalRebuild(db, table) {
   if (table === 'bet_submit_attempts') {
     return info.get('authorization_id')?.notnull !== 0
   }
+  if (table === 'crown_browser_acceptance_cases') {
+    return !sql.includes("'validating'")
+      || !info.has('validation_poll_count')
+      || !info.has('validation_next_poll_at')
+      || !info.has('validation_deadline_at')
+      || !info.has('result_evidence_digest')
+  }
   return info.get('currency')?.dflt_value !== "'CNY'"
     || info.get('amount_scale')?.dflt_value !== '0'
     || info.get('stake_step_minor')?.dflt_value !== '1'
@@ -1585,6 +1712,7 @@ function applyCanonicalTableRebuilds(db) {
   const tables = [
     'monitor_alert_settings', 'auto_betting_settings', 'betting_rules', 'betting_accounts', 'bet_batches', 'bet_market_once_claims',
     'bet_submit_attempts',
+    'crown_browser_acceptance_cases',
   ].filter((table) => needsCanonicalRebuild(db, table))
   if (!tables.length) return
   for (const table of tables) rebuildCanonicalTable(db, table)
@@ -1718,6 +1846,7 @@ export function openAppDatabase({ dbPath, env = process.env, monitorJson } = {})
   db.exec('PRAGMA foreign_keys = ON')
   db.exec('PRAGMA recursive_triggers = ON')
   db.exec('PRAGMA journal_mode = WAL')
+  db.exec('PRAGMA busy_timeout = 5000')
   try {
     db.exec('PRAGMA foreign_keys = OFF')
     db.exec('BEGIN IMMEDIATE')

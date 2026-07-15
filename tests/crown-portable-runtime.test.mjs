@@ -94,7 +94,9 @@ function readyBettingSpawn(calls) {
         leases: {
           worker: { leaseKey: worker, ownerId: 'worker-owner', fencingToken: 1 },
           executor: { leaseKey: `betting-executor:${suffix}`, ownerId: 'executor-owner', fencingToken: 1 },
+          reconciler: { leaseKey: `betting-reconciler:${suffix}`, ownerId: 'reconciler-owner', fencingToken: 1 },
         },
+        browserStatus: { accounts: [] },
       })
     })
     return child
@@ -106,6 +108,22 @@ test('Dashboard, watcher and worker entrypoints are import-safe', () => {
   const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], { encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   assert.equal(result.stdout, 'imported')
+})
+
+test('Portable betting worker starts without development protocol fixtures', (t) => {
+  const root = fs.mkdtempSync(path.join(path.resolve('.'), '.tmp-crown-worker-no-fixtures-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.cpSync(path.resolve('src'), path.join(root, 'src'), { recursive: true })
+  fs.cpSync(path.resolve('scripts'), path.join(root, 'scripts'), { recursive: true })
+
+  const result = spawnSync(process.execPath, [path.join(root, 'scripts', 'crown-betting-worker.mjs'), '--mode', 'off'], {
+    cwd: root,
+    env: { ...process.env, CROWN_BETTING_MODE: 'off' },
+    encoding: 'utf8',
+  })
+  assert.equal(fs.existsSync(path.join(root, 'data', 'fixtures')), false)
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(JSON.parse(result.stdout), { mode: 'off', processed: 0, results: [] })
 })
 
 test('monitor and betting controllers spawn explicit binaries, scripts, config and runtime paths', async () => {
@@ -194,13 +212,19 @@ test('betting worker arguments take DB, runtime and config from explicit Portabl
     env: {
       CROWN_PORTABLE: '1',
       CROWN_BETTING_MODE: 'off',
+      CROWN_APP_ROOT: 'D:\\App\\versions\\0.1.0\\app',
+      CROWN_DATA_ROOT: 'C:\\Data',
       CROWN_DB_PATH: 'C:\\Data\\storage\\crown.sqlite',
       CROWN_RUNTIME_DIR: 'C:\\Data\\runtime',
+      CROWN_BROWSER_PROFILE_DIR: 'C:\\Data\\runtime\\browser-profiles',
+      CROWN_CHROMIUM_EXECUTABLE_PATH: 'D:\\App\\versions\\0.1.0\\runtime\\chromium\\chrome.exe',
       CROWN_DEFAULT_LEAGUES_CONFIG: 'C:\\Data\\config\\default-leagues.json',
     },
   })
   assert.equal(options.dbPath, 'C:\\Data\\storage\\crown.sqlite')
   assert.equal(options.runtimeDir, 'C:\\Data\\runtime')
+  assert.equal(options.profileRoot, 'C:\\Data\\runtime\\browser-profiles')
+  assert.equal(options.chromiumExecutable, 'D:\\App\\versions\\0.1.0\\runtime\\chromium\\chrome.exe')
   assert.equal(options.defaultLeaguesConfig, 'C:\\Data\\config\\default-leagues.json')
 })
 
@@ -239,6 +263,9 @@ test('Dashboard starts from a foreign cwd, ignores its .env, exposes opaque heal
     runtime = await startCrownDashboard({ env, registerSignals: false })
     assert.equal(runtime.monitorProcess.isRunning(), false)
     assert.equal(runtime.bettingProcess.isRunning(), false)
+    assert.ok(runtime.humanLoginController)
+    assert.ok(runtime.bettingHumanLoginController)
+    assert.notEqual(runtime.humanLoginController, runtime.bettingHumanLoginController)
     const address = runtime.server.address()
     const response = await fetch(`http://127.0.0.1:${address.port}/api/health`)
     assert.equal(response.status, 200)
@@ -302,6 +329,68 @@ test('ordered shutdown skips SQLite convergence when the watcher remains alive b
   assert.deepEqual(errors, ['watcher-stop-unsafe', 'database-convergence-skipped-watcher-unsafe'])
 })
 
+test('ordered shutdown treats unsafe human-login results as failures and skips SQLite convergence', async (t) => {
+  for (const unsafeResult of [false, { ok: false }]) {
+    await t.test(JSON.stringify(unsafeResult), async () => {
+      const events = []
+      const errors = []
+      const result = await shutdownDashboardRuntime({
+        disableRealBetting: async () => { events.push('real-intent') },
+        bettingProcess: { stop: async () => { events.push('worker') } },
+        humanLoginController: {
+          shutdown: async () => { events.push('human-login'); return unsafeResult },
+        },
+        monitorProcess: {
+          stopAndWait: async () => { events.push('monitor') },
+          isRunning: () => false,
+        },
+        convergeDatabase: async () => { events.push('database') },
+        closeHttp: async () => { events.push('http') },
+        onError: (error) => errors.push(error.message),
+      })
+
+      assert.deepEqual(events, ['real-intent', 'worker', 'human-login', 'monitor', 'http'])
+      assert.equal(result.ok, false)
+      assert.deepEqual(errors, [
+        'human-login-reported-unsafe',
+        'database-convergence-skipped-human-login-unsafe',
+      ])
+    })
+  }
+})
+
+test('ordered shutdown treats unsafe Betting Worker stop results as a database convergence gate', async (t) => {
+  for (const unsafeResult of [false, { ok: false }]) {
+    await t.test(JSON.stringify(unsafeResult), async () => {
+      const events = []
+      const errors = []
+      const result = await shutdownDashboardRuntime({
+        disableRealBetting: async () => { events.push('real-intent') },
+        bettingProcess: {
+          stop: async () => { events.push('worker'); return unsafeResult },
+        },
+        humanLoginController: {
+          shutdown: async () => { events.push('human-login'); return { ok: true } },
+        },
+        monitorProcess: {
+          stopAndWait: async () => { events.push('monitor') },
+          isRunning: () => false,
+        },
+        convergeDatabase: async () => { events.push('database') },
+        closeHttp: async () => { events.push('http') },
+        onError: (error) => errors.push(error.message),
+      })
+
+      assert.deepEqual(events, ['real-intent', 'worker', 'human-login', 'monitor', 'http'])
+      assert.equal(result.ok, false)
+      assert.deepEqual(errors, [
+        'betting-worker-reported-unsafe',
+        'database-convergence-skipped-betting-worker-unsafe',
+      ])
+    })
+  }
+})
+
 test('single-flight real betting tick preserves the only in-flight promise across overlapping intervals', async () => {
   assert.equal(typeof dashboardRuntime.createSingleFlightRunner, 'function')
   let release
@@ -320,6 +409,46 @@ test('single-flight real betting tick preserves the only in-flight promise acros
   await waiting
   assert.equal(waited, true)
   assert.equal(runner.current(), null)
+})
+
+test('dashboard shutdown drains the in-flight betting tick before stopping the worker', async () => {
+  const events = []
+  const workerStopOptions = []
+  let releaseTick
+  const tick = new Promise((resolve) => { releaseTick = resolve })
+  const shuttingDown = shutdownDashboardRuntime({
+    waitForRealBettingTick: async () => {
+      events.push('tick-wait')
+      await tick
+      events.push('tick-finished')
+    },
+    disableRealBetting: async () => { events.push('real-intent') },
+    bettingProcess: { stop: async (options) => { events.push('worker-stop'); workerStopOptions.push(options) } },
+    monitorProcess: { stopAndWait: async () => { events.push('monitor-stop') } },
+    convergeDatabase: async () => { events.push('database') },
+    closeHttp: async () => { events.push('http') },
+  })
+
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(events, ['tick-wait'])
+  releaseTick()
+  const result = await shuttingDown
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(events, [
+    'tick-wait', 'tick-finished', 'real-intent', 'worker-stop', 'monitor-stop', 'database', 'http',
+  ])
+  assert.deepEqual(workerStopOptions, [{ suppressSafetyHandoff: true }])
+})
+
+test('dashboard supervises reconciliation only when a betting start cannot be in flight', () => {
+  assert.equal(typeof dashboardRuntime.shouldSuperviseReconciliation, 'function')
+  for (const state of ['off', 'blocked', 'stopping']) {
+    assert.equal(dashboardRuntime.shouldSuperviseReconciliation(state), true, state)
+  }
+  for (const state of ['armed_waiting', 'running']) {
+    assert.equal(dashboardRuntime.shouldSuperviseReconciliation(state), false, state)
+  }
 })
 
 test('Portable cleanup deletes only allowlisted targets inside data root', async (t) => {

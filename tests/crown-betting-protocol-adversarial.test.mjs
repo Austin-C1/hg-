@@ -95,8 +95,7 @@ function routedSocket(url) {
   return { route, callbacks, sent, closed, get connectCount() { return connectCount } }
 }
 
-function modernCapture(runId = 'modern-adversarial') {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-modern-adversarial-'))
+function modernCapture(runId = 'modern-adversarial', root = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-modern-adversarial-'))) {
   const store = createProtocolStore({ rootDir: root, runId })
   store.append({
     captureRunId: runId,
@@ -273,6 +272,19 @@ test('HTTP submit heuristics run before method and monitor allowlists and contin
     { decision: 'blocked', dispatchCount: 0, stage: 'submit' },
     { decision: 'continued', dispatchCount: 1, stage: 'monitor' },
   ])
+})
+
+test('HTTP blocker records zero dispatch only after abort succeeds', async () => {
+  const { records, httpHandler } = await captureHarness()
+  const rawRequest = request(
+    'POST', 'https://offline.invalid/transform.php', 'p=FT_bet&golds=50',
+  )
+
+  await assert.rejects(() => httpHandler({
+    request: () => rawRequest,
+    async abort() { throw new Error('synthetic-abort-failure') },
+  }), /synthetic-abort-failure/)
+  assert.equal(records.some((record) => record.type === 'route-decision'), false)
 })
 
 test('HTTP route uses decoded field boundaries and blocks explicit money/order combinations only', async () => {
@@ -532,9 +544,9 @@ test('capture-set analysis removes stale safe outputs on validation, read, pair,
   })
 
   await t.test('raw and redacted pair mismatch', () => {
-    const store = modernCapture('capture-set-pair-mismatch')
-    rewriteJsonl(path.join(store.privateDir, 'redacted-network.jsonl'), (row) => ({ ...row, method: 'POST' }))
     const { target, publicDir } = targetWithStaleOutputs()
+    const store = modernCapture('capture-set-pair-mismatch', target)
+    rewriteJsonl(path.join(store.privateDir, 'redacted-network.jsonl'), (row) => ({ ...row, method: 'POST' }))
     assert.throws(() => analyzeModule.analyzeCrownProtocolCaptureSet(target, [store.runDir], {
       hmacKey: HMAC_KEY,
     }), /redaction-pair-mismatch/)
@@ -542,12 +554,21 @@ test('capture-set analysis removes stale safe outputs on validation, read, pair,
   })
 
   await t.test('raw JSONL parse failure', () => {
-    const store = modernCapture('capture-set-json-invalid')
-    fs.writeFileSync(path.join(store.privateDir, 'raw-network.jsonl'), '{invalid-json\n', 'utf8')
     const { target, publicDir } = targetWithStaleOutputs()
+    const store = modernCapture('capture-set-json-invalid', target)
+    fs.writeFileSync(path.join(store.privateDir, 'raw-network.jsonl'), '{invalid-json\n', 'utf8')
     assert.throws(() => analyzeModule.analyzeCrownProtocolCaptureSet(target, [store.runDir], {
       hmacKey: HMAC_KEY,
     }), /raw-capture-invalid/)
+    assertCleared(publicDir)
+  })
+
+  await t.test('run outside scenario root', () => {
+    const store = modernCapture('capture-set-cross-root')
+    const { target, publicDir } = targetWithStaleOutputs()
+    assert.throws(() => analyzeModule.analyzeCrownProtocolCaptureSet(target, [store.runDir], {
+      hmacKey: HMAC_KEY,
+    }), /capture-set-run-outside-root/)
     assertCleared(publicDir)
   })
 })
@@ -614,6 +635,47 @@ test('unknown endpoint paths publish only a safe shape and per-path HMAC across 
   assert.doesNotThrow(() => assertSafeCrownProtocolEvidence({ endpointPath: '/transform.php' }))
 })
 
+test('catalog treats verified static resource bodies as opaque', () => {
+  const records = [{
+    seq: 1, eventOrdinal: 1, type: 'request', method: 'GET', resourceType: 'script',
+    url: 'https://offline.invalid/assets/app.js',
+  }, {
+    seq: 1, eventOrdinal: 2, type: 'response', method: 'GET', status: 200,
+    url: 'https://offline.invalid/assets/app.js',
+    responseBody: '{"account_token":"PrivateStaticToken","items":[{"gid":"private"}]}',
+  }]
+
+  const catalog = analyzeModule.buildCrownProtocolCatalogCandidate(records, {
+    captureId: 'capture', hmacKey: HMAC_KEY,
+  })
+  assert.ok(catalog.entries.every((entry) => entry.request.fields.length === 0))
+  assert.ok(catalog.entries.every((entry) => entry.response.fields.length === 0))
+  for (const forbidden of ['PrivateStaticToken', 'account_token']) {
+    assert.equal(JSON.stringify(catalog).includes(forbidden), false)
+  }
+})
+
+test('catalog accepts known Crown login metadata names but never publishes their values', () => {
+  const records = [{
+    seq: 1, eventOrdinal: 1, type: 'request', method: 'POST', resourceType: 'xhr',
+    url: 'https://offline.invalid/transform.php?ver=v1',
+    postData: 'p=chk_login&ver=v1&userAgent=PrivateUserAgent',
+  }, {
+    seq: 1, eventOrdinal: 2, type: 'response', method: 'POST', status: 200,
+    url: 'https://offline.invalid/transform.php?ver=v1',
+    responseBody: '<serverresponse><passwd_safe>PrivateLoginAlias</passwd_safe><passcode>PrivatePasscode</passcode></serverresponse>',
+  }]
+
+  const catalog = analyzeModule.buildCrownProtocolCatalogCandidate(records, {
+    captureId: 'capture', hmacKey: HMAC_KEY,
+  })
+  const serialized = JSON.stringify(catalog)
+  for (const forbidden of [
+    'PrivateUserAgent', 'PrivateLoginAlias', 'PrivatePasscode',
+    'userAgent', 'passwd_safe', 'passcode',
+  ]) assert.equal(serialized.includes(forbidden), false)
+})
+
 test('catalog duplicate query and query/body p conflicts propagate as fail-closed errors', () => {
   const build = (url, postData = '') => analyzeModule.buildCrownProtocolCatalogCandidate([{
     seq: 1, eventOrdinal: 1, type: 'request', method: 'POST', resourceType: 'xhr', url, postData,
@@ -625,19 +687,69 @@ test('catalog duplicate query and query/body p conflicts propagate as fail-close
   assert.throws(() => build(
     'https://offline.invalid/transform.php?p=get_game_list', 'p=FT_bet&golds=50',
   ), /crown-protocol-catalog:duplicate-field/)
+
+  assert.doesNotThrow(() => build(
+    'https://offline.invalid/transform.php?ver=v1', 'p=get_game_list&ver=v1',
+  ))
+  assert.throws(() => build(
+    'https://offline.invalid/transform.php?ver=v1', 'p=get_game_list&ver=v2',
+  ), /crown-protocol-catalog:duplicate-field/)
+  assert.throws(() => build(
+    'https://offline.invalid/transform.php?p=get_game_list', 'p=get_game_list',
+  ), /crown-protocol-catalog:duplicate-field/)
 })
 
-test('direction candidates validate actual Preview and Submit wire and keep unsupported totals incomplete', () => {
+test('direction candidates validate the observed Preview and Submit wire for all eight directions', () => {
   const prematchHome = CROWN_BROWSER_TARGETS.find((target) => target.id === 'prematch-full-time-asian-handicap-home')
   const prematchAway = CROWN_BROWSER_TARGETS.find((target) => target.id === 'prematch-full-time-asian-handicap-away')
   const prematchOver = CROWN_BROWSER_TARGETS.find((target) => target.id === 'prematch-full-time-total-over')
+  const actualWires = [
+    [prematchHome, PREMATCH_AH_HOME],
+    [prematchAway, { gtype: 'FT', wtype: 'R', rtype: 'RC', isRB: 'N', sideCode: 'C', f: '1R' }],
+    [prematchOver, { gtype: 'FT', wtype: 'OU', rtype: 'OUC', isRB: 'N', sideCode: 'C', f: '1R' }],
+    [CROWN_BROWSER_TARGETS.find((target) => target.id === 'prematch-full-time-total-under'),
+      { gtype: 'FT', wtype: 'OU', rtype: 'OUH', isRB: 'N', sideCode: 'H', f: '1R' }],
+    [CROWN_BROWSER_TARGETS.find((target) => target.id === 'live-full-time-asian-handicap-home'),
+      { gtype: 'FT', wtype: 'RE', rtype: 'REH', isRB: 'Y', sideCode: 'H', f: '1R' }],
+    [CROWN_BROWSER_TARGETS.find((target) => target.id === 'live-full-time-asian-handicap-away'),
+      { gtype: 'FT', wtype: 'RE', rtype: 'REC', isRB: 'Y', sideCode: 'C', f: '1R' }],
+    [CROWN_BROWSER_TARGETS.find((target) => target.id === 'live-full-time-total-over'),
+      { gtype: 'FT', wtype: 'ROU', rtype: 'ROUC', isRB: 'Y', sideCode: 'C', f: '1R' }],
+    [CROWN_BROWSER_TARGETS.find((target) => target.id === 'live-full-time-total-under'),
+      { gtype: 'FT', wtype: 'ROU', rtype: 'ROUH', isRB: 'Y', sideCode: 'H', f: '1R' }],
+  ]
+  const observed = actualWires.map(([target, wire]) => (
+    analyzeModule.buildCrownEightDirectionCandidates(directionAttempt(target, wire), {
+      expectedDirections: [target], captureId: 'capture', hmacKey: HMAC_KEY,
+    }).candidates[0]
+  ))
+  assert.ok(observed.every((candidate) => candidate.status === 'candidate'))
+  assert.ok(observed.every((candidate) => /^hmac-sha256:[a-f0-9]{64}$/.test(candidate.directionWireBinding)))
+  assert.equal(new Set(observed.map((candidate) => candidate.directionWireBinding)).size, 8)
 
-  const verified = analyzeModule.buildCrownEightDirectionCandidates(
-    directionAttempt(prematchHome, PREMATCH_AH_HOME),
-    { expectedDirections: [prematchHome], captureId: 'capture', hmacKey: HMAC_KEY },
-  ).candidates[0]
-  assert.equal(verified.status, 'candidate')
-  assert.match(verified.directionWireBinding, /^hmac-sha256:[a-f0-9]{64}$/)
+  const staticWire = analyzeModule.buildCrownStaticWireEvidence(
+    actualWires.flatMap(([target, wire]) => directionAttempt(target, wire)),
+    { expectedDirections: actualWires.map(([target]) => target), captureId: 'capture', hmacKey: HMAC_KEY },
+  )
+  assert.equal(staticWire.directionTemplates.length, 8)
+  for (const [index, [target, wire]] of actualWires.entries()) {
+    const template = staticWire.directionTemplates[index]
+    assert.equal(template.direction.id, target.id)
+    assert.deepEqual(Object.fromEntries(template.previewStaticValues.map(({ field, value }) => [field, value])), {
+      p: 'FT_order_view', gtype: wire.gtype, wtype: wire.wtype, chose_team: wire.sideCode,
+    })
+    assert.deepEqual(Object.fromEntries(template.submitStaticValues.map(({ field, value }) => [field, value])), {
+      p: 'FT_bet', gtype: wire.gtype, wtype: wire.wtype, rtype: wire.rtype,
+      isRB: wire.isRB, chose_team: wire.sideCode, f: wire.f,
+    })
+    assert.match(template.sourceBinding, /^hmac-sha256:[a-f0-9]{64}$/)
+  }
+  const publishedValues = staticWire.directionTemplates.flatMap((template) => [
+    ...template.previewStaticValues, ...template.submitStaticValues,
+  ]).map(({ value }) => value)
+  for (const dynamicValue of ['gid-1', 'uid-1', '0.96', '-0.5', '50']) {
+    assert.equal(publishedValues.includes(dynamicValue), false)
+  }
 
   assert.throws(() => analyzeModule.buildCrownEightDirectionCandidates(
     directionAttempt(prematchAway, PREMATCH_AH_HOME),
@@ -648,32 +760,6 @@ test('direction candidates validate actual Preview and Submit wire and keep unsu
     { expectedDirections: [prematchOver], captureId: 'capture', hmacKey: HMAC_KEY },
   ), /crown-eight-direction:direction-wire-mismatch/)
 
-  const total = analyzeModule.buildCrownEightDirectionCandidates(directionAttempt(prematchOver, {
-    gtype: 'FT', wtype: 'OU', rtype: 'OUH', isRB: 'N', sideCode: 'H', f: '1R',
-  }), {
-    expectedDirections: [prematchOver], captureId: 'capture', hmacKey: HMAC_KEY,
-  }).candidates[0]
-  assert.equal(total.status, 'incomplete')
-  assert.equal(total.reason, 'EVIDENCE_REQUIRED')
-  assert.equal(total.capabilityPromoted, false)
-  assert.equal(Object.hasOwn(total, 'identityBinding'), false)
-
-  const liveOver = CROWN_BROWSER_TARGETS.find((target) => target.id === 'live-full-time-total-over')
-  const sharedTotalWire = {
-    gtype: 'FT', wtype: 'OU', rtype: 'OUH', isRB: 'N', sideCode: 'H', f: '1R',
-  }
-  const liveTotal = analyzeModule.buildCrownEightDirectionCandidates(
-    directionAttempt(liveOver, sharedTotalWire),
-    { expectedDirections: [liveOver], captureId: 'capture', hmacKey: HMAC_KEY },
-  ).candidates[0]
-  assert.equal(liveTotal.directionWireBinding, total.directionWireBinding)
-  assert.throws(() => analyzeModule.buildCrownEightDirectionCandidates([
-    ...directionAttempt(prematchOver, sharedTotalWire),
-    ...directionAttempt(liveOver, sharedTotalWire),
-  ], {
-    expectedDirections: [prematchOver, liveOver], captureId: 'capture', hmacKey: HMAC_KEY,
-  }), /crown-eight-direction:duplicate-direction-wire/)
-
   const spoofed = {
     ...prematchHome, mode: 'live', marketType: 'total', side: 'under',
   }
@@ -682,6 +768,31 @@ test('direction candidates validate actual Preview and Submit wire and keep unsu
     { expectedDirections: [spoofed], captureId: 'capture', hmacKey: HMAC_KEY },
   ).candidates[0]
   assert.deepEqual(canonicalized.direction, prematchHome)
+
+  const withIrrelevantNavigation = directionAttempt(prematchHome, PREMATCH_AH_HOME)
+  withIrrelevantNavigation.push({
+    captureRunId: withIrrelevantNavigation[0].captureRunId,
+    direction: prematchHome.id,
+    sessionGeneration: withIrrelevantNavigation[0].sessionGeneration,
+    seq: 3, eventOrdinal: 6, type: 'request', method: 'GET', resourceType: 'document',
+    url: 'https://offline.invalid/?four_pwd=PrivateDocumentSecret',
+  }, {
+    captureRunId: withIrrelevantNavigation[0].captureRunId,
+    direction: prematchHome.id,
+    sessionGeneration: withIrrelevantNavigation[0].sessionGeneration,
+    seq: 4, eventOrdinal: 7, type: 'request', method: 'GET', resourceType: 'stylesheet',
+    url: 'https://offline.invalid/style/order.css?ver=1',
+  }, {
+    captureRunId: withIrrelevantNavigation[0].captureRunId,
+    direction: prematchHome.id,
+    sessionGeneration: withIrrelevantNavigation[0].sessionGeneration,
+    seq: 4, eventOrdinal: 8, type: 'route-decision', method: 'GET', resourceType: 'stylesheet',
+    url: 'https://offline.invalid/style/order.css?ver=1',
+    decision: 'continued', dispatchCount: 1,
+  })
+  assert.equal(analyzeModule.buildCrownEightDirectionCandidates(withIrrelevantNavigation, {
+    expectedDirections: [prematchHome], captureId: 'capture', hmacKey: HMAC_KEY,
+  }).candidates[0].status, 'candidate')
 })
 
 test('eight-direction candidate fails closed when any WebSocket Submit decision was dispatched', () => {
@@ -841,21 +952,23 @@ test('eight-direction candidate fails closed when any WebSocket Submit decision 
 
 test('eight-direction counts all raw classifier Preview and Submit HTTP traffic', () => {
   const target = CROWN_BROWSER_TARGETS.find((item) => item.id === 'prematch-full-time-asian-handicap-home')
-  const extraTraffic = (postData) => {
+  const extraTraffic = (postData, {
+    method = 'POST', resourceType = 'xhr', url = 'https://offline.invalid/transform.php',
+    decision = 'blocked', dispatchCount = 0,
+  } = {}) => {
     const records = directionAttempt(target, PREMATCH_AH_HOME)
     records.push({
       captureRunId: records[0].captureRunId,
       direction: target.id,
       sessionGeneration: records[0].sessionGeneration,
-      seq: 3, eventOrdinal: 6, type: 'request', method: 'POST', resourceType: 'xhr',
-      url: 'https://offline.invalid/transform.php', postData,
+      seq: 3, eventOrdinal: 6, type: 'request', method, resourceType,
+      url, postData,
     }, {
       captureRunId: records[0].captureRunId,
       direction: target.id,
       sessionGeneration: records[0].sessionGeneration,
-      seq: 3, eventOrdinal: 7, type: 'route-decision', method: 'POST',
-      url: 'https://offline.invalid/transform.php', postData,
-      decision: 'blocked', dispatchCount: 0,
+      seq: 3, eventOrdinal: 7, type: 'route-decision', method, resourceType,
+      url, postData, decision, dispatchCount,
     })
     return records
   }
@@ -875,6 +988,39 @@ test('eight-direction counts all raw classifier Preview and Submit HTTP traffic'
     orderRisk,
     { expectedDirections: [target], captureId: 'capture', hmacKey: HMAC_KEY },
   ), /crown-eight-direction:betting-traffic-count/)
+
+  for (const url of [
+    'https://offline.invalid/checkout?action=submit&stake=50&selection=home',
+    'https://offline.invalid/188bet/checkout?action=submit&stake=50&selection=home',
+  ]) {
+    assert.throws(() => analyzeModule.buildCrownEightDirectionCandidates(
+      extraTraffic('', {
+        method: 'GET', resourceType: url.includes('/188bet/') ? 'fetch' : 'document',
+        url, decision: 'continued', dispatchCount: 1,
+      }),
+      { expectedDirections: [target], captureId: 'capture', hmacKey: HMAC_KEY },
+    ), /crown-eight-direction:betting-traffic-count/)
+  }
+})
+
+test('eight-direction requires a confirmed failed request and a unique session generation per context', () => {
+  const home = CROWN_BROWSER_TARGETS.find((item) => item.id === 'prematch-full-time-asian-handicap-home')
+  const away = CROWN_BROWSER_TARGETS.find((item) => item.id === 'prematch-full-time-asian-handicap-away')
+  const awayWire = { gtype: 'FT', wtype: 'R', rtype: 'RC', isRB: 'N', sideCode: 'C', f: '1R' }
+
+  assert.throws(() => analyzeModule.buildCrownEightDirectionCandidates(
+    directionAttempt(home, PREMATCH_AH_HOME).filter((record) => record.type !== 'requestfailed'),
+    { expectedDirections: [home], captureId: 'capture', hmacKey: HMAC_KEY },
+  ), /crown-eight-direction:submit-block-unconfirmed/)
+
+  const sharedGeneration = [
+    ...directionAttempt(home, PREMATCH_AH_HOME),
+    ...directionAttempt(away, awayWire),
+  ].map((record) => ({ ...record, sessionGeneration: 'shared-generation' }))
+  assert.throws(() => analyzeModule.buildCrownEightDirectionCandidates(
+    sharedGeneration,
+    { expectedDirections: [home, away], captureId: 'capture', hmacKey: HMAC_KEY },
+  ), /crown-eight-direction:session-generation-reused/)
 })
 
 test('MARKET_UNAVAILABLE needs wait, match switch, multiple attempts, and final confirmation', async () => {

@@ -273,6 +273,8 @@ Probe 的关键设计：
 
 `fetchGameMore()` 使用 `lid`、`ecid`、`showtype`、`isRB` 等字段获取详细盘口。
 
+账号保存的 public HTTPS exact origin 是该账号登录、只读检测、game-more、Preview 与 Submit 的唯一授权地址，不再叠加静态 membership whitelist。账号地址必须无 credentials/path/query/hash，并拒绝 HTTP、localhost、private hostname 与 IP literal；请求采用 manual redirect，任何跨 origin redirect 都在使用响应或 cookie 前 fail-closed。
+
 API 会话文件包含认证材料，只能留在忽略的本地 runtime 目录，不能进入文档或版本库。
 
 ### 5.4 浏览器登录 fallback
@@ -970,7 +972,6 @@ watcher 默认每 30 秒检查配置文件 mtime，可用 `--config-reload-secon
 | `CROWN_DASHBOARD_ALLOWED_ORIGINS` | 逗号分隔的额外 Origin allowlist；默认仅当前 loopback origin |
 | `CROWN_DASHBOARD_SESSION_MAX` | 内存 session 上限，默认 256、最大 4096 |
 | `CROWN_DASHBOARD_LOGIN_MAX_FAILURES` | 单来源 5 分钟登录失败上限，默认 5、最大 50 |
-| `CROWN_BETTING_ALLOWED_ORIGINS` | 投注账号登录的逗号分隔 exact origin allowlist；默认空并 fail-closed，entry 与账号 URL 都必须是无 credentials/path/query/hash 的同一公开 HTTPS origin，拒绝 localhost/private hostname/IP literal；API POST 禁止自动 redirect |
 | `CROWN_DB_PATH` | `storage/crown.sqlite` |
 | `CROWN_STATIC_DIR` | `frontend/dist` |
 | `CROWN_SECRET_KEY` | 可选主密钥材料 |
@@ -1076,7 +1077,7 @@ Docker 架构：
 - 第二阶段复制 Node server、`src`、三个公开默认 config 和 Dashboard fallback 所需的两个明确 fixture 文件；不再整目录复制私有 config/fixture。
 - `data/runtime`、`config`、`storage` 分别使用 `crown-runtime`、`crown-config`、`crown-storage` named volume，不绑定宿主机私有目录。
 - 宿主端口固定为 `127.0.0.1:8787`；容器内虽监听 `0.0.0.0`，默认不发布到局域网接口。
-- 密码 hash、session key 和显式 allowlist 只在运行时通过环境变量传入。
+- 密码 hash、session key 和 Dashboard 远程 Host/Origin allowlist 只在运行时通过环境变量传入。
 
 Docker 镜像只复制了 `scripts/crown-dashboard.mjs`，没有复制 watcher 入口。因此 Docker 模式仍应视为 Dashboard/配置/展示容器，不是完整 watcher 执行环境；监控进程应在宿主机或独立容器运行。
 

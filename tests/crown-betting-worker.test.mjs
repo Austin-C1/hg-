@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -14,6 +14,12 @@ import { BetBatchStore } from '../src/crown/betting/bet-batch-store.mjs'
 import { BettingWorker, waitFor } from '../src/crown/betting/betting-worker.mjs'
 import { createRealWorkerProvider, realCoordinatorDependencies, startRoleLeaseHeartbeat, waitForRealWorkerGo } from '../src/crown/betting/real-worker-factory.mjs'
 import { blockRealBettingRuntime, getRealBettingStatus, requestRealBettingStart } from '../src/crown/betting/real-betting-runtime.mjs'
+import {
+  BETTING_BROWSER_SHUTDOWN_TIMEOUT_MS,
+  argumentsFrom,
+  createRealWorkerStopBoundary,
+  shutdownRealWorkerWithBudget,
+} from '../scripts/crown-betting-worker.mjs'
 
 function fakeCoordinator() {
   return {
@@ -175,7 +181,7 @@ test('card inbox waits for formal adapter readiness then terminalizes a deleted 
   const latest = {
     provider: 'crown', mode: 'prematch', capturedAt: '2026-07-12T00:00:01.000Z',
     event: { eventKey: 'crown|football|gid=1', mode: 'prematch' },
-    market: { marketIdentity, period: 'full_time', marketType: 'asian_handicap', lineKey: 'RATIO_RE', handicap: -0.5 },
+    market: { marketIdentity, period: 'full_time', marketType: 'asian_handicap', lineKey: 'RATIO_RE', handicap: -0.5, handicapRaw: '-0.50' },
     selection: { selectionIdentity: `${marketIdentity}|away`, side: 'away', odds: '0.9', suspended: false },
   }
   handle.db.prepare(`INSERT INTO monitor_signals
@@ -231,19 +237,38 @@ test('card inbox waits for formal adapter readiness then terminalizes a deleted 
   } finally { worker.stop(); handle.close() }
 })
 
-test('exported real worker factory constructs executor-only production seams and ignores legacy eligibility flags', async () => {
+test('exported real worker factory shares one browser runtime across Preview, Submit, and read-only reconciliation', async () => {
   let previewCalls = 0
   let submitCalls = 0
   let previewOptions = null
   let executionOptions = null
+  let reconciliationOptions = null
+  let reconcilerOptions = null
+  let shutdownCalls = 0
+  let statusSnapshotCalls = 0
   const repository = {}
-  const loginManager = {}
   const executorLease = {}
+  const reconcilerLease = {}
+  const browserRuntime = {
+    states: new Map(), unresolvedStates: new Map(),
+    statusSnapshot({ heartbeatAt }) {
+      statusSnapshotCalls += 1
+      assert.match(heartbeatAt, /^\d{4}-\d{2}-\d{2}T/)
+      return { accounts: [{ accountId: 'safe-account', state: 'ready', lastHeartbeatAt: heartbeatAt, lastApiSuccessAt: null }] }
+    },
+    async shutdown() { shutdownCalls += 1; return { ok: true } },
+  }
+  const b2Reconciler = { async runDue() {} }
+  const reconciliationWorker = { async runOnce() {} }
   const database = { prepare() { throw new Error('database-work-before-invocation') }, exec() { throw new Error('database-work-before-invocation') } }
   const provider = createRealWorkerProvider({
-    database, executorLease, env: {},
+    database, executorLease, reconcilerLease, env: {},
+    appRoot: 'C:\\app', dataRoot: 'C:\\data', runtimeDir: 'C:\\data\\runtime',
+    profileRoot: 'C:\\data\\runtime\\profiles', chromiumExecutable: 'C:\\app\\chromium\\chrome.exe',
+    dbPath: 'C:\\data\\crown.sqlite',
     factories: {
-      repository: () => repository, loginManager: () => loginManager,
+      repository: () => repository,
+      browserRuntime: () => browserRuntime,
       previewProvider: (options) => { previewOptions = options; return { async preview() {
         previewCalls += 1
         if (previewCalls === 2) return {
@@ -262,22 +287,32 @@ test('exported real worker factory constructs executor-only production seams and
       } } },
       executionProvider: (options) => { executionOptions = options; return {} },
       executor: () => ({ async submit() { submitCalls += 1; return { status: 'unknown' } } }),
+      reconciliationProvider: (options) => { reconciliationOptions = options; return {} },
+      reconciler: (options) => { reconcilerOptions = options; return b2Reconciler },
+      reconciliationWorker: () => reconciliationWorker,
     },
   })
   assert.equal(provider.kind, 'crown-production')
   assert.equal(typeof provider.previewProvider.preview, 'function')
   assert.equal(typeof provider.executionProvider, 'object')
   assert.equal(typeof provider.b2Executor.submit, 'function')
-  assert.equal(Object.hasOwn(provider, 'b2Reconciler'), false)
+  assert.equal(provider.browserRuntime, browserRuntime)
+  assert.equal(provider.b2Reconciler, b2Reconciler)
+  assert.equal(provider.reconciliationWorker, reconciliationWorker)
+  assert.equal(provider.browserStatusSnapshot().accounts[0].accountId, 'safe-account')
+  assert.equal(statusSnapshotCalls, 1)
   assert.equal(previewCalls, 0)
   assert.equal(submitCalls, 0)
   assert.equal(previewOptions.repository, repository)
-  assert.equal(previewOptions.loginManager, loginManager)
+  assert.equal(previewOptions.browserRuntime, browserRuntime)
   assert.equal(previewOptions.executorLease, executorLease)
   assert.equal(executionOptions.repository, repository)
-  assert.equal(executionOptions.loginManager, loginManager)
-  assert.equal(executionOptions.previewProvider, provider.previewProvider)
+  assert.equal(executionOptions.browserRuntime, browserRuntime)
   assert.equal(executionOptions.executorLease, executorLease)
+  assert.equal(reconciliationOptions.repository, repository)
+  assert.equal(reconciliationOptions.browserRuntime, browserRuntime)
+  assert.equal(reconciliationOptions.reconcilerLease, reconcilerLease)
+  assert.equal(reconcilerOptions.requestTimeoutMs, 30_000)
   assert.deepEqual(realCoordinatorDependencies(provider), {
     provider: provider.previewAdapter,
     b2Executor: provider.b2Executor,
@@ -292,6 +327,8 @@ test('exported real worker factory constructs executor-only production seams and
   await provider.b2Executor.submit({})
   assert.equal(previewCalls, 2)
   assert.equal(submitCalls, 1)
+  assert.deepEqual(await provider.shutdown(), { ok: true })
+  assert.equal(shutdownCalls, 1)
 })
 
 test('real worker does not load legacy authorizations or schedule reconciliation', async () => {
@@ -440,6 +477,85 @@ test('worker and executor leases heartbeat below TTL/3 and one failure aborts th
   assert.equal(controller.signal.aborted, true)
   stop()
   assert.equal(cleared, true)
+})
+
+test('real worker parser carries every explicit browser runtime path into the factory boundary', () => {
+  const options = argumentsFrom([
+    '--mode', 'real',
+    '--app-root', 'C:\\app',
+    '--data-root', 'C:\\data',
+    '--runtime-dir', 'C:\\data\\runtime',
+    '--profile-root', 'C:\\data\\runtime\\profiles',
+    '--chromium-executable', 'C:\\app\\chromium\\chrome.exe',
+    '--db-path', 'C:\\data\\storage\\crown.sqlite',
+  ], { env: {} })
+  assert.deepEqual({
+    appRoot: options.appRoot,
+    dataRoot: options.dataRoot,
+    runtimeDir: options.runtimeDir,
+    profileRoot: options.profileRoot,
+    chromiumExecutable: options.chromiumExecutable,
+    dbPath: options.dbPath,
+  }, {
+    appRoot: 'C:\\app',
+    dataRoot: 'C:\\data',
+    runtimeDir: 'C:\\data\\runtime',
+    profileRoot: 'C:\\data\\runtime\\profiles',
+    chromiumExecutable: 'C:\\app\\chromium\\chrome.exe',
+    dbPath: 'C:\\data\\storage\\crown.sqlite',
+  })
+})
+
+test('browser shutdown timeout returns at 20 seconds and marks ownership unconfirmed for TTL takeover', async () => {
+  assert.equal(BETTING_BROWSER_SHUTDOWN_TIMEOUT_MS, 20_000)
+  let resolveShutdown
+  let timeout
+  const close = new Promise((resolve) => { resolveShutdown = resolve })
+  const pending = shutdownRealWorkerWithBudget({ shutdown: () => close }, {
+    setTimeoutFn(callback, milliseconds) { assert.equal(milliseconds, 20_000); timeout = callback; return 1 },
+    clearTimeoutFn() {},
+  })
+
+  timeout()
+  await assert.rejects(pending, (error) => {
+    assert.equal(error.message, 'browser-runtime-shutdown-timeout')
+    assert.equal(error.ownershipUnconfirmed, true)
+    return true
+  })
+  resolveShutdown({ ok: true })
+})
+
+test('worker stop boundary begins browser shutdown on abort and reuses the same close in finally', async () => {
+  let shutdownCalls = 0
+  let resolveShutdown
+  const closing = new Promise((resolve) => { resolveShutdown = resolve })
+  const boundary = createRealWorkerStopBoundary({
+    shutdown() {
+      shutdownCalls += 1
+      return closing
+    },
+  })
+
+  boundary.abort(new Error('stop-requested'))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(boundary.controller.signal.aborted, true)
+  assert.equal(shutdownCalls, 1)
+
+  const finalShutdown = shutdownRealWorkerWithBudget({ shutdown: boundary.shutdown })
+  resolveShutdown({ ok: true })
+  assert.deepEqual(await finalShutdown, { ok: true })
+  assert.equal(shutdownCalls, 1)
+})
+
+test('every internal worker stop source uses the browser shutdown boundary', () => {
+  const source = readFileSync(new URL('../scripts/crown-betting-worker.mjs', import.meta.url), 'utf8')
+  const main = source.slice(source.indexOf('async function main()'))
+
+  assert.doesNotMatch(main, /controller\.abort\(/)
+  assert.match(main, /blockRealBettingRuntime\(handle\.db, 'collector-failed'\)\s+abort\(error\)/)
+  assert.match(main, /startRoleLeaseHeartbeat\(\{ leases: \[workerLease, lease\], controller: \{ abort \} \}\)/)
+  assert.match(main, /\(error\) => \{ abort\(error\); return \{ error \} \}/)
+  assert.match(main, /\} finally \{\s+abort\(\)/)
 })
 
 test('an active executor lease makes a second worker fail closed before recovery or Signal reads', () => {

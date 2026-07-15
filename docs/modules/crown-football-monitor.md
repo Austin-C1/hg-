@@ -1,9 +1,11 @@
 # Crown Football Monitor
 
-## 2026-07-14 Task 10 execution classification boundary
+## 2026-07-15 Task 4 八方向执行候选边界
 
-- Watcher 仍是只读模块；它只负责把赛前全场让球 `RATIO_R` 且有 `IOR_RH|IOR_RC` 的事实标记为 `lineVariant=main`。该分类允许下游 exact capability 判断，但 watcher 自身不会调用 Preview 或 Submit。
-- `RATIO_RE`、滚球、其他 period/market 或缺少 exact home/away odds 字段的行保持 `lineVariant=unknown`，不能借助相似字段进入已开放的 production row。
+- Watcher 仍是只读模块，不调用 Preview 或 Submit。它只把 capability matrix 精确证明的八个全场方向标为 `lineVariant=main`：赛前/滚球 × 让球/大小球 × 两侧。
+- 标准化入口只接收正常球队比赛并只生成 `full_time` 让球/大小球；角球、罚牌、特定球员、加时赛、点球、球队/球员进球、波胆和晋级等衍生赛事在写入 event、selection、Signal 或 Telegram 前排除。
+- `RATIO_R|RATIO_OUO|RATIO_OUU` 只在赛前匹配，`RATIO_RE|RATIO_ROUO|RATIO_ROUU` 只在滚球匹配；cross-mode、first-half、alternate 或 ratio/odds 字段不一致的行保持 `unknown`。
+- snapshot 同时保存顶层和 event 的 `mode`。执行候选固定投影为 `gid/mode/period/marketType/lineVariant/selectionSide/handicapRaw/oddsField/oddsRaw/observedAt`，锁定时再次核对 mode、side 和盘口数值；`-0.5` 与 `-0.50` 等价，但原文与数值矛盾时拒绝。
 - `waterMoveThreshold` 是运行配置，当前 `0.01` 不改变上述协议身份或 capability 边界。
 
 ## 目标与边界
@@ -12,7 +14,7 @@
 
 - 允许：监控账号 API 登录、session 复用、`transform.php` XML 读取、DOM/fixture 兼容回放、SQLite 监控状态、JSONL 审计、Console/Telegram 告警、确定性候选输出。
 - 禁止：点击赔率、填写金额、调用 `FT_order_view`/`FT_bet`、从 watcher 自动真实下注、记录或提交 credential/session/token。
-- 采集盘口：仅 `asian_handicap` 和普通 `total`；moneyline、球队大小球和未知市场不进入监控链。
+- 采集盘口：仅正常球队比赛的全场 `asian_handicap` 和普通 `total`；半场、moneyline、角球、罚牌、球员、球队大小球和未知市场不进入监控链。
 - 赛前和滚球策略可独立启停并可同时启用，但始终由同一个 watcher 处理；watcher 不按监控模式拆成多个进程。
 - 新监控报警配置的 `waterMoveThreshold` 同时匹配上涨和下降；两种方向都产生事实 Signal 和 Telegram delivery。下降方向只报警，自动投注 inbox 会在任何盘口查询或批次创建前稳定跳过。
 - 今日投注联赛目录只读当前监控事实：Asia/Shanghai 当天 active 赛事中命中启用默认联赛的名称，加上 exact event identity 命中的 active 手动追踪赛事。手动追踪只增加候选名称，必须由 `/betting-rules` 动态卡片显式选择。

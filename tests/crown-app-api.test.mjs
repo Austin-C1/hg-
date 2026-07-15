@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { openAppDatabase } from '../src/crown/app/app-db.mjs'
 import { createAppRepository } from '../src/crown/app/app-repository.mjs'
+import { CrownHumanLoginController } from '../src/crown/app/crown-human-login-controller.mjs'
 import { handleAppApi } from '../src/crown/app/app-api.mjs'
 import { createDashboardServer } from '../src/crown/dashboard/static-server.mjs'
 import { requestRealBettingStart } from '../src/crown/betting/real-betting-runtime.mjs'
@@ -317,6 +318,33 @@ test('manual runtime cleanup API previews and applies only on explicit POST', as
   }, {}, { runtimeCleanup })
 })
 
+test('manual runtime cleanup API returns actionable stable errors', async (t) => {
+  let nextReason = 'watcher-active-unmanaged'
+  const runtimeCleanup = {
+    run() { throw new Error(nextReason) },
+  }
+  await withAppServer(t, async (baseUrl) => {
+    const unmanaged = await jsonFetch(`${baseUrl}/api/app/runtime-cache-cleanup`, { method: 'POST', body: '{}' })
+    assert.equal(unmanaged.response.status, 409)
+    assert.deepEqual(unmanaged.payload, { error: 'runtime-cleanup-watcher-unmanaged' })
+
+    nextReason = 'watcher-restart-unhealthy'
+    const unhealthy = await jsonFetch(`${baseUrl}/api/app/runtime-cache-cleanup`, { method: 'POST', body: '{}' })
+    assert.equal(unhealthy.response.status, 503)
+    assert.deepEqual(unhealthy.payload, { error: 'runtime-cleanup-watcher-restart-unhealthy' })
+
+    nextReason = 'watcher-stop-unsafe'
+    const watcherStop = await jsonFetch(`${baseUrl}/api/app/runtime-cache-cleanup`, { method: 'POST', body: '{}' })
+    assert.equal(watcherStop.response.status, 409)
+    assert.deepEqual(watcherStop.payload, { error: 'runtime-cleanup-watcher-stop-unsafe' })
+
+    nextReason = 'betting-worker-stop-unsafe'
+    const bettingStop = await jsonFetch(`${baseUrl}/api/app/runtime-cache-cleanup`, { method: 'POST', body: '{}' })
+    assert.equal(bettingStop.response.status, 409)
+    assert.deepEqual(bettingStop.payload, { error: 'runtime-cleanup-betting-stop-unsafe' })
+  }, {}, { runtimeCleanup })
+})
+
 test('bootstrap exposes canonical templates through sanitized auto-bet DTOs', async () => {
   const dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'crown-canonical-bootstrap-')), 'crown.sqlite')
   const response = await directAppApi({ dbPath, method: 'GET', pathname: '/api/app/auto-bet-rules' })
@@ -583,6 +611,74 @@ test('manual-login API routes inherit security guards, reject payload fields, st
     monitorProcess,
     humanLoginController,
   })
+})
+
+test('betting manual-login routes require a fully stopped worker, use the betting controller, and never stop or start it', async (t) => {
+  let stopped = false
+  let profileReleased = true
+  let starts = 0
+  let stops = 0
+  const calls = []
+  const status = (state = 'awaiting-user', errorCode = '') => ({
+    challengeId: 'betting-challenge-safe', accountId: 'bet_owner', status: state, errorCode, expiresAt: 61_000,
+  })
+  const bettingHumanLoginController = {
+    async openManualLogin(input) {
+      calls.push({ type: 'open', ...input })
+      if (!profileReleased) throw Object.assign(new Error('manual-login-busy'), { code: 'manual-login-busy' })
+      return status()
+    },
+    getManualLoginStatus(input) { calls.push({ type: 'status', ...input }); return status() },
+    async confirmManualLogin(input) { calls.push({ type: 'confirm', ...input }); return status('verified') },
+    async cancelManualLogin(input) { calls.push({ type: 'cancel', ...input }); return status('failed', 'manual-login-cancelled') },
+  }
+  const bettingProcess = {
+    isStopped: () => stopped,
+    isRunning: () => !stopped,
+    start() { starts += 1 },
+    stop() { stops += 1 },
+  }
+  await withAppServer(t, async (baseUrl) => {
+    const blocked = await jsonFetch(`${baseUrl}/api/app/betting-accounts/bet_owner/manual-login/open`, {
+      method: 'POST', body: '{}',
+    })
+    assert.equal(blocked.response.status, 409)
+    assert.equal(blocked.payload.error, 'manual-login-betting-worker-active')
+    assert.equal(calls.length, 0)
+
+    stopped = true
+    profileReleased = false
+    const leaseBlocked = await jsonFetch(`${baseUrl}/api/app/betting-accounts/bet_owner/manual-login/open`, {
+      method: 'POST', body: '{}',
+    })
+    assert.equal(leaseBlocked.response.status, 409)
+    assert.equal(leaseBlocked.payload.error, 'manual-login-busy')
+
+    profileReleased = true
+    const opened = await jsonFetch(`${baseUrl}/api/app/betting-accounts/bet_owner/manual-login/open`, {
+      method: 'POST', body: '{}',
+    })
+    assert.equal(opened.response.status, 200)
+    assert.deepEqual(Object.keys(opened.payload.item).sort(), ['accountId', 'challengeId', 'errorCode', 'expiresAt', 'status'].sort())
+    const read = await jsonFetch(`${baseUrl}/api/app/betting-accounts/bet_owner/manual-login/betting-challenge-safe`)
+    assert.equal(read.response.status, 200)
+    const confirmed = await jsonFetch(`${baseUrl}/api/app/betting-accounts/bet_owner/manual-login/betting-challenge-safe/confirm`, {
+      method: 'POST', body: '{}',
+    })
+    assert.equal(confirmed.payload.item.status, 'verified')
+    const cancelled = await jsonFetch(`${baseUrl}/api/app/betting-accounts/bet_owner/manual-login/betting-challenge-safe/cancel`, {
+      method: 'POST', body: '{}',
+    })
+    assert.equal(cancelled.payload.item.errorCode, 'manual-login-cancelled')
+
+    const payloadRejected = await jsonFetch(`${baseUrl}/api/app/betting-accounts/bet_owner/manual-login/open`, {
+      method: 'POST', body: JSON.stringify({ profilePath: 'C:\\private-profile', uid: 'private-uid' }),
+    })
+    assert.equal(payloadRejected.response.status, 400)
+    assert.equal(starts, 0)
+    assert.equal(stops, 0)
+    assert.deepEqual(calls.map((call) => call.type), ['open', 'open', 'status', 'confirm', 'cancel'])
+  }, {}, { bettingHumanLoginController, bettingProcess })
 })
 
 test('monitor account API rejects default-scheme and path-truncating URLs', async (t) => {
@@ -1133,6 +1229,47 @@ test('app API exposes masked decimal-string batch and child projections', async 
   }, {}, { prepareDatabase: seedBatchProjection })
 })
 
+test('app API exposes only authorized bet target history through stable cursor filters', async (t) => {
+  await withAppServer(t, async (baseUrl) => {
+    const result = await jsonFetch(`${baseUrl}/api/app/bet-target-history?limit=1&status=completed&mode=prematch`)
+    assert.equal(result.response.status, 200)
+    assert.equal(result.payload.items.length, 1)
+    assert.equal(result.payload.items[0].match.homeTeam, '主队')
+    assert.equal(result.payload.items[0].direction.side, 'away')
+    assert.equal(result.payload.items[0].completedAmount, '50.00')
+    assert.equal(result.payload.items[0].averageAcceptedOdds, '0.88')
+    assert.equal(result.payload.nextCursor, null)
+    const serialized = JSON.stringify(result.payload)
+    for (const forbidden of ['batch-api', 'account-api', 'child-api', 'must-not-leak', 'providerReference', 'submitAttempt']) {
+      assert.equal(serialized.includes(forbidden), false, forbidden)
+    }
+
+    const invalid = await jsonFetch(`${baseUrl}/api/app/bet-target-history?status=not-a-status`)
+    assert.equal(invalid.response.status, 400)
+    assert.equal(invalid.payload.error, 'validation-error')
+  }, {}, {
+    prepareDatabase(db) {
+      seedBatchProjection(db)
+      db.prepare(`INSERT INTO execution_authorizations (
+        authorization_id,currency,amount_scale,max_total_amount_minor,hard_cap_amount_minor,
+        valid_from,expires_at,status,created_at,updated_at
+      ) VALUES ('auth-api','CNY',2,5000,5000,?,'2026-07-12T02:00:00.000Z','active',?,?)`)
+        .run('2026-07-11T02:00:00.000Z', '2026-07-11T02:00:00.000Z', '2026-07-11T02:00:00.000Z')
+      const locked = {
+        eventKey: 'crown|football|gid=api-history', period: 'full_time', marketType: 'asian_handicap',
+        side: 'away', handicapRaw: '-0.5', snapshot: {
+          mode: 'prematch', event: { leagueName: '英超', homeTeam: '主队', awayTeam: '客队' },
+          market: { period: 'full_time', marketType: 'asian_handicap', handicapRaw: '-0.5' },
+          selection: { side: 'away' },
+        },
+      }
+      db.prepare(`UPDATE bet_batches SET authorization_id='auth-api', locked_selection_identity=?,
+        rule_snapshot_json=?, source_league='英超' WHERE batch_id='batch-api'`)
+        .run(JSON.stringify(locked), JSON.stringify({ lockedSelection: locked }))
+    },
+  })
+})
+
 test('app API returns accepted-today account ledger statistics using injected Shanghai time', async (t) => {
   await withAppServer(t, async (baseUrl) => {
     const bootstrap = await jsonFetch(`${baseUrl}/api/app/bootstrap`)
@@ -1512,13 +1649,105 @@ test('real betting restart arms and stops the old worker before collecting fresh
   }, {}, {
     realBettingPreflight() { events.push('preflight'); return ready },
     bettingProcess: {
-      stop() { events.push('stop'); return { stopped: true } },
+      stop() { events.push('stop'); return { stopped: true, safe: true } },
       start() {
         events.push('start')
         return { running: true, readyTicket: { type: 'ready', leases: {} }, activate() { events.push('go') } }
       },
     },
   })
+})
+
+test('real betting start stops the worker and stays armed when GO delivery fails', async (t) => {
+  let stops = 0
+  const ready = Object.fromEntries([
+    'ruleCardsEnabled', 'bettingAccountAvailable', 'capabilityExact',
+    'schemaCurrent', 'fenceFresh', 'executorLeaseFresh',
+  ].map((field) => [field, true]))
+  await withAppServer(t, async (baseUrl) => {
+    const result = await jsonFetch(`${baseUrl}/api/app/real-betting/start`, { method: 'POST', body: '{}' })
+    assert.notEqual(result.payload.item.state, 'running')
+    assert.equal(result.payload.item.reasonCode, 'fence-not-fresh')
+    assert.equal(stops, 2)
+  }, {}, {
+    realBettingPreflight: () => ready,
+    bettingProcess: {
+      stop() { stops += 1; return { stopped: true, safe: true } },
+      start() {
+        return {
+          running: true,
+          readyTicket: { type: 'ready', leases: {} },
+          async activate() { throw Object.assign(new Error('betting-worker-go-failed'), { code: 'betting-worker-go-failed' }) },
+        }
+      },
+    },
+  })
+})
+
+test('real betting start never spawns when the existing worker did not stop safely', async (t) => {
+  let starts = 0
+  let activations = 0
+  const stopOptions = []
+  const ready = Object.fromEntries([
+    'ruleCardsEnabled', 'bettingAccountAvailable', 'capabilityExact',
+    'schemaCurrent', 'fenceFresh', 'executorLeaseFresh',
+  ].map((field) => [field, true]))
+  await withAppServer(t, async (baseUrl) => {
+    const result = await jsonFetch(`${baseUrl}/api/app/real-betting/start`, { method: 'POST', body: '{}' })
+    assert.equal(result.payload.item.state, 'armed_waiting')
+    assert.equal(result.payload.item.reasonCode, 'fence-not-fresh')
+    assert.equal(starts, 0)
+    assert.equal(activations, 0)
+  }, {}, {
+    realBettingPreflight: () => ready,
+    bettingProcess: {
+      stop(options) { stopOptions.push(options); return { stopped: true, safe: false, ok: false } },
+      start() {
+        starts += 1
+        return { readyTicket: { type: 'ready', leases: {} }, activate() { activations += 1 } }
+      },
+    },
+  })
+  assert.deepEqual(stopOptions, [undefined])
+})
+
+test('real betting start stays fail-closed while manual login owns the account boundary', async (t) => {
+  const status = (state) => ({
+    challengeId: 'challenge-betting-gate', accountId: 'mon_A', status: state,
+    errorCode: state === 'failed' ? 'manual-login-cancelled' : '', expiresAt: 61_000,
+  })
+  const humanLoginController = new CrownHumanLoginController({
+    bridge: {
+      async openManualLogin() { return status('awaiting-user') },
+      getManualLoginStatus() { return status('awaiting-user') },
+      async confirmManualLogin() { return status('verified') },
+      async cancelManualLogin() { return status('failed') },
+    },
+    loadAccount: async () => ({ id: 'mon_A', username: 'owner', loginUrl: 'https://crown.example.com' }),
+  })
+  const opened = await humanLoginController.openManualLogin({ accountId: 'mon_A' })
+  t.after(() => humanLoginController.shutdown())
+  const ready = Object.fromEntries([
+    'ruleCardsEnabled', 'bettingAccountAvailable', 'capabilityExact',
+    'schemaCurrent', 'fenceFresh', 'executorLeaseFresh',
+  ].map((field) => [field, true]))
+  let starts = 0
+
+  await withAppServer(t, async (baseUrl) => {
+    const result = await jsonFetch(`${baseUrl}/api/app/real-betting/start`, { method: 'POST', body: '{}' })
+    assert.equal(result.payload.item.requested, true)
+    assert.equal(result.payload.item.state, 'armed_waiting')
+    assert.equal(starts, 0)
+  }, {}, {
+    bettingHumanLoginController: humanLoginController,
+    realBettingPreflight: () => ready,
+    bettingProcess: {
+      stop() { return { stopped: false, safe: true } },
+      start() { starts += 1; return { readyTicket: { type: 'ready', leases: {} } } },
+    },
+  })
+
+  await humanLoginController.cancelManualLogin({ accountId: 'mon_A', challengeId: opened.challengeId })
 })
 
 test('real betting start spawns after static preflight and commits only after ready-ticket fence preflight', async (t) => {
@@ -1543,7 +1772,7 @@ test('real betting start spawns after static preflight and commits only after re
       }
     },
     bettingProcess: {
-      stop() { events.push('stop'); return { stopped: true } },
+      stop() { events.push('stop'); return { stopped: true, safe: true } },
       start() {
         events.push('start')
         return {
@@ -1559,6 +1788,7 @@ test('real betting start spawns after static preflight and commits only after re
 test('real betting start stops a ready worker when post-ready full preflight still fails', async (t) => {
   let starts = 0
   let stops = 0
+  const stopOptions = []
   let activations = 0
   await withAppServer(t, async (baseUrl) => {
     const result = await jsonFetch(`${baseUrl}/api/app/real-betting/start`, { method: 'POST', body: '{}' })
@@ -1579,7 +1809,7 @@ test('real betting start stops a ready worker when post-ready full preflight sti
       }
     },
     bettingProcess: {
-      stop() { stops += 1; return { stopped: true } },
+      stop(options) { stops += 1; stopOptions.push(options); return { stopped: true, safe: true } },
       start() {
         starts += 1
         return {
@@ -1590,10 +1820,12 @@ test('real betting start stops a ready worker when post-ready full preflight sti
       },
     },
   })
+  assert.deepEqual(stopOptions, [undefined, { startReconciliation: true }])
 })
 
 test('real betting start never commits running when the worker returns no ready ticket', async (t) => {
   let stops = 0
+  const stopOptions = []
   let activations = 0
   const ready = Object.fromEntries([
     'ruleCardsEnabled', 'bettingAccountAvailable', 'capabilityExact',
@@ -1607,15 +1839,17 @@ test('real betting start never commits running when the worker returns no ready 
   }, {}, {
     realBettingPreflight: () => ready,
     bettingProcess: {
-      stop() { stops += 1; return { stopped: true } },
+      stop(options) { stops += 1; stopOptions.push(options); return { stopped: true, safe: true } },
       start() { return { running: true, activate() { activations += 1 } } },
     },
   })
+  assert.deepEqual(stopOptions, [undefined, { startReconciliation: true }])
 })
 
 test('concurrent stop cancels an in-flight ready handshake before runtime can commit running', async (t) => {
   let rejectStart
   let stopCalls = 0
+  const stopOptions = []
   const ready = Object.fromEntries([
     'ruleCardsEnabled', 'bettingAccountAvailable', 'capabilityExact',
     'schemaCurrent', 'fenceFresh', 'executorLeaseFresh',
@@ -1634,13 +1868,15 @@ test('concurrent stop cancels an in-flight ready handshake before runtime can co
     realBettingPreflight: () => ready,
     bettingProcess: {
       start: () => new Promise((_resolve, reject) => { rejectStart = reject }),
-      async stop() { stopCalls += 1; return { stopped: stopCalls > 1 } },
+      async stop(options) { stopCalls += 1; stopOptions.push(options); return { stopped: stopCalls > 1, safe: true } },
     },
   })
+  assert.equal(stopOptions.some((options) => options?.startReconciliation === true), true)
 })
 
 test('production collector keeps capability-zero start armed and never spawns a worker', async (t) => {
   let starts = 0
+  const stopOptions = []
   await withAppServer(t, async (baseUrl) => {
     const result = await jsonFetch(`${baseUrl}/api/app/real-betting/start`, { method: 'POST', body: '{}' })
     assert.equal(result.payload.item.state, 'armed_waiting')
@@ -1648,11 +1884,16 @@ test('production collector keeps capability-zero start armed and never spawns a 
     assert.equal(starts, 0)
   }, {
     CROWN_REAL_CURRENCY: 'CNY', CROWN_REAL_AMOUNT_SCALE: '0', CROWN_REAL_MAX_TOTAL_MINOR: '100',
-  }, { bettingProcess: { async stop() { return { stopped: false } }, async start() { starts += 1 } } })
+  }, { bettingProcess: {
+    async stop(options) { stopOptions.push(options); return { stopped: false, safe: true } },
+    async start() { starts += 1 },
+  } })
+  assert.deepEqual(stopOptions, [undefined, { startReconciliation: true }])
 })
 
 test('production status refresh blocks stale persisted running and stops its worker', async (t) => {
   let stops = 0
+  let stopOptions
   await withAppServer(t, async (baseUrl) => {
     const result = await jsonFetch(`${baseUrl}/api/app/real-betting-status`)
     assert.equal(result.payload.item.requested, true)
@@ -1666,6 +1907,7 @@ test('production status refresh blocks stale persisted running and stops its wor
       'ruleCardsEnabled', 'bettingAccountAvailable', 'capabilityExact',
       'schemaCurrent', 'fenceFresh', 'executorLeaseFresh',
     ].map((field) => [field, true]))) },
-    bettingProcess: { async stop() { stops += 1; return { stopped: true } } },
+    bettingProcess: { async stop(options) { stops += 1; stopOptions = options; return { stopped: true, safe: true } } },
   })
+  assert.deepEqual(stopOptions, { startReconciliation: true })
 })

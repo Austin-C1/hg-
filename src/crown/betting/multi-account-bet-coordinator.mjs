@@ -463,6 +463,7 @@ export class MultiAccountBetCoordinator {
 
   recover(fencingToken = this._fence()) {
     this.lease.assertFence(fencingToken)
+    this.b2Executor?.recoverAcceptance?.()
     return this.store.recover({ fencingToken, at: this.now() })
   }
 
@@ -642,21 +643,26 @@ export class MultiAccountBetCoordinator {
       if (!oddsInFrozenRange(batch, previewOdds)) return []
       const minStakeMinor = safeMinor(preview.minStakeMinor)
       const maxStakeMinor = safeMinor(preview.maxStakeMinor)
-      const stakeStepMinor = safeMinor(preview.stakeStepMinor)
+      const minimumOnly = preview.stakeStepMinor === null
+      const stakeStepMinor = minimumOnly ? 0 : safeMinor(preview.stakeStepMinor)
       const previewBalance = preview.balanceMinor === undefined ? account.balance_minor : safeMinor(preview.balanceMinor)
-      if (minStakeMinor === null || minStakeMinor === 0 || maxStakeMinor === null || stakeStepMinor === null || stakeStepMinor === 0) return []
+      if (minStakeMinor === null || minStakeMinor === 0 || maxStakeMinor === null
+        || stakeStepMinor === null || (!minimumOnly && stakeStepMinor === 0)) return []
       if (previewBalance === null || previewBalance === undefined) return []
       const currency = preview.currency || account.currency
       const amountScale = preview.amountScale ?? account.amount_scale
       if (currency !== batch.currency || amountScale !== batch.amount_scale) return []
-      const capacityMinor = Math.min(
+      const availableMinor = Math.min(
         account.per_bet_limit_minor,
         maxStakeMinor,
         previewBalance,
         batch.unfilled_amount_minor,
       )
+      const capacityMinor = minimumOnly && availableMinor >= minStakeMinor
+        ? minStakeMinor
+        : availableMinor
       if (capacityMinor < minStakeMinor
-        || (capacityMinor - minStakeMinor) % stakeStepMinor !== 0) return []
+        || (!minimumOnly && (capacityMinor - minStakeMinor) % stakeStepMinor !== 0)) return []
       return [{
         account,
         preview,
@@ -686,7 +692,7 @@ export class MultiAccountBetCoordinator {
     return []
   }
 
-  async _submitChild(child, lockedSelection, fencingToken, mode = 'simulated') {
+  async _submitChild(child, lockedSelection, fencingToken, mode = 'simulated', acceptance = null) {
     if (mode === 'real') this.realExecutionGate(this.db)
     this._fence()
     if (mode === 'real') {
@@ -724,6 +730,10 @@ export class MultiAccountBetCoordinator {
           },
           lockedSelection,
           hasFutureCapacity: true,
+          ...(acceptance ? {
+            acceptanceClaim: acceptance.candidateClaim,
+            acceptanceInitialPreview: acceptance.initialPreview,
+          } : {}),
         })
       } catch (error) {
         const code = String(error?.code || error?.message || '')
@@ -736,6 +746,7 @@ export class MultiAccountBetCoordinator {
       return {
         accountId: child.accountId,
         status: outcome?.child?.status || outcome?.status || 'unknown',
+        ...(outcome?.reason ? { reason: outcome.reason, retryable: outcome.retryable === true } : {}),
       }
     }
     this.store.prepareSubmit(child.childOrderId, {
@@ -785,6 +796,91 @@ export class MultiAccountBetCoordinator {
       hasFutureCapacity: true,
     })
     return { accountId: child.accountId, status }
+  }
+
+  async executeAcceptanceCandidate({ direction, caseVersion, candidateClaim, candidate } = {}) {
+    if (!candidateClaim || !direction || !Number.isSafeInteger(caseVersion)) {
+      throw new TypeError('acceptance-candidate-contract')
+    }
+    const lockedSelection = candidate?.lockedSelection || candidate
+    const fencingToken = this._fence()
+    this.realExecutionGate(this.db)
+    const account = this._accounts({ currency: 'CNY', amount_scale: 0 }, new Set())[0]
+    if (!account) return { status: 'waiting_account' }
+    const preview = await this.provider.preview({
+      accountId: account.id,
+      batchId: `acceptance-preview-${direction.id}-${caseVersion}`,
+      lockedSelection,
+      acceptanceClaim: candidateClaim,
+    })
+    if (preview?.ok !== true || !Number.isSafeInteger(preview.minStakeMinor) || preview.minStakeMinor < 1
+      || !preview.acceptanceRawPreview) return { status: 'waiting_preview' }
+    const signalId = `crown-acceptance:${direction.id}:v${caseVersion}`
+    const at = this.now()
+    this.db.prepare(`INSERT OR IGNORE INTO monitor_signals (
+      signal_id,signal_key,strategy_id,strategy_version,status,observed_at,expires_at,payload_json
+    ) VALUES (?,?,?,1,'accepted',?,?,?)`).run(
+      signalId, signalId, 'crown-browser-acceptance', at, at, '{}',
+    )
+    const settingsSnapshot = {
+      mode: direction.mode,
+      version: caseVersion,
+      enabled: false,
+      targetOddsMin: String(preview.odds),
+      targetOddsMax: String(preview.odds),
+      targetAmountMinor: preview.minStakeMinor,
+      currency: 'CNY',
+      amountScale: 0,
+      acceptanceOnly: true,
+    }
+    const created = this.store.createModeScopedBatchWithReservations({
+      signalId,
+      bettingMode: direction.mode,
+      settingsVersion: caseVersion,
+      settingsSnapshot,
+      eventKey: lockedSelection.eventKey,
+      lockedSelectionIdentity: JSON.stringify(lockedSelection),
+      sourceLeague: 'crown-browser-acceptance',
+      sourceOdds: String(preview.odds),
+      observedAt: at,
+      currency: 'CNY',
+      amountScale: 0,
+      targetAmountMinor: preview.minStakeMinor,
+      createdAt: at,
+    }, [{
+      accountId: account.id,
+      amountMinor: preview.minStakeMinor,
+      previewMinStakeMinor: preview.minStakeMinor,
+      previewMaxStakeMinor: preview.maxStakeMinor,
+      previewBalanceMinor: preview.balanceMinor,
+      previewStakeStepMinor: preview.stakeStepMinor ?? 0,
+      previewOdds: String(preview.odds),
+    }], {
+      fencingToken,
+      requireRealRuntime: true,
+      realLeaseEvidence: this._realLeaseEvidence('real'),
+    })
+    const reservedChild = created.children[0]
+    if (!reservedChild) throw new Error('acceptance-child-not-created')
+    const child = {
+      ...reservedChild,
+      ruleId: null,
+      cardId: null,
+      bettingMode: direction.mode,
+      settingsVersion: caseVersion,
+    }
+    const outcome = await this._submitChild(child, lockedSelection, fencingToken, 'real', {
+      candidateClaim,
+      initialPreview: preview.acceptanceRawPreview,
+    })
+    if (outcome.status === 'pre-dispatch-cancelled') {
+      this.store.cancelUnsubmitted(created.batch.batchId, {
+        finishReason: outcome.reason === 'acceptance-preview-drift' ? 'market_changed' : 'manual_cancel',
+        fencingToken,
+        at: this.now(),
+      })
+    }
+    return outcome
   }
 
   async runBatch(batchId, { mode = 'simulated' } = {}) {

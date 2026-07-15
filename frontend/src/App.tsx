@@ -13,6 +13,7 @@ const MonitorSettings = lazy(() => import('./pages/MonitorSettings'))
 const AutoBetRules = lazy(() => import('./pages/AutoBetRules'))
 const BettingAccounts = lazy(() => import('./pages/BettingAccounts'))
 const OperationsConsole = lazy(() => import('./pages/OperationsConsole'))
+const BettingHistory = lazy(() => import('./pages/BettingHistory'))
 const Settings = lazy(() => import('./pages/Settings'))
 
 function DashboardSessionControl() {
@@ -125,6 +126,7 @@ export default function App() {
             <Route path="/auto-bet-rules" element={<Navigate to="/betting-rules" replace />} />
             <Route path="/betting-accounts" element={<Suspense fallback={<Spin />}><BettingAccounts /></Suspense>} />
             <Route path="/operations" element={<Suspense fallback={<Spin />}><OperationsConsole /></Suspense>} />
+            <Route path="/betting-history" element={<Suspense fallback={<Spin />}><BettingHistory /></Suspense>} />
             <Route path="/settings" element={<Suspense fallback={<Spin />}><Settings /></Suspense>} />
             <Route path="*" element={<Navigate to="/matches" replace />} />
           </Route>

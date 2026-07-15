@@ -17,7 +17,11 @@ import {
 import { formatMinor, normalizeCurrency, parseDecimalToMinor } from '../betting/money.mjs'
 import { decryptSecret, encryptSecret, redactSecretFields } from './app-secret.mjs'
 import { inspectWatcherLease } from './watcher-lease-status.mjs'
-import { realBettingStatusCoreDto } from './real-betting-dto.mjs'
+import { browserBettingDto, realBettingStatusCoreDto } from './real-betting-dto.mjs'
+import {
+  CROWN_CAPABILITY_MATRIX_VERSION,
+  listCrownCapabilities,
+} from '../betting/crown-capability-matrix.mjs'
 import {
   monitorAlertSettingFromRow,
   monitorAlertSettingsSummary,
@@ -526,6 +530,158 @@ function boundedLimit(value, { fallback = 50, max = 100 } = {}) {
   const number = Number(value)
   if (!Number.isSafeInteger(number) || number < 1) return fallback
   return Math.min(number, max)
+}
+
+const BET_TARGET_HISTORY_STATUSES = new Set(['all', 'active', 'completed', 'partial', 'failed', 'waiting_result'])
+const BET_TARGET_HISTORY_MODES = new Set(['all', 'prematch', 'live'])
+const UNAVAILABLE_HISTORY_TEXT = '历史信息不可用'
+
+function safeJsonObject(value) {
+  try {
+    const parsed = JSON.parse(String(value || ''))
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function historyCursor(row) {
+  return Buffer.from(JSON.stringify([row.created_at, row.batch_id]), 'utf8').toString('base64url')
+}
+
+function parseHistoryCursor(value) {
+  if (!value) return null
+  try {
+    const parsed = JSON.parse(Buffer.from(String(value), 'base64url').toString('utf8'))
+    if (!Array.isArray(parsed) || parsed.length !== 2
+      || typeof parsed[0] !== 'string' || typeof parsed[1] !== 'string'
+      || !parsed[0] || !parsed[1]) throw new Error('cursor')
+    return { createdAt: parsed[0], batchId: parsed[1] }
+  } catch {
+    throw new ValidationError('validation-error', { cursor: 'invalid cursor' })
+  }
+}
+
+function lockedHistorySelection(row) {
+  const direct = safeJsonObject(row.locked_selection_identity)
+  if (direct) return direct
+  const legacy = safeJsonObject(row.rule_snapshot_json)
+  return legacy && safeJsonObject(JSON.stringify(legacy.lockedSelection))
+}
+
+function historyText(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : UNAVAILABLE_HISTORY_TEXT
+}
+
+function historySnapshot(row) {
+  const locked = lockedHistorySelection(row)
+  if (!locked) return null
+  const snapshot = locked.snapshot && typeof locked.snapshot === 'object' && !Array.isArray(locked.snapshot)
+    ? locked.snapshot
+    : {}
+  const event = snapshot.event && typeof snapshot.event === 'object' && !Array.isArray(snapshot.event)
+    ? snapshot.event
+    : {}
+  const market = snapshot.market && typeof snapshot.market === 'object' && !Array.isArray(snapshot.market)
+    ? snapshot.market
+    : {}
+  const selection = snapshot.selection && typeof snapshot.selection === 'object' && !Array.isArray(snapshot.selection)
+    ? snapshot.selection
+    : {}
+  const signal = safeJsonObject(row.signal_payload_json)
+  const evidence = signal?.evidence && typeof signal.evidence === 'object' && !Array.isArray(signal.evidence)
+    ? signal.evidence
+    : {}
+  const period = locked.period || market.period || evidence.period
+  const marketType = locked.marketType || market.marketType || evidence.marketType
+  const side = locked.side || selection.side
+  const handicapRaw = locked.handicapRaw || market.handicapRaw || evidence.handicapRaw
+  if (![period, marketType, side, handicapRaw].every((value) => typeof value === 'string' && value.trim())) return null
+  return {
+    match: {
+      leagueName: historyText(event.leagueName || event.league || evidence.leagueName || evidence.league || row.source_league),
+      homeTeam: historyText(event.homeTeam || evidence.homeTeam),
+      awayTeam: historyText(event.awayTeam || evidence.awayTeam),
+    },
+    direction: {
+      mode: historyText(row.betting_mode || snapshot.mode || evidence.mode),
+      period: historyText(period),
+      marketType: historyText(marketType),
+      side: historyText(side),
+      handicapRaw: historyText(handicapRaw),
+    },
+  }
+}
+
+function decimalOdds(value) {
+  const match = /^(\d+)(?:\.(\d{1,12}))?$/.exec(String(value || '').trim())
+  if (!match) return null
+  const fraction = match[2] || ''
+  return { minor: BigInt(`${match[1]}${fraction}`), scale: fraction.length }
+}
+
+function decimalFromScaled(value, scale) {
+  const negative = value < 0n
+  const digits = (negative ? -value : value).toString().padStart(scale + 1, '0')
+  const text = scale
+    ? `${digits.slice(0, -scale)}.${digits.slice(-scale)}`.replace(/\.?0+$/, '')
+    : digits
+  return negative ? `-${text}` : text
+}
+
+function formatHistoryMinor(value, scale) {
+  const digits = value.toString().padStart(scale + 1, '0')
+  return scale ? `${digits.slice(0, -scale)}.${digits.slice(-scale)}` : digits
+}
+
+function acceptedHistorySummary(children, amountScale) {
+  const acceptedBetCount = children.length
+  const completedMinor = children.reduce((sum, row) => sum + BigInt(row.requested_amount_minor), 0n)
+  const odds = children.map((row) => decimalOdds(row.preview_odds))
+  let averageAcceptedOdds = null
+  if (children.length > 0 && odds.every(Boolean)) {
+    const oddsScale = Math.max(...odds.map((item) => item.scale))
+    const weighted = children.reduce((sum, row, index) => {
+      const item = odds[index]
+      return sum + BigInt(row.requested_amount_minor) * item.minor * (10n ** BigInt(oddsScale - item.scale))
+    }, 0n)
+    const total = completedMinor
+    if (total > 0n) averageAcceptedOdds = decimalFromScaled((weighted + total / 2n) / total, oddsScale)
+  }
+  return {
+    acceptedBetCount,
+    averageAcceptedOdds,
+    completedAmount: formatHistoryMinor(completedMinor, amountScale),
+  }
+}
+
+function mapBetTargetHistory(row, children) {
+  const immutable = historySnapshot(row) || {
+    match: {
+      leagueName: UNAVAILABLE_HISTORY_TEXT,
+      homeTeam: UNAVAILABLE_HISTORY_TEXT,
+      awayTeam: UNAVAILABLE_HISTORY_TEXT,
+    },
+    direction: {
+      mode: historyText(row.betting_mode),
+      period: UNAVAILABLE_HISTORY_TEXT,
+      marketType: UNAVAILABLE_HISTORY_TEXT,
+      side: UNAVAILABLE_HISTORY_TEXT,
+      handicapRaw: UNAVAILABLE_HISTORY_TEXT,
+    },
+  }
+  return {
+    historyKey: crypto.createHash('sha256').update(row.batch_id, 'utf8').digest('hex'),
+    createdAt: row.created_at,
+    finishedAt: row.finished_at || null,
+    ...immutable,
+    status: row.status,
+    finishReason: row.finish_reason,
+    ...acceptedHistorySummary(children, row.amount_scale),
+    targetAmount: formatMinor(row.target_amount_minor, { scale: row.amount_scale }),
+    unknownAmount: formatMinor(row.unknown_amount_minor, { scale: row.amount_scale }),
+    currency: row.currency,
+  }
 }
 
 function mapBettingHistory(row) {
@@ -1081,6 +1237,20 @@ export function createAppRepository(db, {
         accountId: row.id,
         username: String(row.username || '').trim(),
         loginUrl: String(row.login_url || '').trim(),
+      }
+    },
+
+    getBettingAccountForManualLogin(accountId) {
+      const row = requiredRow(
+        db.prepare(`SELECT id, username, website_url
+          FROM betting_accounts WHERE id = ? AND archived = 0`).get(accountId),
+        'betting-account',
+      )
+      return {
+        id: row.id,
+        accountId: row.id,
+        username: String(row.username || '').trim(),
+        loginUrl: String(row.website_url || '').trim(),
       }
     },
 
@@ -1678,7 +1848,73 @@ export function createAppRepository(db, {
       `).all(boundedLimit(limit)).map(mapBetBatch)
     },
 
-    getOperationsSummary(monitorProcessStatus = null) {
+    listBetTargetHistory({ limit = 20, cursor = '', status = 'all', mode = 'all' } = {}) {
+      if (!BET_TARGET_HISTORY_STATUSES.has(status)) {
+        throw new ValidationError('validation-error', { status: 'unsupported status' })
+      }
+      if (!BET_TARGET_HISTORY_MODES.has(mode)) {
+        throw new ValidationError('validation-error', { mode: 'unsupported mode' })
+      }
+      const pageLimit = boundedLimit(limit, { fallback: 20, max: 50 })
+      const decodedCursor = parseHistoryCursor(cursor)
+      const where = [`(
+        batch.authorization_id IS NOT NULL
+        OR EXISTS (
+          SELECT 1
+          FROM bet_child_orders AS acceptance_child
+          INNER JOIN crown_browser_acceptance_cases AS acceptance
+            ON acceptance.child_order_id = acceptance_child.child_order_id
+          WHERE acceptance_child.batch_id = batch.batch_id
+            AND acceptance.dispatch_count = 1
+        )
+      )`]
+      const params = []
+      if (status === 'active') where.push("batch.status IN ('queued','allocating','waiting_capacity','submitting')")
+      else if (status === 'failed') where.push("batch.status IN ('failed','cancelled')")
+      else if (status !== 'all') {
+        where.push('batch.status = ?')
+        params.push(status)
+      }
+      if (mode !== 'all') {
+        where.push(`COALESCE(
+          batch.betting_mode,
+          CASE WHEN json_valid(batch.locked_selection_identity) THEN json_extract(batch.locked_selection_identity,'$.snapshot.mode') END,
+          CASE WHEN json_valid(batch.rule_snapshot_json) THEN json_extract(batch.rule_snapshot_json,'$.lockedSelection.snapshot.mode') END,
+          CASE WHEN json_valid(signal.payload_json) THEN json_extract(signal.payload_json,'$.evidence.mode') END
+        ) = ?`)
+        params.push(mode)
+      }
+      if (decodedCursor) {
+        where.push('(batch.created_at < ? OR (batch.created_at = ? AND batch.batch_id < ?))')
+        params.push(decodedCursor.createdAt, decodedCursor.createdAt, decodedCursor.batchId)
+      }
+      const rows = db.prepare(`
+        SELECT batch.*, signal.payload_json AS signal_payload_json
+        FROM bet_batches AS batch
+        LEFT JOIN monitor_signals AS signal ON signal.signal_id = batch.signal_id
+        WHERE ${where.join(' AND ')}
+        ORDER BY batch.created_at DESC, batch.batch_id DESC
+        LIMIT ?
+      `).all(...params, pageLimit + 1)
+      const pageRows = rows.slice(0, pageLimit)
+      const childrenByBatch = new Map(pageRows.map((row) => [row.batch_id, []]))
+      if (pageRows.length > 0) {
+        const placeholders = pageRows.map(() => '?').join(',')
+        const children = db.prepare(`
+          SELECT batch_id, requested_amount_minor, preview_odds
+          FROM bet_child_orders
+          WHERE status = 'accepted' AND batch_id IN (${placeholders})
+          ORDER BY batch_id, child_order_id
+        `).all(...pageRows.map((row) => row.batch_id))
+        for (const child of children) childrenByBatch.get(child.batch_id)?.push(child)
+      }
+      return {
+        items: pageRows.map((row) => mapBetTargetHistory(row, childrenByBatch.get(row.batch_id) || [])),
+        nextCursor: rows.length > pageLimit ? historyCursor(pageRows.at(-1)) : null,
+      }
+    },
+
+    getOperationsSummary(monitorProcessStatus = null, browserProcessStatus = null) {
       const serverTime = currentIso()
       const nowMs = Date.parse(serverTime)
       const staleAfterMs = 60_000
@@ -1833,6 +2069,76 @@ export function createAppRepository(db, {
         createdAt: row.created_at,
       }))
 
+      const generation = Number.isSafeInteger(browserProcessStatus?.generation)
+        && browserProcessStatus.generation >= 0
+        ? browserProcessStatus.generation
+        : 0
+      const safeTimestamp = (value) => {
+        if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) return null
+        return new Date(value).toISOString() === value ? value : null
+      }
+      const processAccounts = new Map((Array.isArray(browserProcessStatus?.accounts)
+        ? browserProcessStatus.accounts
+        : []).map((item) => [String(item?.accountId || ''), item]))
+      const safeSessionStates = new Set(['starting', 'login_required', 'ready', 'stale', 'blocked', 'error'])
+      const browserSessions = db.prepare(`SELECT id FROM betting_accounts WHERE archived = 0 ORDER BY
+        CASE WHEN bet_order > 0 THEN 0 ELSE 1 END, bet_order, created_at, id`).all().map((row) => {
+        const processAccount = processAccounts.get(row.id)
+        const lastHeartbeatAt = safeTimestamp(processAccount?.lastHeartbeatAt)
+        const state = safeSessionStates.has(processAccount?.state) ? processAccount.state : 'stopped'
+        return {
+          accountId: row.id,
+          state,
+          lastHeartbeatAt,
+          sessionGeneration: generation,
+          lastApiSuccessAt: safeTimestamp(processAccount?.lastApiSuccessAt),
+        }
+      })
+      const campaignRow = db.prepare(`SELECT campaign_id,status FROM crown_browser_acceptance_campaigns
+        ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, updated_at DESC, campaign_id DESC LIMIT 1`).get()
+      const latestCampaignCases = campaignRow ? db.prepare(`SELECT current.direction_id,current.state,
+          current.mode,current.period,current.market_type,current.line_variant,current.selection_side,
+          current.authorized_min_minor,current.frozen_preview_json
+        FROM crown_browser_acceptance_cases AS current
+        WHERE current.campaign_id=? AND current.case_version=(
+          SELECT MAX(versioned.case_version) FROM crown_browser_acceptance_cases AS versioned
+          WHERE versioned.campaign_id=current.campaign_id AND versioned.direction_id=current.direction_id
+        ) ORDER BY current.ordinal`).all(campaignRow.campaign_id) : []
+      const acceptanceByDirection = new Map(latestCampaignCases.map((row) => [
+        [row.mode, row.period, row.market_type, row.line_variant, row.selection_side].join('|'),
+        row.state === 'pending' && row.frozen_preview_json !== '{}' ? 'previewing'
+          : row.state === 'cancelled' ? 'rejected' : row.state]))
+      const campaignCounts = campaignRow ? db.prepare(`SELECT
+          COUNT(DISTINCT CASE WHEN state='accepted' THEN direction_id END) AS accepted_count,
+          COUNT(DISTINCT CASE WHEN state='unknown' THEN direction_id END) AS unknown_count,
+          COALESCE(SUM(CASE WHEN state='accepted' THEN authorized_min_minor ELSE 0 END),0) AS accepted_minor
+        FROM crown_browser_acceptance_cases WHERE campaign_id=?`).get(campaignRow.campaign_id) : null
+      const directions = listCrownCapabilities().map((row) => ({
+        key: row.key,
+        previewAllowed: row.previewAllowed === true,
+        submitAllowed: row.submitAllowed === true,
+        reconciliationAllowed: row.reconciliationAllowed === true,
+        blockedReason: !row.previewAllowed ? row.blockedReason : '',
+        acceptanceState: acceptanceByDirection.get(row.key) || null,
+      }))
+      const campaign = campaignRow ? {
+        campaignId: campaignRow.campaign_id,
+        state: campaignRow.status === 'active' ? 'active'
+          : campaignRow.status === 'completed' ? 'completed' : 'failed',
+        acceptedCount: Number(campaignCounts.accepted_count || 0),
+        targetCount: directions.length,
+        unknownCount: Number(campaignCounts.unknown_count || 0),
+        totalAcceptedAmountMinor: Number(campaignCounts.accepted_minor || 0),
+        queueDepth: latestCampaignCases.filter((row) => row.state === 'pending').length,
+        inFlightCount: latestCampaignCases.filter((row) => row.state === 'dispatched').length,
+      } : null
+      const browserBetting = browserBettingDto({
+        protocolLibraryVersion: CROWN_CAPABILITY_MATRIX_VERSION,
+        sessions: browserSessions,
+        directions,
+        campaign,
+      })
+
       const freshnessState = ageMs === null ? 'missing' : (ageMs <= staleAfterMs ? 'fresh' : 'stale')
       const runtimeDto = realBettingStatusCoreDto({
         requested: Number(runtime.requested || 0) === 1,
@@ -1886,6 +2192,7 @@ export function createAppRepository(db, {
           ...(watcherProcessDto(monitorProcessStatus) ? { process: watcherProcessDto(monitorProcessStatus) } : {}),
         },
         runtime: runtimeDto,
+        browserBetting,
         monitorAlerts,
         ruleCards,
         readiness: {

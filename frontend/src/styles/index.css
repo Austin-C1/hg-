@@ -678,6 +678,7 @@ body {
 }
 .real-control-row strong { color: #101828; font-size: 14px; }
 .real-control-row p { margin: 3px 0 0; color: #667085; font-size: 12px; }
+.real-control-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 
 .risk-clear { display: flex; align-items: center; gap: 12px; padding-top: 14px; padding-bottom: 14px; }
 .risk-clear .freshness-dot { flex: 0 0 auto; box-shadow: 0 0 0 4px #ecfdf3; }
@@ -692,6 +693,89 @@ body {
 .maintenance-panel .section-header { align-items: flex-start; }
 .maintenance-panel .eyebrow { margin-bottom: 4px; color: #667085; font-size: 10px; font-weight: 700; letter-spacing: .12em; }
 .maintenance-panel .ant-alert { margin-top: 14px; }
+
+.browser-betting-panel,
+.rule-browser-support {
+  padding: 18px 20px;
+  overflow: hidden;
+  border: 1px solid #d0d5dd;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.browser-betting-heading,
+.browser-layer-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.browser-betting-heading h2,
+.browser-layer-heading h2,
+.browser-layer-heading h3 { margin: 0; color: #101828; font-size: 16px; }
+.browser-betting-heading .eyebrow { margin: 0 0 3px; color: #175cd3; font-size: 10px; font-weight: 700; letter-spacing: .1em; }
+.browser-layer-heading > span { color: #667085; font-size: 12px; font-weight: 650; }
+.browser-layer-heading p { margin: 3px 0 0; color: #667085; font-size: 12px; }
+
+.browser-execution-mode {
+  display: grid;
+  grid-template-columns: 110px minmax(160px, .6fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  margin-top: 14px;
+  padding: 11px 12px;
+  border: 1px solid #eaecf0;
+  border-radius: 8px;
+  background: #f9fafb;
+}
+.browser-execution-mode span,
+.browser-execution-mode small { color: #667085; font-size: 11px; }
+.browser-execution-mode strong { color: #344054; font-size: 13px; }
+.browser-execution-mode small { overflow-wrap: anywhere; }
+
+.browser-betting-layer { margin-top: 18px; padding-top: 16px; border-top: 1px solid #eaecf0; }
+.browser-direction-grid,
+.rule-browser-direction-list,
+.browser-session-list { margin: 12px 0 0; padding: 0; list-style: none; }
+.browser-direction-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.browser-direction-grid > li,
+.rule-browser-direction-list > li {
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid #eaecf0;
+  border-radius: 8px;
+  background: #fcfcfd;
+}
+.browser-direction-grid > li > strong,
+.rule-browser-direction-list > li > strong { display: block; color: #344054; font-size: 12px; overflow-wrap: anywhere; }
+.browser-direction-support { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.browser-direction-support .ant-tag { margin: 0; white-space: normal; font-size: 10px; line-height: 18px; }
+.browser-blocked-reason { display: block; margin-top: 8px; color: #b42318; font-size: 11px; overflow-wrap: anywhere; }
+.acceptance-state { display: block; margin-top: 8px; color: #475467; font-size: 11px; }
+.acceptance-state.state-unknown { color: #b42318; font-weight: 650; }
+.acceptance-state.state-accepted { color: #027a48; font-weight: 650; }
+
+.browser-session-list { display: grid; gap: 7px; }
+.browser-session-list > li { display: grid; grid-template-columns: minmax(130px, .45fr) minmax(0, 1fr); gap: 16px; padding: 10px 12px; border-radius: 7px; background: #f9fafb; }
+.browser-session-list > li > div:first-child { display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.browser-session-list strong { color: #344054; font-size: 12px; overflow-wrap: anywhere; }
+.browser-session-list span { color: #667085; font-size: 11px; }
+.browser-session-facts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px 16px; }
+.browser-empty-state { margin: 12px 0 0; color: #667085; font-size: 12px; }
+
+.browser-campaign { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px; margin-top: 12px; padding: 12px; border-left: 3px solid #1570ef; background: #f5f8ff; }
+.browser-campaign > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.browser-campaign strong { color: #101828; font-size: 13px; }
+.browser-campaign span { color: #475467; font-size: 11px; }
+.browser-campaign p { grid-column: 1 / -1; margin: 0; color: #175cd3; font-size: 11px; }
+.browser-campaign.state-failed { border-left-color: #d92d20; background: #fffbfa; }
+.browser-campaign.state-failed p { color: #b42318; font-weight: 650; }
+.browser-campaign.state-completed { border-left-color: #12b76a; background: #f6fef9; }
+.browser-campaign.state-completed p { color: #027a48; }
+
+.rule-browser-support { background: #fcfcfd; }
+.rule-browser-direction-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 
 @media (min-width: 768px) and (max-width: 1199px) {
   .compact-risk, .operations-row { grid-template-columns: minmax(0, 1fr); }
@@ -711,6 +795,9 @@ body {
     flex-wrap: wrap;
     justify-content: flex-end;
   }
+
+  .browser-direction-grid,
+  .rule-browser-direction-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
 }
 
@@ -734,6 +821,15 @@ body {
   .page-title {
     flex-direction: column;
   }
+
+  .browser-execution-mode,
+  .browser-session-list > li,
+  .browser-campaign { grid-template-columns: minmax(0, 1fr); }
+  .browser-session-facts { justify-content: flex-start; }
+  .browser-campaign p { grid-column: auto; }
+  .real-control-row { align-items: stretch; flex-direction: column; }
+  .real-control-actions { justify-content: stretch; }
+  .real-control-actions .ant-btn { min-height: 44px; }
 
   .filter-bar,
   .kpi-grid,
@@ -905,6 +1001,12 @@ body {
   .rule-card-form-grid,
   .rule-card-facts { grid-template-columns: minmax(0, 1fr); }
   .rule-card-actions .ant-btn { min-height: 44px; }
+  .browser-betting-panel,
+  .rule-browser-support { padding: 16px 12px; }
+  .browser-direction-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rule-browser-direction-list { grid-template-columns: minmax(0, 1fr); }
+  .browser-betting-panel .ant-btn,
+  .rule-browser-support .ant-btn { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

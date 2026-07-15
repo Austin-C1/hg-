@@ -253,6 +253,58 @@ test('stopAndWait reports a stable unsafe failure when forced termination cannot
   assert.equal(controller.isRunning(), true)
 })
 
+test('waitForHealthy confirms the managed watcher has acquired its exact lease', async () => {
+  const calls = []
+  const controller = createMonitorProcessController({
+    cwd: process.cwd(),
+    dbPath: 'storage/test.sqlite',
+    runtimeDir: 'data/runtime-test',
+    spawnCommand: fakeLongRunningSpawnFactory(calls),
+    isRestartLeaseAvailable: () => ({ available: false, retryAfterMs: 1_000, pid: 2000 }),
+  })
+  const started = controller.start()
+
+  const result = await controller.waitForHealthy({ timeoutMs: 20, pollMs: 1 })
+
+  assert.deepEqual(result, { healthy: true, pid: started.pid, leaseKey: started.leaseKey })
+})
+
+test('waitForHealthy rejects an exact lease held by a different process', async () => {
+  const calls = []
+  const controller = createMonitorProcessController({
+    cwd: process.cwd(),
+    dbPath: 'storage/test.sqlite',
+    runtimeDir: 'data/runtime-test',
+    spawnCommand: fakeLongRunningSpawnFactory(calls),
+    isRestartLeaseAvailable: () => ({ available: false, retryAfterMs: 1_000, pid: 9999 }),
+  })
+  controller.start()
+
+  await assert.rejects(
+    controller.waitForHealthy({ timeoutMs: 5, pollMs: 1 }),
+    /watcher-restart-unhealthy/,
+  )
+})
+
+test('waitForLeaseAvailable waits until the stopped watcher lease is released', async () => {
+  const calls = []
+  let checks = 0
+  const controller = createMonitorProcessController({
+    cwd: process.cwd(),
+    dbPath: 'storage/test.sqlite',
+    runtimeDir: 'data/runtime-test',
+    spawnCommand: fakeLongRunningSpawnFactory(calls),
+    isRestartLeaseAvailable: () => (++checks >= 2),
+  })
+  controller.start()
+  await controller.stopAndWait()
+
+  const result = await controller.waitForLeaseAvailable({ timeoutMs: 20, pollMs: 1 })
+
+  assert.equal(result.available, true)
+  assert.equal(checks, 2)
+})
+
 test('unexpected exits retain bounded sanitized diagnostics and recover after 2, 5, and 15 seconds only', () => {
   const harness = fakeRecoveryHarness()
   const controller = createMonitorProcessController({

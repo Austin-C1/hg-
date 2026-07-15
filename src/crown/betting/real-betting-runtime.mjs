@@ -11,7 +11,7 @@ const PREFLIGHT = Object.freeze([
 ])
 const STATIC_PREFLIGHT = Object.freeze(PREFLIGHT.slice(0, 4))
 
-export const REAL_BETTING_SCHEMA_CONTRACT_VERSION = 1
+export const REAL_BETTING_SCHEMA_CONTRACT_VERSION = 2
 
 function dbOf(database) {
   const db = database?.db || database
@@ -91,6 +91,22 @@ export function evaluatePureModePreflight({ settings, capabilities } = {}) {
   return { scopeExact, capabilityExact }
 }
 
+export function hasOpenBetReconciliation(database) {
+  const db = dbOf(database)
+  return Boolean(db.prepare(`
+    SELECT state.submit_attempt_id
+    FROM bet_reconciliation_state AS state
+    JOIN bet_submit_attempts AS attempt
+      ON attempt.submit_attempt_id=state.submit_attempt_id
+    JOIN bet_child_orders AS child
+      ON child.child_order_id=attempt.child_order_id
+    WHERE state.status IN ('pending','waiting')
+      AND attempt.status='unknown'
+      AND child.status='unknown'
+    LIMIT 1
+  `).get())
+}
+
 export function collectRealBettingPreflight(database, options = {}) {
   const db = dbOf(database)
   const nowMs = Date.parse(at(options))
@@ -104,6 +120,7 @@ export function collectRealBettingPreflight(database, options = {}) {
   const active = (row) => Boolean(row && Date.parse(row.expires_at) > nowMs)
   const executor = leaseFor(roleKeys?.executor)
   const worker = leaseFor(roleKeys?.worker)
+  const reconciler = leaseFor(roleKeys?.reconciler)
   const ticket = options.readyTicket
   const held = (role, row) => Boolean(active(row) && ticket?.leases?.[role]
     && ticket.leases[role].leaseKey === row.lease_key
@@ -141,7 +158,10 @@ export function collectRealBettingPreflight(database, options = {}) {
     runtime_leases: ['lease_key', 'owner_id', 'fencing_token', 'heartbeat_at', 'expires_at'],
     betting_accounts: ['status', 'archived', 'allocation_status', 'bet_order', 'currency', 'amount_scale'],
     auto_betting_rule_cards: ['enabled', 'migration_review_required', 'target_amount_minor', 'currency', 'amount_scale'],
-    bet_submit_attempts: ['capability_version', 'capability_evidence_id', 'fencing_token', 'status'],
+    bet_submit_attempts: [
+      'capability_version', 'capability_evidence_id', 'execution_candidate_digest',
+      'fencing_token', 'status',
+    ],
     betting_account_locks: ['account_id', 'child_order_id', 'batch_id', 'status', 'fencing_token'],
   }
   const schemaColumnsCurrent = Object.entries(requiredColumns).every(([table, columns]) => {
@@ -162,17 +182,18 @@ export function collectRealBettingPreflight(database, options = {}) {
   const schemaObjectsCurrent = requiredSchemaObjects.every((name) => schemaObjects.has(name))
   const postReady = Boolean(ticket)
   const distinctRoles = postReady
-    ? Boolean(held('worker', worker) && held('executor', executor)
-      && worker.lease_key !== executor.lease_key && worker.owner_id !== executor.owner_id)
-    : Boolean(roleKeys && roleKeys.worker !== roleKeys.executor)
+    ? Boolean(held('worker', worker) && held('executor', executor) && held('reconciler', reconciler)
+      && new Set([worker.lease_key, executor.lease_key, reconciler.lease_key]).size === 3
+      && new Set([worker.owner_id, executor.owner_id, reconciler.owner_id]).size === 3)
+    : Boolean(roleKeys && new Set([roleKeys.worker, roleKeys.executor, roleKeys.reconciler]).size === 3)
   const rolesReady = postReady
     ? distinctRoles
-    : acquirable(worker) && acquirable(executor) && distinctRoles
+    : acquirable(worker) && acquirable(executor) && acquirable(reconciler) && distinctRoles
   return {
     ruleCardsEnabled: cards.length > 0,
     bettingAccountAvailable: accounts.length > 0,
     capabilityExact: pure.capabilityExact,
-    schemaCurrent: REAL_BETTING_SCHEMA_CONTRACT_VERSION === 1 && requiredTables.every((table) => tables.has(table))
+    schemaCurrent: REAL_BETTING_SCHEMA_CONTRACT_VERSION === 2 && requiredTables.every((table) => tables.has(table))
       && schemaColumnsCurrent && schemaObjectsCurrent && foreignKeysEnabled && integrityCurrent,
     fenceFresh: rolesReady,
     executorLeaseFresh: postReady ? held('executor', executor) : acquirable(executor),

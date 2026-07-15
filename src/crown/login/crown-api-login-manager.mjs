@@ -39,12 +39,7 @@ function parseBettingOrigin(value, { allowlist = false } = {}) {
   }
 }
 
-function bettingOriginAllowlist(value) {
-  const entries = String(value || '').split(',').map((entry) => entry.trim()).filter(Boolean)
-  return new Set(entries.map((entry) => parseBettingOrigin(entry, { allowlist: true })))
-}
-
-function bettingAccount(account, allowedOriginValue, { allowConfiguredOrigin = false } = {}) {
+function bettingAccount(account) {
   const value = String(account?.accountId || account?.id || '').trim()
   if (!value) throw new CrownApiLoginError('failed_config', 'betting-account-id-required')
   if (value === 'mon_primary') throw new CrownApiLoginError('failed_config', 'betting-account-monitor-forbidden')
@@ -53,11 +48,7 @@ function bettingAccount(account, allowedOriginValue, { allowConfiguredOrigin = f
   }
   const username = String(account?.username || '').trim()
   if (!username) throw new CrownApiLoginError('failed_config', 'betting-account-username-required')
-  const allowedOrigins = bettingOriginAllowlist(allowedOriginValue)
   const loginUrl = parseBettingOrigin(account?.loginUrl || account?.websiteUrl)
-  if (!allowedOrigins.has(loginUrl) && !(allowConfiguredOrigin && allowedOrigins.size === 0)) {
-    throw new CrownApiLoginError('failed_config', 'betting-origin-not-allowed')
-  }
   return { ...account, id: value, accountId: value, username, loginUrl }
 }
 
@@ -424,7 +415,7 @@ export class CrownApiClient {
     }
   }
 
-  async fetchGameList(session = {}, { signal } = {}) {
+  async fetchGameList(session = {}, { signal, showtype = 'today', filter = 'MIX' } = {}) {
     const cookies = { ...(session.cookies || {}) }
     const form = {
       uid: session.uid,
@@ -433,10 +424,10 @@ export class CrownApiClient {
       p3type: '',
       date: '',
       gtype: 'ft',
-      showtype: 'today',
+      showtype,
       rtype: 'r',
       ltype: '3',
-      filter: 'MIX',
+      filter,
       cupFantasy: 'N',
       sorttype: 'L',
       specialClick: '',
@@ -504,7 +495,7 @@ export class CrownApiClient {
       langx: 'zh-cn',
       p: 'get_game_more',
       gtype: 'ft',
-      showtype: live ? 'live' : 'today',
+      showtype: live ? 'live' : (target.showtype === 'hot' ? 'hot' : 'today'),
       ltype: '3',
       isRB: live ? 'Y' : 'N',
       lid,
@@ -547,13 +538,11 @@ export class CrownApiLoginManager {
   constructor({
     runtimeDir = 'data/runtime',
     fetchImpl = globalThis.fetch,
-    bettingAllowedOrigins = process.env.CROWN_BETTING_ALLOWED_ORIGINS || '',
     now = () => new Date(),
   } = {}) {
     if (typeof now !== 'function') throw new TypeError('crown-api-now')
     this.runtimeDir = runtimeDir
     this.client = new CrownApiClient({ fetchImpl })
-    this.bettingAllowedOrigins = String(bettingAllowedOrigins || '')
     this.now = now
     this.verifiedBettingProtocols = new Map()
   }
@@ -593,7 +582,7 @@ export class CrownApiLoginManager {
   }
 
   verifiedBettingSessionFor({ account, session } = {}) {
-    const exactAccount = bettingAccount(account, this.bettingAllowedOrigins)
+    const exactAccount = bettingAccount(account)
     const trusted = this.verifiedBettingProtocols.get(exactAccount.accountId)
     if (
       !trusted
@@ -665,7 +654,7 @@ export class CrownApiLoginManager {
   async ensureBettingSession({
     account, logger, assertFence = null, requireVerifiedProtocolVersion = false,
   } = {}) {
-    const exactAccount = bettingAccount(account, this.bettingAllowedOrigins)
+    const exactAccount = bettingAccount(account)
     try {
       return await this._ensureSession({
         account: exactAccount,
@@ -686,7 +675,7 @@ export class CrownApiLoginManager {
   async fetchFreshExecutionBalance({
     account, session = null, logger, assertFence = null, requireVerifiedProtocolVersion = false,
   } = {}) {
-    const exactAccount = bettingAccount(account, this.bettingAllowedOrigins)
+    const exactAccount = bettingAccount(account)
     try {
       const store = this.bettingStoreFor(exactAccount)
       const authenticated = session
@@ -744,7 +733,7 @@ export class CrownApiLoginManager {
 
   async testBettingAccountAccess({ account, logger } = {}) {
     try {
-      const exactAccount = bettingAccount(account, this.bettingAllowedOrigins, { allowConfiguredOrigin: true })
+      const exactAccount = bettingAccount(account)
       const fresh = await this.client.login(exactAccount)
       const verified = await this.client.fetchGameList(fresh.session)
       if (!verified.classification?.hasServerResponse
@@ -780,8 +769,7 @@ export class CrownApiLoginManager {
       const safe = sanitizedBettingError(error)
       const messageText = String(safe?.message || '')
       let errorCode = 'access-failed'
-      if (messageText === 'betting-origin-not-allowed') errorCode = 'origin-not-allowed'
-      else if (safe?.code === 'failed_login') errorCode = 'login-failed'
+      if (safe?.code === 'failed_login') errorCode = 'login-failed'
       else if (safe?.code === 'failed_http' || safe?.code === 'failed_network') errorCode = 'network-failed'
       else if (safe?.code === 'failed_xml') errorCode = 'access-invalid'
       else if (safe?.code === 'failed_config') errorCode = 'configuration-failed'
@@ -797,7 +785,7 @@ export class CrownApiLoginManager {
   }
 
   async fetchBettingFootballGameMore({ account, session = null, target, logger, assertFence = null } = {}) {
-    const exactAccount = bettingAccount(account, this.bettingAllowedOrigins)
+    const exactAccount = bettingAccount(account)
     try {
       await assertFenceNow(assertFence)
       const store = this.bettingStoreFor(exactAccount)
@@ -817,7 +805,16 @@ export class CrownApiLoginManager {
   }
 
   async fetchFootballToday({ account, logger } = {}) {
-    return this.ensureSession({ account, logger })
+    const primary = await this.ensureSession({ account, logger })
+    const classification = primary.classification
+    if (classification?.hasServerResponse !== true
+      || classification?.loginExpired === true
+      || classification?.parseError === true
+      || classification?.gameCount !== 0) return primary
+
+    const fallback = await this.client.fetchGameList(primary.session, { showtype: 'hot', filter: '' })
+    const saved = this.storeFor(account).saveSession(account, fallback.session)
+    return { ...fallback, session: saved.session }
   }
 
   async fetchFootballGameMore({ account, session = null, target, logger } = {}) {

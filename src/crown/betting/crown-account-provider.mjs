@@ -7,6 +7,7 @@ import {
 import { buildStrictCrownPreviewFields, buildStrictCrownPreviewWireFields } from './crown-order-field-mapper.mjs'
 import { parseCrownPreviewResponseStrict } from './crown-bet-response-parser.mjs'
 import { assertLockedSelectionEnvelope, executionIdentityFromEnvelope } from './execution-identity.mjs'
+import { isCrownAcceptanceCapabilityAuthority } from './crown-browser-acceptance.mjs'
 
 const DEFAULT_CAPABILITY_RESOLVER = Object.freeze({
   resolvePreview(input) {
@@ -50,11 +51,41 @@ function canonicalLine(value) {
 }
 
 function exactCnyInteger(value, code) {
-  const text = String(value || '').trim()
-  if (!/^(?:0|[1-9]\d*)$/.test(text)) throw new Error(code)
-  const number = Number(text)
-  if (!Number.isSafeInteger(number)) throw new Error(code)
-  return number
+  const match = /^(0|[1-9]\d*)(?:\.0+)?$/.exec(String(value || '').trim())
+  if (!match) throw new Error(code)
+  const number = BigInt(match[1])
+  if (number > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error(code)
+  return Number(number)
+}
+
+function assertBrowserRuntime(value) {
+  if (!value
+    || typeof value.ensureBettingSession !== 'function'
+    || typeof value.fetchFreshExecutionBalance !== 'function'
+    || typeof value.postPreviewForm !== 'function') {
+    throw new TypeError('crown-preview-browser-runtime')
+  }
+  return value
+}
+
+function assertBrowserSession(session, account) {
+  if (!session
+    || session.accountId !== account.id
+    || session.username !== account.username
+    || !String(session.contextGeneration || '').trim()
+    || !String(session.uid || '').trim()
+    || !String(session.protocolVersion || '').trim()
+    || !['production-login-response', 'production-session-metadata']
+      .includes(session.protocolVersionEvidence?.source)
+    || session.protocolVersionEvidence?.captured !== true
+    || session.protocolVersionEvidence?.verified !== true
+    || Object.hasOwn(session, 'cookies')) {
+    throw new Error('betting-session-owner-mismatch')
+  }
+  if (session.origin !== account.loginUrl || session.baseUrl !== account.loginUrl) {
+    throw new Error('betting-session-owner-mismatch')
+  }
+  return session
 }
 
 function capabilityInput(lockedSelection) {
@@ -63,6 +94,7 @@ function capabilityInput(lockedSelection) {
     period: lockedSelection.market?.period,
     marketType: lockedSelection.market?.marketType,
     lineVariant: lockedSelection.market?.lineVariant,
+    selectionSide: lockedSelection.selection?.side,
   }
 }
 
@@ -124,17 +156,23 @@ export class CrownAccountPreviewProvider {
     }
     const {
       repository,
-      loginManager,
+      browserRuntime,
       executorLease,
       logger = null,
       capabilityResolver,
+      acceptanceAuthority = null,
     } = options
+    if (acceptanceAuthority !== null && !isCrownAcceptanceCapabilityAuthority(acceptanceAuthority)) {
+      throw new TypeError('crown-acceptance-authority')
+    }
+    if (acceptanceAuthority !== null && offlineFixture) throw new Error('crown-acceptance-offline-forbidden')
     this.repository = repository
-    this.loginManager = loginManager
+    this.browserRuntime = assertBrowserRuntime(browserRuntime)
     this.executorLease = assertLease(executorLease)
     this.capabilityResolver = offlineFixture
       ? assertResolver(capabilityResolver)
       : DEFAULT_CAPABILITY_RESOLVER
+    this.acceptanceAuthority = acceptanceAuthority
     this.offlineFixture = offlineFixture
     this.logger = logger
   }
@@ -154,7 +192,28 @@ export class CrownAccountPreviewProvider {
     const lockedSelection = assertLockedSelection(input.lockedSelection)
     const snapshot = lockedSelection.snapshot
     const expectedIdentity = executionIdentityFromEnvelope(lockedSelection, { provider: 'crown' })
-    const capability = await this.capabilityResolver.resolvePreview(capabilityInput(snapshot))
+    const direction = capabilityInput(snapshot)
+    const resolver = input.acceptanceClaim
+      ? Object.freeze({
+          resolvePreview(value) {
+            return this.acceptanceAuthority.resolveCapability({
+              operation: 'preview', direction: value, candidateClaim: input.acceptanceClaim,
+            })
+          },
+          assertFieldSets(capability, observed) {
+            return assertCrownCapabilityFieldSets(getCrownCapability({
+              mode: capability.mode,
+              period: capability.period,
+              marketType: capability.marketType,
+              lineVariant: capability.lineVariant,
+              selectionSide: capability.selectionSide,
+            }), observed)
+          },
+          acceptanceAuthority: this.acceptanceAuthority,
+        })
+      : this.capabilityResolver
+    if (input.acceptanceClaim && !this.acceptanceAuthority) throw new Error('crown-acceptance-authority-required')
+    const capability = await resolver.resolvePreview(direction)
     const orderFields = buildStrictCrownPreviewFields(snapshot, { capability })
     const lockedIdentity = responseIdentity(orderFields, expectedIdentity)
     const expectedLine = canonicalLine(snapshot.market.handicapRaw)
@@ -172,67 +231,48 @@ export class CrownAccountPreviewProvider {
         throw new Error('offline-preview-fixture-origin-required')
       }
     }
-    if (typeof this.loginManager?.ensureBettingSession !== 'function') {
-      throw new TypeError('crown-preview-login-manager')
-    }
     safeLog(this.logger, 'crown-preview-login-start', { accountId, batchId, capabilityEvidenceId: capability.evidenceId })
-    const authenticated = await this.loginManager.ensureBettingSession({
+    const session = assertBrowserSession(await this.browserRuntime.ensureBettingSession({
       account,
-      logger: this.logger,
       assertFence: () => this._assertFence(),
-      requireVerifiedProtocolVersion: true,
-    })
-    let session = authenticated?.session
-    if (
-      !session
-      || session.accountId !== accountId
-      || session.username !== account.username
-      || session.baseUrl !== account.loginUrl
-      || !String(session.uid || '').trim()
-    ) {
-      throw new Error('betting-session-owner-mismatch')
-    }
+      signal: input.signal,
+    }), account)
     const wireFields = buildStrictCrownPreviewWireFields(orderFields.preview, {
       capability,
       protocolVersion: session.protocolVersion,
       protocolVersionEvidence: session.protocolVersionEvidence,
     })
-    await this.capabilityResolver.assertFieldSets(capability, {
+    await resolver.assertFieldSets(capability, {
       requestFieldSet: Object.keys(wireFields),
     })
 
-    if (typeof this.loginManager?.fetchFreshExecutionBalance !== 'function') {
-      throw new TypeError('crown-preview-fresh-balance-manager')
-    }
-    const freshBalance = await this.loginManager.fetchFreshExecutionBalance({
+    const freshBalance = await this.browserRuntime.fetchFreshExecutionBalance({
       account,
       session,
-      logger: this.logger,
       assertFence: () => this._assertFence(),
-      requireVerifiedProtocolVersion: true,
+      signal: input.signal,
     })
-    if (
-      freshBalance?.currency !== 'CNY'
-      || !Number.isSafeInteger(freshBalance?.balanceCny)
-      || freshBalance.balanceCny < 0
-      || !freshBalance.session
-    ) throw new Error('crown-preview-fresh-balance-invalid')
-    session = freshBalance.session
+    if (freshBalance?.session !== session
+      || freshBalance?.summary?.valid !== true
+      || freshBalance.summary.reportedCurrency !== 'CNY'
+      || freshBalance?.transport?.operation !== 'get_member_data') {
+      throw new Error('crown-preview-fresh-balance-invalid')
+    }
+    const freshBalanceCny = exactCnyInteger(
+      freshBalance.summary.reportedBalance,
+      'crown-preview-fresh-balance-invalid',
+    )
 
     this._assertFence()
-    if (typeof this.loginManager?.client?.postForm !== 'function') throw new TypeError('crown-preview-transport')
-    const cookies = { ...(session.cookies || {}) }
     safeLog(this.logger, 'crown-preview-request-start', { accountId, batchId, capabilityEvidenceId: capability.evidenceId })
     let response
     try {
-      response = await this.loginManager.client.postForm({
-        baseUrl: session.baseUrl,
-        endpointPath: '/transform.php',
-        form: {
-          uid: session.uid,
-          ...wireFields,
-        },
-        cookies,
+      response = await this.browserRuntime.postPreviewForm({
+        account,
+        session,
+        wireFields,
+        assertFence: () => this._assertFence(),
+        signal: input.signal,
       })
     } catch {
       const error = new Error('crown-preview-request-failed')
@@ -240,30 +280,48 @@ export class CrownAccountPreviewProvider {
       throw error
     }
     this._assertFence()
+    if (response?.transport?.operation !== capability.endpoints.preview.functionName
+      || response?.transport?.endpointPath !== capability.endpoints.preview.path) {
+      throw new Error('crown-preview-transport-invalid')
+    }
 
-    const parsed = parseCrownPreviewResponseStrict(response.text)
-    await this.capabilityResolver.assertFieldSets(capability, {
-      responseFieldSet: parsed.responseFieldSet,
+    const livePreview = capability.mode === 'live'
+    const parsed = parseCrownPreviewResponseStrict(response.text, {
+      expectedFieldSet: livePreview
+        ? [...capability.responseFieldSets.preview, 'score']
+        : capability.responseFieldSets.preview,
     })
+    if (!livePreview) {
+      await resolver.assertFieldSets(capability, {
+        responseFieldSet: parsed.responseFieldSet,
+      })
+    }
     if (parsed.line.exact !== expectedLine) throw new Error('crown-preview-line-changed')
     const minStakeMinor = exactCnyInteger(parsed.minStake.exact, 'crown-preview-cny-integer-required')
     const maxStakeMinor = exactCnyInteger(parsed.maxStake.exact, 'crown-preview-cny-integer-required')
     const submitValue = (value) => /^-?(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(String(value || ''))
-    const exactExecutionRow = capability.key === 'prematch|full_time|asian_handicap|main'
+    const verifiedStakeStep = parsed.stakeStep?.verified === true
+      && Number.isSafeInteger(parsed.stakeStep.value)
+      && parsed.stakeStep.value > 0
+      ? parsed.stakeStep.value
+      : null
+    const exactExecutionRow = parsed.ok === true
       && capability.previewAllowed === true
       && capability.submitAllowed === true
+      && capability.selectionSide === lockedIdentity.side
       && account.currency === 'CNY'
       && Number.isSafeInteger(account.perBetLimitMinor)
-      && account.perBetLimitMinor >= 50
-      && minStakeMinor === 50
-      && maxStakeMinor === 20000
+      && account.perBetLimitMinor >= minStakeMinor
+      && freshBalanceCny >= minStakeMinor
+      && minStakeMinor > 0
+      && maxStakeMinor >= minStakeMinor
       && submitValue(parsed.submitCon?.exact)
       && submitValue(parsed.submitRatio?.exact)
     const executionPreview = exactExecutionRow ? Object.freeze({
       minStakeMinor,
       maxStakeMinor,
-      stakeStepMinor: 50,
-      stakeStepProvenance: 'local-conservative-policy',
+      stakeStepMinor: verifiedStakeStep,
+      stakeStepProvenance: parsed.stakeStep.source,
       odds: parsed.odds.exact,
       line: parsed.line.exact,
       submitCon: parsed.submitCon.exact,
@@ -272,13 +330,6 @@ export class CrownAccountPreviewProvider {
       amountScale: 0,
       lockedIdentity,
     }) : null
-    if (typeof this.loginManager?.bettingStoreFor !== 'function') throw new TypeError('crown-preview-session-store')
-    const ownedAccount = { ...account, accountId }
-    this.loginManager.bettingStoreFor(ownedAccount).saveSession(ownedAccount, {
-      ...session,
-      cookies: response.cookies,
-      savedAt: Date.now(),
-    })
     safeLog(this.logger, 'crown-preview-result', {
       accountId,
       batchId,
@@ -287,6 +338,7 @@ export class CrownAccountPreviewProvider {
       status: parsed.ok ? 'previewed' : 'preview-rejected',
       responseCode: parsed.code,
       responseFieldSetFingerprint: parsed.responseFieldSetFingerprint,
+      transportKind: 'browser-page-fetch',
     })
     const result = {
       status: parsed.ok ? 'previewed' : 'preview-rejected',
@@ -295,18 +347,23 @@ export class CrownAccountPreviewProvider {
       operation: orderFields.operation,
       capabilityEvidenceId: capability.evidenceId,
       capabilityVersion: CROWN_CAPABILITY_MATRIX_VERSION,
+      transportKind: 'browser-page-fetch',
       lockedIdentity,
       preview: parsed,
       capacityMinor: exactExecutionRow
-        ? Math.min(maxStakeMinor, freshBalance.balanceCny, Number(account.perBetLimitMinor))
+        ? (verifiedStakeStep === null
+            ? minStakeMinor
+            : minStakeMinor + Math.floor(
+              (Math.min(maxStakeMinor, freshBalanceCny, account.perBetLimitMinor) - minStakeMinor) / verifiedStakeStep,
+            ) * verifiedStakeStep)
         : null,
-      freshBalanceCny: freshBalance.balanceCny,
-      balanceObservedAt: freshBalance.observedAt,
+      freshBalanceCny,
+      balanceObservedAt: new Date().toISOString(),
       currency: exactExecutionRow
         ? { value: 'CNY', source: 'account-summary', verified: true }
         : parsed.currency,
       stakeStep: exactExecutionRow
-        ? { value: 50, source: 'local-conservative-policy', verified: true }
+        ? parsed.stakeStep
         : parsed.stakeStep,
       realExecutionEligible: exactExecutionRow,
       realExecutionBlockers: exactExecutionRow ? [] : [
@@ -316,6 +373,7 @@ export class CrownAccountPreviewProvider {
       ],
     }
     if (executionPreview) result.executionPreview = executionPreview
+    Object.defineProperty(result, 'browserSession', { value: session })
     return result
   }
 }

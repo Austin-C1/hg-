@@ -554,6 +554,35 @@ test('launcher starts from a foreign cwd and Chinese path, falls back from 8787,
   }
 })
 
+test('orphaned wrapper cleanup preserves a backup file owned by another runtime writer', async (t) => {
+  const fixture = makePortableFixture(t, { dashboard: 'sync-block' })
+  const runtimeDir = path.join(fixture.dataRoot, 'runtime')
+  const startsFile = path.join(runtimeDir, 'fake-starts.jsonl')
+  const releaseFile = path.join(runtimeDir, 'fake-sync-release.txt')
+  const parent = launchStart(fixture)
+  const parentResult = childResult(parent)
+  let wrapperPid
+  try {
+    const starts = await waitFor(() => fs.existsSync(startsFile)
+      && fs.readFileSync(startsFile, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse), { timeoutMs: 25_000 })
+    wrapperPid = starts[0].pid
+    const foreignBackup = path.join(runtimeDir, '.launcher-backup-0123456789abcdef0123456789abcdef.tmp')
+    fs.writeFileSync(foreignBackup, 'foreign-owner')
+
+    assert.equal(parent.kill(), true)
+    await parentResult
+    fs.writeFileSync(releaseFile, 'release')
+    await waitFor(() => !isProcessAlive(wrapperPid), { timeoutMs: 8_000 })
+    assert.equal(fs.readFileSync(foreignBackup, 'utf8'), 'foreign-owner')
+  } finally {
+    if (parent.exitCode === null) parent.kill()
+    if (!fs.existsSync(releaseFile)) fs.writeFileSync(releaseFile, 'release')
+    if (wrapperPid && isProcessAlive(wrapperPid)) {
+      try { process.kill(wrapperPid) } catch {}
+    }
+  }
+})
+
 test('desktop shortcut failure is non-fatal and logs only a stable sanitized code', async (t) => {
   const fixture = makePortableFixture(t)
   fs.writeFileSync(path.join(fixture.root, 'shortcut-fail.flag'), 'fail')
@@ -925,6 +954,9 @@ test('stop refuses PID start-time reuse and malformed state without terminating 
   const resultPromise = childResult(first)
   const stateFile = path.join(fixture.dataRoot, 'runtime', 'launcher-state.json')
   const state = await waitFor(() => fs.existsSync(stateFile) && readJson(stateFile))
+  const launcherLog = path.join(fixture.dataRoot, 'logs', 'launcher.log')
+  await waitFor(() => fs.existsSync(launcherLog)
+    && fs.readFileSync(launcherLog, 'utf8').includes('launcher-started'))
 
   const wrongTime = { ...state, processStartTime: '2000-01-01T00:00:00.000Z' }
   fs.writeFileSync(stateFile, `${JSON.stringify(wrongTime)}\n`)
@@ -944,7 +976,8 @@ test('stop refuses PID start-time reuse and malformed state without terminating 
   const stopped = await runPowerShell(path.join(fixture.root, 'launcher', 'stop.ps1'), { env: launcherEnv(fixture) })
   if (wasAliveBeforeStop) assert.equal(stopped.code, 0, `${stopped.stdout}\n${stopped.stderr}`)
   else assert.match(compactProcessOutput(stopped), /launcher-process-not-running/)
-  assert.equal((await resultPromise).code, 0)
+  const result = await resultPromise
+  assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}\n${fs.readFileSync(launcherLog, 'utf8')}`)
 })
 
 test('launcher retries a raced EADDRINUSE with a fresh loopback port and bounded new identity', async (t) => {

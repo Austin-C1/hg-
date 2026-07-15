@@ -50,7 +50,7 @@ function latestSelection(overrides = {}) {
   const marketIdentity = signal().target.marketIdentity
   const base = {
     provider: 'crown', mode: 'prematch', capturedAt: NOW,
-    event: { eventKey: signal().target.eventIdentity, livePhase: null },
+    event: { eventKey: signal().target.eventIdentity, mode: 'prematch', ids: { gid: '8878931' }, livePhase: null },
     market: { marketIdentity, period: 'full_time', marketType: 'asian_handicap', lineVariant: 'main', lineKey: 'RATIO_RE', handicap: -0.5, handicapRaw: '-0.50' },
     selection: { selectionIdentity: `${marketIdentity}|away`, side: 'away', odds: 0.88, suspended: false },
   }
@@ -1241,6 +1241,39 @@ test('preview mode performs ordered read-only previews without creating a batch 
     assert.equal(context.provider.maxActivePreview, 1)
     assert.equal(context.provider.submitCalls.length, 0)
     assert.equal(context.handle.db.prepare('SELECT COUNT(*) AS count FROM bet_batches').get().count, 0)
+  } finally {
+    context.handle.close()
+  }
+})
+
+test('a Preview without step evidence allocates only its exact minimum', async () => {
+  const provider = new ConcurrentProvider()
+  provider.preview = async function preview(input) {
+    this.previewCalls.push(structuredClone(input))
+    return {
+      ok: true,
+      minStakeMinor: 60,
+      maxStakeMinor: 1000,
+      stakeStepMinor: null,
+      balanceMinor: 1000,
+      odds: '0.88',
+    }
+  }
+  const context = fixture({
+    target: 120,
+    accounts: [{ id: 'account-a', limit: 200 }],
+    provider,
+  })
+  try {
+    const result = await context.coordinator.processSignal(signal())
+
+    assert.equal(result.status, 'partial')
+    assert.equal(result.acceptedAmountMinor, 60)
+    assert.equal(result.unfilledAmountMinor, 60)
+    assert.deepEqual(provider.submitCalls.map((call) => call.amountMinor), [60])
+    assert.equal(context.handle.db.prepare(`
+      SELECT preview_stake_step_minor FROM bet_child_orders
+    `).get().preview_stake_step_minor, 0)
   } finally {
     context.handle.close()
   }

@@ -4,6 +4,7 @@ import {
   assertCrownCapabilityFieldSets,
   getCrownCapability,
 } from './crown-capability-matrix.mjs'
+import { isCrownAcceptanceCapabilityAuthority } from './crown-browser-acceptance.mjs'
 import { buildStrictCrownSubmitWireFields } from './crown-order-field-mapper.mjs'
 import { parseCrownSubmitResponseStrict } from './crown-bet-response-parser.mjs'
 import {
@@ -74,22 +75,54 @@ function identityOf(input = {}) {
   return { lockedIdentity, lockedSelection }
 }
 
+function assertBrowserRuntime(value) {
+  if (!value
+    || typeof value.verifiedBettingSessionFor !== 'function'
+    || typeof value.postSubmitForm !== 'function') {
+    throw new TypeError('crown-submit-browser-runtime')
+  }
+  return value
+}
+
+function safeMinor(value, code, { positive = false } = {}) {
+  if (!Number.isSafeInteger(value) || value < (positive ? 1 : 0)) throw new Error(code)
+  return value
+}
+
+function assertFreshMoney(preview, amountMinor) {
+  if (!preview || typeof preview !== 'object' || Array.isArray(preview)
+    || preview.currency !== 'CNY' || preview.amountScale !== 0) {
+    throw new Error('crown-submit-fresh-preview-drift')
+  }
+  const minimum = safeMinor(preview.minStakeMinor, 'crown-submit-fresh-preview-drift', { positive: true })
+  const maximum = safeMinor(preview.maxStakeMinor, 'crown-submit-fresh-preview-drift', { positive: true })
+  const balance = safeMinor(preview.balanceMinor, 'crown-submit-fresh-preview-drift')
+  if (minimum > maximum || amountMinor < minimum || amountMinor > maximum || amountMinor > balance) {
+    throw new Error('crown-submit-fresh-preview-drift')
+  }
+  if (amountMinor === minimum) return
+  const step = preview.stakeStepMinor
+  if (!Number.isSafeInteger(step) || step < 1
+    || !['provider-preview-response', 'verified-account-policy'].includes(preview.stakeStepProvenance)
+    || (amountMinor - minimum) % step !== 0) {
+    throw new Error('crown-submit-fresh-preview-drift')
+  }
+}
+
 export class CrownAccountExecutionProvider {
-  constructor({ repository, loginManager, previewProvider, executorLease, logger = null } = {}) {
+  constructor({ repository, browserRuntime, executorLease, logger = null, acceptanceAuthority = null } = {}) {
     if (typeof repository?.getBettingAccountForExecution !== 'function'
       || typeof repository?.getCurrentCrownSelectionForExecution !== 'function'
       || typeof repository?.sealCrownProviderReference !== 'function') {
       throw new TypeError('crown-submit-account-repository')
     }
-    if (typeof loginManager?.bettingStoreFor !== 'function'
-      || typeof loginManager?.client?.postForm !== 'function') {
-      throw new TypeError('crown-submit-login-manager')
-    }
-    if (typeof previewProvider?.preview !== 'function') throw new TypeError('crown-submit-preview-provider')
     this.repository = repository
-    this.loginManager = loginManager
-    this.previewProvider = previewProvider
+    this.browserRuntime = assertBrowserRuntime(browserRuntime)
     this.executorLease = assertLease(executorLease)
+    if (acceptanceAuthority !== null && !isCrownAcceptanceCapabilityAuthority(acceptanceAuthority)) {
+      throw new TypeError('crown-acceptance-authority')
+    }
+    this.acceptanceAuthority = acceptanceAuthority
     this.logger = logger
   }
 
@@ -108,12 +141,19 @@ export class CrownAccountExecutionProvider {
       throw new Error('crown-capability-version-mismatch')
     }
     const { lockedIdentity, lockedSelection } = identityOf(input)
-    const capability = assertCrownCapability(getCrownCapability({
+    const capabilityInput = {
       mode: lockedIdentity.mode,
       period: lockedIdentity.period,
       marketType: lockedIdentity.market,
       lineVariant: lockedIdentity.lineVariant,
-    }), { operation: 'submit' })
+      selectionSide: lockedIdentity.side,
+    }
+    if (input.acceptanceClaim && !this.acceptanceAuthority) throw new Error('crown-acceptance-authority-required')
+    const capability = input.acceptanceClaim
+      ? this.acceptanceAuthority.resolveCapability({
+          operation: 'submit', direction: capabilityInput, candidateClaim: input.acceptanceClaim,
+        })
+      : assertCrownCapability(getCrownCapability(capabilityInput), { operation: 'submit' })
     if (text(input.capabilityEvidenceId, 'crown-capability-evidence-required') !== capability.evidenceId) {
       throw new Error('crown-capability-evidence-mismatch')
     }
@@ -121,7 +161,7 @@ export class CrownAccountExecutionProvider {
     const childOrderId = text(input.childOrderId, 'child-order-id-required')
     const submitAttemptId = text(input.submitAttemptId, 'submit-attempt-id-required')
     const amountMinor = input.amountMinor
-    if (!Number.isSafeInteger(amountMinor) || amountMinor !== 50
+    if (!Number.isSafeInteger(amountMinor) || amountMinor < 1
       || input.remainingChildAmountMinor !== amountMinor) throw new Error('crown-submit-amount-blocked')
     if (typeof input.onNetworkStarted !== 'function') throw new TypeError('crown-submit-network-callback')
 
@@ -136,42 +176,15 @@ export class CrownAccountExecutionProvider {
     )
     if (preparedOdds !== currentOdds) throw new Error('crown-submit-fresh-preview-drift')
 
-    const fresh = await this.previewProvider.preview({
-      accountId: ownerId,
-      batchId: text(input.batchId, 'bet-batch-id-required'),
-      lockedSelection: currentSelection,
-    })
-    this._assertFence()
-    if (fresh?.capabilityVersion !== input.capabilityVersion
-      || fresh?.capabilityEvidenceId !== input.capabilityEvidenceId
-      || !same(fresh?.lockedIdentity, currentIdentity)) {
-      throw new Error('crown-submit-current-identity-drift')
-    }
-    const freshExecutionPreview = fresh.executionPreview
-    const freshBalanceCny = fresh.freshBalanceCny
     const preparedPreview = input.preview
-    if (!freshExecutionPreview || typeof freshExecutionPreview !== 'object'
-      || !Number.isSafeInteger(freshBalanceCny)
-      || !same(freshExecutionPreview.lockedIdentity, currentIdentity)
-      || freshExecutionPreview.minStakeMinor !== preparedPreview?.minStakeMinor
-      || freshExecutionPreview.maxStakeMinor !== preparedPreview?.maxStakeMinor
-      || freshExecutionPreview.stakeStepMinor !== preparedPreview?.stakeStepMinor
-      || freshExecutionPreview.stakeStepProvenance !== preparedPreview?.stakeStepProvenance
-      || freshExecutionPreview.currency !== preparedPreview?.currency
-      || freshExecutionPreview.amountScale !== preparedPreview?.amountScale
-      || freshExecutionPreview.line !== lockedIdentity.line
-      || freshExecutionPreview.line !== preparedPreview?.line
-      || freshExecutionPreview.submitCon !== preparedPreview?.submitCon
-      || freshExecutionPreview.submitRatio !== preparedPreview?.submitRatio
-      || decimal(freshExecutionPreview.odds, 'crown-submit-fresh-preview-drift') !== preparedOdds
-      || freshBalanceCny !== preparedPreview?.balanceMinor
-      || amountMinor < freshExecutionPreview.minStakeMinor
-      || amountMinor > freshExecutionPreview.maxStakeMinor
-      || amountMinor > freshBalanceCny
-      || (amountMinor - freshExecutionPreview.minStakeMinor) % freshExecutionPreview.stakeStepMinor !== 0) {
+    if (!same(preparedPreview?.lockedIdentity, currentIdentity)
+      || preparedPreview?.line !== lockedIdentity.line
+      || decimal(preparedPreview?.odds, 'crown-submit-fresh-preview-drift') !== preparedOdds
+      || !/^[-]?(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(String(preparedPreview?.submitCon || ''))
+      || !/^[-]?(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(String(preparedPreview?.submitRatio || ''))) {
       throw new Error('crown-submit-fresh-preview-drift')
     }
-    const freshPreview = { ...freshExecutionPreview, balanceMinor: freshBalanceCny }
+    assertFreshMoney(preparedPreview, amountMinor)
 
     this._assertFence()
     const account = this.repository.getBettingAccountForExecution(ownerId)
@@ -179,64 +192,62 @@ export class CrownAccountExecutionProvider {
       || !Number.isSafeInteger(account.perBetLimitMinor)
       || amountMinor > account.perBetLimitMinor) throw new Error('crown-submit-account-contract')
     const origin = exactHttpsOrigin(account.loginUrl, 'crown-submit-origin-invalid')
-    const store = this.loginManager.bettingStoreFor({ ...account, accountId: ownerId })
-    const storedSession = store?.readSession?.({ ...account, accountId: ownerId })?.session
-    const session = this.loginManager.verifiedBettingSessionFor?.({
-      account: { ...account, accountId: ownerId },
-      session: storedSession,
+    const session = this.browserRuntime.verifiedBettingSessionFor({
+      account,
+      session: input.browserSession,
     })
-    if (!session
+    if (!session || session !== input.browserSession
       || session.accountId !== ownerId
       || session.username !== account.username
+      || !text(session.contextGeneration, 'crown-submit-session-generation')
       || exactHttpsOrigin(session.baseUrl, 'crown-submit-session-origin') !== origin
       || !text(session.uid, 'crown-submit-session-owner')
       || !text(session.protocolVersion, 'crown-submit-session-version')
       || session.protocolVersionEvidence?.captured !== true
       || session.protocolVersionEvidence?.verified !== true
-      || !['production-login-response', 'production-session-metadata'].includes(
-        String(session.protocolVersionEvidence?.source || ''),
-      )) throw new Error('crown-submit-session-owner')
+      || !['production-login-response', 'production-session-metadata']
+        .includes(session.protocolVersionEvidence?.source)
+      || Object.hasOwn(session, 'cookies')) throw new Error('crown-submit-session-owner')
 
     const wireFields = buildStrictCrownSubmitWireFields({
       lockedIdentity,
       currentIdentity,
-      preview: freshPreview,
+      preview: preparedPreview,
       amountMinor,
     }, {
       capability,
       protocolVersion: session.protocolVersion,
       protocolVersionEvidence: session.protocolVersionEvidence,
     })
-    assertCrownCapabilityFieldSets(capability, { submitRequestFieldSet: Object.keys(wireFields) })
+    assertCrownCapabilityFieldSets(getCrownCapability(capabilityInput), {
+      submitRequestFieldSet: Object.keys(wireFields),
+    })
 
     this._assertFence()
-    let callbackCount = 0
-    const markNetworkStarted = () => {
-      callbackCount += 1
-      if (callbackCount !== 1) throw new Error('provider-network-started-twice')
-      input.onNetworkStarted()
-    }
-    const cookies = { ...(session.cookies || {}) }
     safeLog(this.logger, 'crown-submit-request-start', {
       accountId: ownerId, childOrderId, capabilityEvidenceId: capability.evidenceId,
+      transportKind: 'browser-page-fetch',
     })
     let response
     try {
-      markNetworkStarted()
-      response = await this.loginManager.client.postForm({
-        baseUrl: origin,
-        endpointPath: '/transform.php',
-        form: { uid: session.uid, ...wireFields },
-        cookies,
+      response = await this.browserRuntime.postSubmitForm({
+        account,
+        session,
+        wireFields,
+        assertFence: () => this._assertFence(),
+        signal: input.signal,
+        beforeDispatch: input.onNetworkStarted,
       })
     } catch (cause) {
-      if (cause?.message === 'provider-network-started-twice') throw cause
       const error = new Error('crown-submit-request-failed')
       error.code = 'crown-submit-request-failed'
       throw error
     }
     this._assertFence()
-    if (callbackCount !== 1) throw new Error('crown-submit-network-contract')
+    if (response?.transport?.operation !== capability.endpoints.submit.functionName
+      || response?.transport?.endpointPath !== capability.endpoints.submit.path) {
+      throw new Error('crown-submit-transport-invalid')
+    }
 
     const expected = {
       gid: wireFields.gid,
@@ -258,20 +269,16 @@ export class CrownAccountExecutionProvider {
       || session.accountId !== ownerId || session.username !== account.username) {
       throw new Error('crown-submit-session-owner')
     }
-    store.saveSession({ ...account, accountId: ownerId }, {
-      ...session,
-      cookies: response?.cookies || cookies,
-      savedAt: Date.now(),
-    })
     safeLog(this.logger, 'crown-submit-result', {
       accountId: ownerId,
       childOrderId,
       capabilityEvidenceId: capability.evidenceId,
       status: outcome.kind,
+      transportKind: 'browser-page-fetch',
     })
     return outcome.kind === 'accepted'
-      ? outcome
-      : { kind: 'unknown' }
+      ? { ...outcome, transportKind: 'browser-page-fetch' }
+      : { kind: 'unknown', transportKind: 'browser-page-fetch' }
   }
 }
 

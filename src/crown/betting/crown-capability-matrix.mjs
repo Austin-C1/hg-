@@ -254,15 +254,13 @@ export function validateCrownExecutionEvidence(evidence = {}, { expectedCapabili
 }
 
 export function capabilityKey(input = {}) {
-  return [input.mode, input.period, input.marketType, input.lineVariant]
+  return [input.mode, input.period, input.marketType, input.lineVariant, input.selectionSide]
     .map((value) => String(value || '').trim())
     .join('|')
 }
 
 const REQUEST_FIELD_SET = Object.freeze(['chose_team', 'gid', 'gtype', 'langx', 'odd_f_type', 'p', 'ver', 'wtype'])
-const RESPONSE_FIELD_SET = Object.freeze(['code', 'con', 'dates', 'game_sc', 'game_so', 'gold_gmax', 'gold_gmin', 'ioratio', 'league_id', 'maxcredit', 'mem_sc', 'mem_so', 'num_c', 'num_h', 'ratio', 'restsinglecredit', 'spread', 'strong', 'times'])
 const REQUEST_FIELD_SET_FINGERPRINT = fingerprintCrownFieldSet(REQUEST_FIELD_SET)
-const RESPONSE_FIELD_SET_FINGERPRINT = fingerprintCrownFieldSet(RESPONSE_FIELD_SET)
 const ACCEPTED_PREVIEW_RESPONSE_FIELD_SET = Object.freeze([
   'aid', 'code', 'con', 'currency', 'currency_value', 'dates', 'dg', 'fast_check',
   'game_sc', 'game_so', 'gold_gmax', 'gold_gmin', 'important', 'ioratio', 'league_id',
@@ -282,70 +280,7 @@ const ACCEPTED_SUBMIT_RESPONSE_FIELD_SET = Object.freeze([
   'team_h', 'team_id_c', 'team_id_h', 'time', 'timestamp', 'type', 'wtype',
 ])
 
-const ROWS = [
-  {
-    mode: 'live',
-    period: 'first_half',
-    marketType: 'total',
-    lineVariant: 'main',
-    evidenceStatus: 'verified',
-    previewAllowed: false,
-    submitAllowed: false,
-    reconciliationAllowed: false,
-    blockedReason: 'crown-preview-field-source-unproven',
-    submitBlockedReason: 'crown-submit-evidence-missing',
-    evidenceId: 'crown-capture-20260709-112647-live-first-half-total-main',
-    fixturePath: 'live-first-half-total-main.verified.json',
-    fixtureSha256: 'a643b692d94c5049dbc2353a6a293eaafdb7d0c8ad4fe49b239eb7a355573984',
-    artifactPath: 'artifacts/20260709-112647-preview.safe.json',
-    artifactSafeDigest: 'sha256:4235cbd8970636b6c7d5b114c23ad42273bf77347b7077fb5bef465c86ae9cb3',
-    requestRecordEvidenceId: 'sha256:7cc4d5e89750ac9ed3a111008560354f37f3a1b0ed3fb7eb0ec51b67c2588726',
-    responseRecordEvidenceId: 'sha256:e315f1335d3e6d5cb15ea1e2c70e9cefbfbe4b68ea592acbddcc79e3945d2ca3',
-    mapperEvidence: {
-      ratioFields: ['RATIO_HROUO', 'RATIO_HROUU'],
-      oddsFields: ['IOR_HROUC', 'IOR_HROUH'],
-      oddsFieldsBySide: { over: 'IOR_HROUC', under: 'IOR_HROUH' },
-      periodMarker: '1R',
-      wtype: 'ROU',
-      wireDefaults: { langx: 'zh-cn', odd_f_type: 'H', p: 'FT_order_view' },
-      unprovenWireValueSources: ['ver'],
-    },
-    requestFieldSet: REQUEST_FIELD_SET,
-    requestFieldSetFingerprint: REQUEST_FIELD_SET_FINGERPRINT,
-    responseFieldSet: RESPONSE_FIELD_SET,
-    responseFieldSetFingerprint: RESPONSE_FIELD_SET_FINGERPRINT,
-  },
-  {
-    mode: 'live',
-    period: 'full_time',
-    marketType: 'asian_handicap',
-    lineVariant: 'main',
-    evidenceStatus: 'verified',
-    previewAllowed: false,
-    submitAllowed: false,
-    reconciliationAllowed: false,
-    blockedReason: 'crown-preview-field-source-unproven',
-    submitBlockedReason: 'crown-submit-evidence-missing',
-    evidenceId: 'crown-capture-20260709-111046-live-full-time-asian-handicap-main',
-    fixturePath: 'live-full-time-asian-handicap-main.verified.json',
-    fixtureSha256: '9b9786f0f1db01368ff7ec72effb68996ca4adbf4cc92ef752d89e4d3d206896',
-    artifactPath: 'artifacts/20260709-111046-preview.safe.json',
-    artifactSafeDigest: 'sha256:adb8605b51f52532b75aed83e7e6e9c74b73df875241db9cd684f19d6ed6ee8f',
-    requestRecordEvidenceId: 'sha256:7cc4d5e89750ac9ed3a111008560354f37f3a1b0ed3fb7eb0ec51b67c2588726',
-    responseRecordEvidenceId: 'sha256:e315f1335d3e6d5cb15ea1e2c70e9cefbfbe4b68ea592acbddcc79e3945d2ca3',
-    mapperEvidence: {
-      ratioFields: ['RATIO_RE'],
-      oddsFields: ['IOR_REC', 'IOR_REH'],
-      oddsFieldsBySide: { away: 'IOR_REC', home: 'IOR_REH' },
-      wtype: 'RE',
-      wireDefaults: { langx: 'zh-cn', odd_f_type: 'H', p: 'FT_order_view' },
-      unprovenWireValueSources: ['ver'],
-    },
-    requestFieldSet: REQUEST_FIELD_SET,
-    requestFieldSetFingerprint: REQUEST_FIELD_SET_FINGERPRINT,
-    responseFieldSet: RESPONSE_FIELD_SET,
-    responseFieldSetFingerprint: RESPONSE_FIELD_SET_FINGERPRINT,
-  },
+const ACCEPTED_AWAY_EVIDENCE_ROWS = [
   {
     mode: 'prematch',
     period: 'full_time',
@@ -395,28 +330,175 @@ const ROWS = [
   },
 ].map((row) => Object.freeze({ ...row, key: capabilityKey(row) }))
 
+const PROTOCOL_EVIDENCE_DIGEST = 'sha256:94ef6d685b2efe80b831b9e98969e50bcfd8f3504b524d31123c7b78c592b6a5'
+const EIGHT_DIRECTION_CANDIDATE_DIGEST = 'sha256:00754e2f1541ac1c7397d9479d67fce9b6d65e7fafe86b39c24862c0b57eab59'
+const TASK_TWO_CATALOG_DIGEST = 'sha256:72605e202e0294a23cd7ad2cac11fffbff816714be7b4dafc56165671bc2846a'
+const PREVIEW_ENDPOINT = Object.freeze({ path: '/transform.php', functionName: 'FT_order_view' })
+const SUBMIT_ENDPOINT = Object.freeze({ path: '/transform.php', functionName: 'FT_bet' })
+const NO_RECONCILIATION_ENDPOINT = Object.freeze({ path: null, functionName: null })
+
+const DYNAMIC_FIELD_SOURCES = Object.freeze({
+  balance: 'account-summary:current-balance',
+  con: 'preview-response:con',
+  gid: 'current-selection:event.ids.gid',
+  odds: 'preview-response:ioratio',
+  ratio: 'preview-response:ratio',
+  stake: 'execution-request:amount-minor',
+  timestamp: 'request-clock:epoch-ms',
+  uid: 'verified-session:uid',
+  ver: 'verified-session:protocol-version',
+})
+
+const DIRECTION_ROWS = Object.freeze([
+  {
+    id: 'prematch-full-time-asian-handicap-home', mode: 'prematch', marketType: 'asian_handicap', selectionSide: 'home',
+    ratioField: 'RATIO_R', oddsField: 'IOR_RH', preview: { p: 'FT_order_view', gtype: 'FT', wtype: 'R', chose_team: 'H' },
+    submit: { p: 'FT_bet', gtype: 'FT', wtype: 'R', rtype: 'RH', isRB: 'N', chose_team: 'H', f: '1R' },
+    directionEvidenceId: 'hmac-sha256:eb6d9eff2551932aa82593f5a0ef928008afc6b365de3256ea3f97e5cd51ec7a',
+  },
+  {
+    id: 'prematch-full-time-asian-handicap-away', mode: 'prematch', marketType: 'asian_handicap', selectionSide: 'away',
+    ratioField: 'RATIO_R', oddsField: 'IOR_RC', preview: { p: 'FT_order_view', gtype: 'FT', wtype: 'R', chose_team: 'C' },
+    submit: { p: 'FT_bet', gtype: 'FT', wtype: 'R', rtype: 'RC', isRB: 'N', chose_team: 'C', f: '1R' },
+    directionEvidenceId: 'hmac-sha256:33755a5d8e1c8f55c1db48daaa8c43a9b5892ce7d25a50bcaee06e74b22726a4',
+  },
+  {
+    id: 'prematch-full-time-total-over', mode: 'prematch', marketType: 'total', selectionSide: 'over',
+    ratioField: 'RATIO_OUO', oddsField: 'IOR_OUC', preview: { p: 'FT_order_view', gtype: 'FT', wtype: 'OU', chose_team: 'C' },
+    submit: { p: 'FT_bet', gtype: 'FT', wtype: 'OU', rtype: 'OUC', isRB: 'N', chose_team: 'C', f: '1R' },
+    directionEvidenceId: 'hmac-sha256:6f56f4f8f675b6808675c40512d0e4bc3aadb65594969acb9ec601288052f117',
+  },
+  {
+    id: 'prematch-full-time-total-under', mode: 'prematch', marketType: 'total', selectionSide: 'under',
+    ratioField: 'RATIO_OUU', oddsField: 'IOR_OUH', preview: { p: 'FT_order_view', gtype: 'FT', wtype: 'OU', chose_team: 'H' },
+    submit: { p: 'FT_bet', gtype: 'FT', wtype: 'OU', rtype: 'OUH', isRB: 'N', chose_team: 'H', f: '1R' },
+    directionEvidenceId: 'hmac-sha256:72a7762d3c7edb0decded6d269b395fb15f7fed561070a23daed2e91e6ef805e',
+  },
+  {
+    id: 'live-full-time-asian-handicap-home', mode: 'live', marketType: 'asian_handicap', selectionSide: 'home',
+    ratioField: 'RATIO_RE', oddsField: 'IOR_REH', preview: { p: 'FT_order_view', gtype: 'FT', wtype: 'RE', chose_team: 'H' },
+    submit: { p: 'FT_bet', gtype: 'FT', wtype: 'RE', rtype: 'REH', isRB: 'Y', chose_team: 'H', f: '1R' },
+    directionEvidenceId: 'hmac-sha256:32379e0c94101043c5c8221647f950c086c68ed8958d056b83c3193a11ce1467',
+  },
+  {
+    id: 'live-full-time-asian-handicap-away', mode: 'live', marketType: 'asian_handicap', selectionSide: 'away',
+    ratioField: 'RATIO_RE', oddsField: 'IOR_REC', preview: { p: 'FT_order_view', gtype: 'FT', wtype: 'RE', chose_team: 'C' },
+    submit: { p: 'FT_bet', gtype: 'FT', wtype: 'RE', rtype: 'REC', isRB: 'Y', chose_team: 'C', f: '1R' },
+    directionEvidenceId: 'hmac-sha256:515324e818e07de01993fb1e29566df4758f28a34dc5c29a632b871ace054f01',
+  },
+  {
+    id: 'live-full-time-total-over', mode: 'live', marketType: 'total', selectionSide: 'over',
+    ratioField: 'RATIO_ROUO', oddsField: 'IOR_ROUC', preview: { p: 'FT_order_view', gtype: 'FT', wtype: 'ROU', chose_team: 'C' },
+    submit: { p: 'FT_bet', gtype: 'FT', wtype: 'ROU', rtype: 'ROUC', isRB: 'Y', chose_team: 'C', f: '1R' },
+    directionEvidenceId: 'hmac-sha256:e0069f938137d47cfc34862d1aa75d8c62160c9475fb5669aa656bd1cba37f78',
+  },
+  {
+    id: 'live-full-time-total-under', mode: 'live', marketType: 'total', selectionSide: 'under',
+    ratioField: 'RATIO_ROUU', oddsField: 'IOR_ROUH', preview: { p: 'FT_order_view', gtype: 'FT', wtype: 'ROU', chose_team: 'H' },
+    submit: { p: 'FT_bet', gtype: 'FT', wtype: 'ROU', rtype: 'ROUH', isRB: 'Y', chose_team: 'H', f: '1R' },
+    directionEvidenceId: 'hmac-sha256:e93323217fbb6e612d7d790b4f6d8d56d0bcc1fea7db04d35188363c3cd0ea35',
+  },
+])
+
+function deepFreeze(value) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value
+  for (const child of Object.values(value)) deepFreeze(child)
+  return Object.freeze(value)
+}
+
+function runtimeCapability(direction) {
+  const directAccepted = direction.id === 'prematch-full-time-asian-handicap-away'
+  const previewResponseFieldSet = ACCEPTED_PREVIEW_RESPONSE_FIELD_SET
+  const submitResponseFieldSet = directAccepted ? ACCEPTED_SUBMIT_RESPONSE_FIELD_SET : []
+  const evidenceId = directAccepted
+    ? 'crown-capture-20260714-085221-prematch-full-time-asian-handicap-main-accepted'
+    : `crown-capture-20260714-1848-${direction.id}`
+  const row = {
+    mode: direction.mode,
+    period: 'full_time',
+    marketType: direction.marketType,
+    lineVariant: 'main',
+    selectionSide: direction.selectionSide,
+    evidenceStatus: 'verified',
+    endpoints: {
+      preview: PREVIEW_ENDPOINT,
+      submit: SUBMIT_ENDPOINT,
+      reconciliation: NO_RECONCILIATION_ENDPOINT,
+    },
+    mapperEvidence: {
+      ratioFields: [direction.ratioField],
+      oddsFields: [direction.oddsField],
+      oddsFieldsBySide: { [direction.selectionSide]: direction.oddsField },
+      previewWireBySide: { [direction.selectionSide]: direction.preview },
+      submitWireBySide: { [direction.selectionSide]: direction.submit },
+      wireDefaults: {
+        preview: { langx: 'zh-cn', odd_f_type: 'H' },
+        ...(directAccepted ? {
+          submit: {
+            autoOdd: 'Y', imp: 'N', isYesterday: 'N', langx: 'zh-cn',
+            odd_f_type: 'H', ptype: '', timestamp2: '',
+          },
+        } : {}),
+      },
+      dynamicFieldSources: DYNAMIC_FIELD_SOURCES,
+    },
+    requestFieldSets: {
+      preview: REQUEST_FIELD_SET,
+      submit: ACCEPTED_SUBMIT_REQUEST_FIELD_SET,
+      reconciliation: [],
+    },
+    responseFieldSets: {
+      preview: previewResponseFieldSet,
+      submit: submitResponseFieldSet,
+      reconciliation: [],
+    },
+    acceptanceCandidate: {
+      allowed: true,
+      evidenceId: direction.directionEvidenceId,
+      protocolEvidenceDigest: PROTOCOL_EVIDENCE_DIGEST,
+    },
+    previewAllowed: true,
+    submitAllowed: directAccepted,
+    reconciliationAllowed: false,
+    blockedReason: '',
+    submitBlockedReason: directAccepted ? '' : 'crown-submit-direct-acceptance-missing',
+    reconciliationBlockedReason: 'crown-reconciliation-evidence-missing',
+    evidenceId,
+    protocolEvidenceDigest: PROTOCOL_EVIDENCE_DIGEST,
+    requestFieldSet: REQUEST_FIELD_SET,
+    requestFieldSetFingerprint: fingerprintCrownFieldSet(REQUEST_FIELD_SET),
+    responseFieldSet: previewResponseFieldSet,
+    responseFieldSetFingerprint: fingerprintCrownFieldSet(previewResponseFieldSet),
+    submitRequestFieldSet: ACCEPTED_SUBMIT_REQUEST_FIELD_SET,
+    submitRequestFieldSetFingerprint: fingerprintCrownFieldSet(ACCEPTED_SUBMIT_REQUEST_FIELD_SET),
+    ...(directAccepted ? {
+      submitResponseFieldSet: ACCEPTED_SUBMIT_RESPONSE_FIELD_SET,
+      submitResponseFieldSetFingerprint: fingerprintCrownFieldSet(ACCEPTED_SUBMIT_RESPONSE_FIELD_SET),
+      executionEvidenceSchema: 'crown-execution-evidence-candidate-v3',
+    } : {}),
+  }
+  row.key = capabilityKey(row)
+  return deepFreeze(row)
+}
+
+const ROWS = deepFreeze(DIRECTION_ROWS.map(runtimeCapability))
+
 export function computeCrownCapabilityMatrixVersion(rows = ROWS) {
   const content = rows.map((row) => ({
     key: capabilityKey(row),
     evidenceStatus: row.evidenceStatus,
+    endpoints: row.endpoints,
+    mapperEvidence: row.mapperEvidence,
+    requestFieldSets: row.requestFieldSets,
+    responseFieldSets: row.responseFieldSets,
     previewAllowed: row.previewAllowed,
     submitAllowed: row.submitAllowed,
     reconciliationAllowed: row.reconciliationAllowed,
     blockedReason: row.blockedReason,
     submitBlockedReason: row.submitBlockedReason,
-    evidenceId: row.evidenceId,
-    executionEvidenceSchema: row.executionEvidenceSchema,
-    fixturePath: row.fixturePath,
-    fixtureSha256: row.fixtureSha256,
-    artifactPath: row.artifactPath,
-    artifactSafeDigest: row.artifactSafeDigest,
-    watcherEvidencePath: row.watcherEvidencePath,
-    watcherEvidenceDigest: row.watcherEvidenceDigest,
-    requestRecordEvidenceId: row.requestRecordEvidenceId,
-    responseRecordEvidenceId: row.responseRecordEvidenceId,
-    submitRequestRecordEvidenceId: row.submitRequestRecordEvidenceId,
-    submitResponseRecordEvidenceId: row.submitResponseRecordEvidenceId,
-    mapperEvidence: row.mapperEvidence,
+    reconciliationBlockedReason: row.reconciliationBlockedReason,
+    evidenceId: row.submitAllowed ? row.evidenceId : undefined,
+    protocolEvidenceDigest: row.protocolEvidenceDigest,
     requestFieldSet: canonicalFieldSet(row.requestFieldSet),
     requestFieldSetFingerprint: row.requestFieldSetFingerprint,
     responseFieldSet: canonicalFieldSet(row.responseFieldSet),
@@ -435,38 +517,44 @@ function clone(value) {
   return structuredClone(value)
 }
 
-let canonicalRuntimeVerification = null
-
-function assertCanonicalRuntimeAuthority() {
-  if (!ROWS.some((row) => row.previewAllowed || row.submitAllowed)) return
-  canonicalRuntimeVerification ||= verifyCrownCapabilityMatrix()
-  if (!canonicalRuntimeVerification.ok) throw new Error('crown-capability-matrix-unverified')
+export function createCrownProtocolTemplateIndex(capabilities = []) {
+  if (!Array.isArray(capabilities) || capabilities.length === 0) {
+    throw new TypeError('crown-protocol-template-index')
+  }
+  const templates = new Map()
+  for (const capability of capabilities) {
+    const key = capabilityKey(capability)
+    if (key.split('|').some((part) => !part) || templates.has(key)) {
+      throw new Error('crown-protocol-template-key')
+    }
+    const template = deepFreeze(clone({ ...capability, key }))
+    templates.set(key, template)
+  }
+  return Object.freeze({
+    size: templates.size,
+    get(input = {}) {
+      return templates.get(capabilityKey(input)) || null
+    },
+  })
 }
 
+const RUNTIME_TEMPLATE_INDEX = createCrownProtocolTemplateIndex(ROWS)
+
 export function listCrownCapabilities() {
-  assertCanonicalRuntimeAuthority()
-  return ROWS.map(clone)
+  return Object.freeze([...ROWS])
 }
 
 export function getCrownCapability(input = {}) {
-  assertCanonicalRuntimeAuthority()
-  const key = capabilityKey(input)
-  const row = ROWS.find((candidate) => candidate.key === key)
-  return row ? clone(row) : null
+  return RUNTIME_TEMPLATE_INDEX.get(input)
 }
 
 function rowFrom(value) {
-  assertCanonicalRuntimeAuthority()
-  const suppliedKey = String(value?.key || '').trim()
-  const key = suppliedKey || capabilityKey(value)
-  const row = ROWS.find((candidate) => candidate.key === key)
+  const row = RUNTIME_TEMPLATE_INDEX.get(value)
   if (!row) return null
   const rowMetadataFields = [
     'key', 'evidenceId', 'evidenceStatus', 'previewAllowed', 'submitAllowed', 'reconciliationAllowed', 'blockedReason', 'submitBlockedReason',
-    'artifactPath', 'artifactSafeDigest', 'watcherEvidencePath', 'watcherEvidenceDigest',
-    'requestRecordEvidenceId', 'responseRecordEvidenceId',
-    'submitRequestRecordEvidenceId', 'submitResponseRecordEvidenceId', 'executionEvidenceSchema',
-    'fixturePath', 'fixtureSha256', 'mapperEvidence',
+    'reconciliationBlockedReason', 'endpoints', 'mapperEvidence', 'requestFieldSets', 'responseFieldSets',
+    'acceptanceCandidate', 'protocolEvidenceDigest',
     'requestFieldSet', 'requestFieldSetFingerprint',
     'responseFieldSet', 'responseFieldSetFingerprint',
     'submitRequestFieldSet', 'submitRequestFieldSetFingerprint',
@@ -485,7 +573,7 @@ export function assertCrownCapability(value, { operation = 'preview' } = {}) {
   if (!['preview', 'submit', 'reconciliation'].includes(operation)) throw new Error('crown-capability-operation-blocked')
   if (row.evidenceStatus === 'provisional') throw new Error('crown-capability-provisional')
   if (operation === 'preview' && !row.previewAllowed) throw new Error(row.blockedReason || 'crown-capability-preview-blocked')
-  return clone(row)
+  return row
 }
 
 export function assertCrownCapabilityFieldSets(value, observed = {}) {
@@ -515,7 +603,7 @@ export function assertCrownCapabilityFieldSets(value, observed = {}) {
     }
   }
   if (!checked) throw new Error('crown-capability-field-set-required')
-  return clone(row)
+  return row
 }
 
 function same(left, right) {
@@ -702,7 +790,7 @@ function verifyAcceptedExecutionCandidate(row, fixture, candidate, watcher, erro
   })
 }
 
-export function verifyCrownCapabilityMatrix({ fixturesRoot = DEFAULT_FIXTURES_ROOT, rows = ROWS } = {}) {
+function verifyAcceptedAwayCapabilityEvidence({ fixturesRoot = DEFAULT_FIXTURES_ROOT, rows = ACCEPTED_AWAY_EVIDENCE_ROWS } = {}) {
   const errors = []
   for (const row of rows) {
     const target = fixtureTarget(fixturesRoot, row.fixturePath)
@@ -818,6 +906,182 @@ export function verifyCrownCapabilityMatrix({ fixturesRoot = DEFAULT_FIXTURES_RO
     if (row.evidenceStatus === 'provisional' && (row.previewAllowed || row.submitAllowed)) {
       errors.push(`${row.key}:provisional-allowed`)
     }
+  }
+  return {
+    ok: errors.length === 0,
+    matrixVersion: computeCrownCapabilityMatrixVersion(rows),
+    rowCount: rows.length,
+    provisionalCount: rows.filter((row) => row.evidenceStatus === 'provisional').length,
+    allowedPreviewCount: rows.filter((row) => row.previewAllowed).length,
+    allowedSubmitCount: rows.filter((row) => row.submitAllowed).length,
+    allowedReconciliationCount: rows.filter((row) => row.reconciliationAllowed).length,
+    errors,
+  }
+}
+
+function runtimeCapabilityErrors(rows) {
+  const errors = []
+  const keys = new Set()
+  const canonicalRows = new Map(ROWS.map((row) => [row.key, row]))
+  for (const row of rows) {
+    const key = capabilityKey(row)
+    if (key.split('|').some((part) => !part) || row.key !== key) errors.push(`${key}:key`)
+    if (keys.has(key)) errors.push(`${key}:duplicate`)
+    keys.add(key)
+    if (!canonicalRows.has(key) || !same(row, canonicalRows.get(key))) errors.push(`${key}:canonical-row`)
+    if (row.evidenceStatus !== 'verified') errors.push(`${key}:evidence-status`)
+    if (!same(row.endpoints, {
+      preview: PREVIEW_ENDPOINT,
+      submit: SUBMIT_ENDPOINT,
+      reconciliation: NO_RECONCILIATION_ENDPOINT,
+    })) errors.push(`${key}:endpoints`)
+    const mapper = row.mapperEvidence
+    if (!same(Object.keys(mapper?.previewWireBySide || {}), [row.selectionSide])
+      || !same(Object.keys(mapper?.submitWireBySide || {}), [row.selectionSide])
+      || mapper?.oddsFieldsBySide?.[row.selectionSide] !== mapper?.oddsFields?.[0]
+      || mapper?.ratioFields?.length !== 1
+      || mapper?.oddsFields?.length !== 1) errors.push(`${key}:side-mapper`)
+    if (!same(mapper?.dynamicFieldSources, DYNAMIC_FIELD_SOURCES)) errors.push(`${key}:dynamic-field-sources`)
+    if (!same(row.requestFieldSets?.preview, REQUEST_FIELD_SET)
+      || !same(row.requestFieldSets?.submit, ACCEPTED_SUBMIT_REQUEST_FIELD_SET)
+      || !same(row.responseFieldSets?.preview, ACCEPTED_PREVIEW_RESPONSE_FIELD_SET)
+      || !same(row.responseFieldSet, ACCEPTED_PREVIEW_RESPONSE_FIELD_SET)
+      || row.requestFieldSetFingerprint !== fingerprintCrownFieldSet(row.requestFieldSet)
+      || row.responseFieldSetFingerprint !== fingerprintCrownFieldSet(row.responseFieldSet)
+      || row.submitRequestFieldSetFingerprint !== fingerprintCrownFieldSet(row.submitRequestFieldSet)) {
+      errors.push(`${key}:field-sets`)
+    }
+    if (row.acceptanceCandidate?.allowed !== true
+      || row.acceptanceCandidate?.protocolEvidenceDigest !== PROTOCOL_EVIDENCE_DIGEST
+      || !validEvidenceDigest(row.acceptanceCandidate?.evidenceId)
+      || row.protocolEvidenceDigest !== PROTOCOL_EVIDENCE_DIGEST) errors.push(`${key}:protocol-evidence`)
+    if (row.previewAllowed !== true || row.reconciliationAllowed !== false) errors.push(`${key}:operation-gates`)
+  }
+  const submitRows = rows.filter((row) => row.submitAllowed)
+  if (rows.length !== 8) errors.push('runtime:row-count')
+  if (keys.size !== canonicalRows.size
+    || [...canonicalRows.keys()].some((key) => !keys.has(key))) errors.push('runtime:canonical-coverage')
+  if (submitRows.length !== 1
+    || submitRows[0]?.key !== 'prematch|full_time|asian_handicap|main|away') {
+    errors.push('runtime:submit-authority')
+  }
+  return errors
+}
+
+function readAuditArtifact(fixturesRoot, relativePath, errors) {
+  const target = fixtureTarget(fixturesRoot, relativePath)
+  if (!target) {
+    errors.push(`${relativePath}:path`)
+    return null
+  }
+  let text
+  try {
+    text = fs.readFileSync(target, 'utf8')
+  } catch {
+    errors.push(`${relativePath}:missing`)
+    return null
+  }
+  if (PROHIBITED_FIXTURE_TEXT.test(text) || ABSOLUTE_FIXTURE_PATH.test(text) || /data[\\/]runtime/i.test(text)) {
+    errors.push(`${relativePath}:unsafe`)
+  }
+  try {
+    return JSON.parse(text)
+  } catch {
+    errors.push(`${relativePath}:json`)
+    return null
+  }
+}
+
+function embeddedDigest(artifact, field) {
+  if (!evidenceObject(artifact)) return ''
+  const { [field]: _digest, ...content } = artifact
+  return `sha256:${sha256(stableJson(content))}`
+}
+
+function auditTaskTwoProtocol(fixturesRoot, rows, errors) {
+  const artifactRoot = 'artifacts'
+  const candidates = readAuditArtifact(
+    fixturesRoot,
+    `${artifactRoot}/20260714-1848-eight-direction-candidates.safe.json`,
+    errors,
+  )
+  const staticWire = readAuditArtifact(
+    fixturesRoot,
+    `${artifactRoot}/20260714-1848-static-wire-evidence.safe.json`,
+    errors,
+  )
+  const catalog = readAuditArtifact(
+    fixturesRoot,
+    `${artifactRoot}/20260714-1848-protocol-catalog.safe.json`,
+    errors,
+  )
+  if (candidates) {
+    if (candidates.schemaVersion !== 'crown-eight-direction-candidates-v1'
+      || candidates.candidateDigest !== EIGHT_DIRECTION_CANDIDATE_DIGEST
+      || candidates.candidateDigest !== embeddedDigest(candidates, 'candidateDigest')
+      || candidates.candidates?.length !== 8) errors.push('task2:candidates')
+    for (const candidate of candidates.candidates || []) {
+      const row = rows.find((item) => item.mode === candidate.direction?.mode
+        && item.period === candidate.direction?.period
+        && item.marketType === candidate.direction?.marketType
+        && item.lineVariant === candidate.direction?.lineVariant
+        && item.selectionSide === candidate.direction?.side)
+      if (!row
+        || candidate.status !== 'candidate'
+        || candidate.reason !== 'preview-success-submit-route-blocked'
+        || candidate.dispatchCount !== 0
+        || candidate.submitAllowed !== false
+        || candidate.capabilityPromoted !== false
+        || candidate.directionWireBinding !== row?.acceptanceCandidate?.evidenceId
+        || !same(candidate.wireTemplate?.previewStaticValues, Object.entries(
+          row?.mapperEvidence?.previewWireBySide?.[row?.selectionSide] || {},
+        ).map(([field, value]) => ({ field, value })))
+        || !same(candidate.wireTemplate?.submitStaticValues, Object.entries(
+          row?.mapperEvidence?.submitWireBySide?.[row?.selectionSide] || {},
+        ).map(([field, value]) => ({ field, value })))) errors.push(`task2:${candidate.direction?.id || 'direction'}`)
+    }
+  }
+  if (staticWire) {
+    if (staticWire.schemaVersion !== 'crown-static-wire-evidence-v1'
+      || staticWire.evidenceDigest !== PROTOCOL_EVIDENCE_DIGEST
+      || staticWire.evidenceDigest !== embeddedDigest(staticWire, 'evidenceDigest')) errors.push('task2:static-wire')
+    const preview = staticWire.entries?.find((entry) => entry.functionName === 'FT_order_view'
+      && same(entry.response?.fields?.map(({ name }) => name), ACCEPTED_PREVIEW_RESPONSE_FIELD_SET))
+    const submit = staticWire.entries?.find((entry) => entry.functionName === 'FT_bet')
+    if (preview?.endpointPath !== PREVIEW_ENDPOINT.path
+      || submit?.endpointPath !== SUBMIT_ENDPOINT.path
+      || !same(preview?.request?.fields?.map(({ name }) => name), REQUEST_FIELD_SET)
+      || !same(preview?.response?.fields?.map(({ name }) => name), ACCEPTED_PREVIEW_RESPONSE_FIELD_SET)
+      || !same(submit?.request?.fields?.map(({ name }) => name), ACCEPTED_SUBMIT_REQUEST_FIELD_SET)) {
+      errors.push('task2:static-wire-contract')
+    }
+  }
+  if (catalog) {
+    if (catalog.schemaVersion !== 'crown-protocol-catalog-candidate-v1'
+      || catalog.expectedDirectionCount !== 8
+      || catalog.observedDirectionCount !== 8
+      || catalog.catalogDigest !== TASK_TWO_CATALOG_DIGEST
+      || catalog.catalogDigest !== embeddedDigest(catalog, 'catalogDigest')) errors.push('task2:catalog')
+  }
+}
+
+export function verifyCrownCapabilityMatrix({
+  fixturesRoot = DEFAULT_FIXTURES_ROOT,
+  rows = ROWS,
+} = {}) {
+  const errors = runtimeCapabilityErrors(rows)
+  auditTaskTwoProtocol(fixturesRoot, rows, errors)
+  const accepted = verifyAcceptedAwayCapabilityEvidence({ fixturesRoot })
+  errors.push(...accepted.errors.map((error) => `accepted-away:${error}`))
+  const runtimeAccepted = rows.find((row) => row.key === 'prematch|full_time|asian_handicap|main|away')
+  const acceptedEvidence = ACCEPTED_AWAY_EVIDENCE_ROWS[0]
+  if (!runtimeAccepted || !acceptedEvidence
+    || runtimeAccepted.evidenceId !== acceptedEvidence.evidenceId
+    || runtimeAccepted.executionEvidenceSchema !== acceptedEvidence.executionEvidenceSchema
+    || !same(runtimeAccepted.responseFieldSet, acceptedEvidence.responseFieldSet)
+    || !same(runtimeAccepted.submitRequestFieldSet, acceptedEvidence.submitRequestFieldSet)
+    || !same(runtimeAccepted.submitResponseFieldSet, acceptedEvidence.submitResponseFieldSet)) {
+    errors.push('accepted-away:runtime-binding')
   }
   return {
     ok: errors.length === 0,

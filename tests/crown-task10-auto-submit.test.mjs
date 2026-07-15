@@ -15,9 +15,9 @@ import { CrownAccountExecutionProvider } from '../src/crown/betting/crown-accoun
 import { CrownAccountPreviewProvider } from '../src/crown/betting/crown-account-provider.mjs'
 import { normalizeCrownTransformXml } from '../src/crown/crown-transform-xml.mjs'
 
-const CAPABILITY_KEY = 'prematch|full_time|asian_handicap|main'
+const CAPABILITY_KEY = 'prematch|full_time|asian_handicap|main|away'
 
-function record(side = 'home') {
+function record(side = 'away') {
   return {
     provider: 'crown',
     mode: 'prematch',
@@ -38,7 +38,7 @@ function record(side = 'home') {
   }
 }
 
-function lockedIdentity(side = 'home') {
+function lockedIdentity(side = 'away') {
   return {
     provider: 'crown',
     gid: 'event-safe',
@@ -51,7 +51,7 @@ function lockedIdentity(side = 'home') {
   }
 }
 
-function preview(side = 'home') {
+function preview(side = 'away') {
   return {
     minStakeMinor: 50,
     maxStakeMinor: 20000,
@@ -68,7 +68,7 @@ function preview(side = 'home') {
   }
 }
 
-function lockedEnvelope(side = 'home') {
+function lockedEnvelope(side = 'away') {
   const snapshot = {
     ...record(side),
     event: { eventKey: 'crown|football|gid=event-safe', ids: { gid: 'event-safe' } },
@@ -94,16 +94,15 @@ function currentEnvelopeWithIdentityDrift(field) {
   if (field === 'market') envelope.marketType = envelope.snapshot.market.marketType = 'total'
   if (field === 'lineVariant') envelope.snapshot.market.lineVariant = 'alternate_a'
   if (field === 'line') envelope.snapshot.market.handicapRaw = '1'
-  if (field === 'side') envelope.side = envelope.snapshot.selection.side = 'away'
+  if (field === 'side') envelope.side = envelope.snapshot.selection.side = 'home'
   return envelope
 }
 
 test('canonical matrix enables exactly one accepted-only row and keeps reconciliation closed', () => {
   const rows = listCrownCapabilities()
-  const enabled = rows.filter((row) => row.previewAllowed || row.submitAllowed || row.reconciliationAllowed)
+  const enabled = rows.filter((row) => row.submitAllowed)
+  assert.equal(rows.filter((row) => row.previewAllowed).length, 8)
   assert.deepEqual(enabled.map((row) => row.key), [CAPABILITY_KEY])
-  assert.equal(enabled[0].previewAllowed, true)
-  assert.equal(enabled[0].submitAllowed, true)
   assert.equal(enabled[0].reconciliationAllowed, false)
   assert.equal(assertCrownCapability(enabled[0], { operation: 'preview' }).key, CAPABILITY_KEY)
   assert.equal(assertCrownCapability(enabled[0], { operation: 'submit' }).key, CAPABILITY_KEY)
@@ -115,84 +114,102 @@ test('canonical matrix enables exactly one accepted-only row and keeps reconcili
     verified.allowedPreviewCount,
     verified.allowedSubmitCount,
     verified.allowedReconciliationCount,
-  ], [1, 1, 0])
+  ], [8, 1, 0])
 })
 
-test('watcher marks only prematch RATIO_R full-time asian handicap as main', () => {
+test('watcher marks exactly the eight verified full-time directions as main', () => {
   const xml = `<serverresponse><code>617</code><game>
     <GID>1001</GID><LID>1</LID><ECID>2</ECID><LEAGUE>Safe</LEAGUE><TEAM_H>H</TEAM_H><TEAM_C>C</TEAM_C>
     <RATIO_R>0.5 / 1</RATIO_R><IOR_RH>0.96</IOR_RH><IOR_RC>0.94</IOR_RC>
+    <RATIO_OUO>2.5</RATIO_OUO><RATIO_OUU>2.5</RATIO_OUU><IOR_OUC>0.93</IOR_OUC><IOR_OUH>0.97</IOR_OUH>
     <RATIO_RE>0.5 / 1</RATIO_RE><IOR_REH>0.92</IOR_REH><IOR_REC>0.98</IOR_REC>
+    <RATIO_ROUO>2.5</RATIO_ROUO><RATIO_ROUU>2.5</RATIO_ROUU><IOR_ROUC>0.91</IOR_ROUC><IOR_ROUH>0.99</IOR_ROUH>
     <RATIO_AR>1</RATIO_AR><IOR_ARH>0.90</IOR_ARH><IOR_ARC>1.00</IOR_ARC>
   </game></serverresponse>`
   const prematch = normalizeCrownTransformXml({ body: xml, metadata: { mode: 'prematch' } })
-  const r = prematch.filter((item) => item.market.ratioField === 'RATIO_R')
-  assert.equal(r.length, 2)
-  assert.ok(r.every((item) => item.market.lineVariant === 'main' && item.market.isMainMarket === true))
-  assert.ok(prematch.filter((item) => item.market.ratioField !== 'RATIO_R')
-    .every((item) => item.market.lineVariant !== 'main' && item.market.isMainMarket !== true))
+  assert.deepEqual(prematch.filter((item) => item.market.lineVariant === 'main').map((item) => [
+    item.market.ratioField,
+    item.selection.oddsField,
+  ]), [
+    ['RATIO_R', 'IOR_RH'],
+    ['RATIO_R', 'IOR_RC'],
+    ['RATIO_OUO', 'IOR_OUC'],
+    ['RATIO_OUU', 'IOR_OUH'],
+  ])
 
   const live = normalizeCrownTransformXml({
     body: xml.replace('<GID>1001</GID>', '<SHOWTYPE>RB</SHOWTYPE><GID>1001</GID>'),
   })
-  assert.ok(live.every((item) => item.market.lineVariant !== 'main' && item.market.isMainMarket !== true))
+  assert.deepEqual(live.filter((item) => item.market.lineVariant === 'main').map((item) => [
+    item.market.ratioField,
+    item.selection.oddsField,
+  ]), [
+    ['RATIO_RE', 'IOR_REH'],
+    ['RATIO_RE', 'IOR_REC'],
+    ['RATIO_ROUO', 'IOR_ROUC'],
+    ['RATIO_ROUU', 'IOR_ROUH'],
+  ])
+  assert.ok([...prematch, ...live]
+    .filter((item) => item.market.ratioField === 'RATIO_AR')
+    .every((item) => item.market.lineVariant === 'unknown' && item.market.isMainMarket === 'unknown'))
 })
 
 test('strict Preview and Submit map exact home and away fields; opaque f=1R stays full-time', () => {
-  const capability = listCrownCapabilities().find((row) => row.key === CAPABILITY_KEY)
-  for (const [side, choseTeam, rtype] of [['home', 'H', 'RH'], ['away', 'C', 'RC']]) {
-    const mapped = buildStrictCrownPreviewFields(record(side), { capability })
+  const awayCapability = listCrownCapabilities().find((row) => row.key === CAPABILITY_KEY)
+  const homeCapability = listCrownCapabilities().find((row) => row.key === 'prematch|full_time|asian_handicap|main|home')
+  for (const [side, choseTeam, row] of [['home', 'H', homeCapability], ['away', 'C', awayCapability]]) {
+    const mapped = buildStrictCrownPreviewFields(record(side), { capability: row })
     assert.deepEqual(mapped.preview, {
       gid: 'event-safe', gtype: 'FT', wtype: 'R', chose_team: choseTeam,
     })
     assert.equal(mapped.identity.period, 'full_time')
-
-    const before = Date.now()
-    const submit = buildStrictCrownSubmitWireFields({
-      lockedIdentity: lockedIdentity(side),
-      currentIdentity: lockedIdentity(side),
-      preview: preview(side),
-      amountMinor: 50,
-    }, {
-      capability,
-      protocolVersion: 'verified-version',
-      protocolVersionEvidence: {
-        source: 'production-session-metadata', captured: true, verified: true,
-      },
-    })
-    const after = Date.now()
-    assert.equal(submit.p, 'FT_bet')
-    assert.equal(submit.gtype, 'FT')
-    assert.equal(submit.wtype, 'R')
-    assert.equal(submit.rtype, rtype)
-    assert.equal(submit.chose_team, choseTeam)
-    assert.equal(submit.isRB, 'N')
-    assert.equal(submit.f, '1R')
-    assert.equal(submit.golds, '50')
-    assert.equal(submit.con, '1')
-    assert.equal(submit.ratio, '50')
-    assert.equal(submit.timestamp2, '')
-    assert.match(submit.timestamp, /^\d{13}$/)
-    assert.ok(Number(submit.timestamp) >= before && Number(submit.timestamp) <= after)
   }
 
-  assert.doesNotThrow(() => buildStrictCrownSubmitWireFields({
+  assert.throws(() => buildStrictCrownSubmitWireFields({
+    lockedIdentity: lockedIdentity('home'), currentIdentity: lockedIdentity('home'),
+    preview: preview('home'), amountMinor: 50,
+  }, { capability: homeCapability }), /unverified-crown-submit-capability/)
+
+  const before = Date.now()
+  const submit = buildStrictCrownSubmitWireFields({
+    lockedIdentity: lockedIdentity(), currentIdentity: lockedIdentity(),
+    preview: preview(), amountMinor: 50,
+  }, {
+    capability: awayCapability,
+    protocolVersion: 'verified-version',
+    protocolVersionEvidence: {
+      source: 'production-session-metadata', captured: true, verified: true,
+    },
+  })
+  const after = Date.now()
+  assert.deepEqual({
+    p: submit.p, gtype: submit.gtype, wtype: submit.wtype, rtype: submit.rtype,
+    chose_team: submit.chose_team, isRB: submit.isRB, f: submit.f, golds: submit.golds,
+    con: submit.con, ratio: submit.ratio, timestamp2: submit.timestamp2,
+  }, {
+    p: 'FT_bet', gtype: 'FT', wtype: 'R', rtype: 'RC', chose_team: 'C',
+    isRB: 'N', f: '1R', golds: '50', con: '1', ratio: '50', timestamp2: '',
+  })
+  assert.match(submit.timestamp, /^\d{13}$/)
+  assert.ok(Number(submit.timestamp) >= before && Number(submit.timestamp) <= after)
+
+  assert.throws(() => buildStrictCrownSubmitWireFields({
     lockedIdentity: lockedIdentity(), currentIdentity: lockedIdentity(),
     preview: preview(), amountMinor: 100,
   }, {
-    capability,
+    capability: awayCapability,
     protocolVersion: 'verified-version',
     protocolVersionEvidence: { source: 'production-session-metadata', captured: true, verified: true },
-  }))
+  }), /crown-submit-stake-step-unverified/)
   for (const amountMinor of [49, 51, 80]) {
     assert.throws(() => buildStrictCrownSubmitWireFields({
       lockedIdentity: lockedIdentity(), currentIdentity: lockedIdentity(),
       preview: preview(), amountMinor,
     }, {
-      capability,
+      capability: awayCapability,
       protocolVersion: 'verified-version',
       protocolVersionEvidence: { source: 'production-session-metadata', captured: true, verified: true },
-    }), /crown-submit-(?:money-contract|local-quantum)/)
+    }), /crown-submit-(?:money-contract|stake-step-unverified|stake-step-mismatch)/)
   }
 })
 
@@ -203,8 +220,9 @@ test('production Preview returns the evidence-complete B2 execution contract for
   }
   const session = {
     accountId: account.id, username: account.username, baseUrl: account.loginUrl,
-    uid: 'private-uid', cookies: { SESSION: 'private-cookie' }, protocolVersion: 'verified-version',
-    protocolVersionEvidence: { source: 'production-session-metadata', captured: true, verified: true },
+    origin: account.loginUrl, uid: 'private-uid', protocolVersion: 'verified-version',
+    contextGeneration: 'preview-generation',
+    protocolVersionEvidence: { source: 'production-login-response', captured: true, verified: true },
   }
   const capability = listCrownCapabilities().find((row) => row.key === CAPABILITY_KEY)
   const fields = Object.fromEntries(capability.responseFieldSet.map((field) => [field, 'x']))
@@ -214,20 +232,25 @@ test('production Preview returns the evidence-complete B2 execution contract for
   })
   const xml = `<serverresponse>${Object.entries(fields)
     .map(([field, value]) => `<${field}>${value}</${field}>`).join('')}</serverresponse>`
-  let saved = null
-  const loginManager = {
-    async ensureBettingSession() { return { session } },
+  const browserRuntime = {
+    async ensureBettingSession() { return session },
     async fetchFreshExecutionBalance() {
-      const result = { currency: 'CNY', balanceCny: 500, observedAt: '2026-07-14T00:00:00.000Z' }
-      Object.defineProperty(result, 'session', { value: session })
-      return result
+      return {
+        summary: { valid: true, reportedBalance: '500.00', reportedCurrency: 'CNY' },
+        session,
+        transport: { operation: 'get_member_data', endpointPath: '/transform.php', status: 200 },
+      }
     },
-    client: { async postForm() { return { text: xml, cookies: { SESSION: 'rotated-private' } } } },
-    bettingStoreFor() { return { saveSession(_account, value) { saved = value } } },
+    async postPreviewForm() {
+      return {
+        text: xml,
+        transport: { operation: 'FT_order_view', endpointPath: '/transform.php', status: 200 },
+      }
+    },
   }
   const provider = new CrownAccountPreviewProvider({
     repository: { getBettingAccountForExecution() { return account } },
-    loginManager,
+    browserRuntime,
     executorLease: {
       leaseKey: 'betting-executor:preview-task10', fencingToken: 1,
       assertFence(token) { assert.equal(token, 1); return 1 },
@@ -239,12 +262,12 @@ test('production Preview returns the evidence-complete B2 execution contract for
     market: { ...record().market, lineKey: 'RATIO_R' },
     selection: {
       ...record().selection,
-      selectionIdentity: 'crown|football|gid=event-safe|full_time|asian_handicap|RATIO_R|home',
+      selectionIdentity: 'crown|football|gid=event-safe|full_time|asian_handicap|RATIO_R|away',
     },
   }
   const envelope = {
     provider: 'crown', eventKey: snapshot.event.eventKey, period: 'full_time',
-    marketType: 'asian_handicap', lineKey: 'RATIO_R', side: 'home',
+    marketType: 'asian_handicap', lineKey: 'RATIO_R', side: 'away',
     selectionIdentity: snapshot.selection.selectionIdentity, snapshot,
   }
   const result = await provider.preview({
@@ -253,13 +276,14 @@ test('production Preview returns the evidence-complete B2 execution contract for
   assert.equal(result.realExecutionEligible, true)
   assert.deepEqual(result.realExecutionBlockers, [])
   assert.deepEqual(result.executionPreview, {
-    minStakeMinor: 50, maxStakeMinor: 20000, stakeStepMinor: 50,
-    stakeStepProvenance: 'local-conservative-policy', odds: '0.96', line: '0.5 / 1',
+    minStakeMinor: 50, maxStakeMinor: 20000, stakeStepMinor: null,
+    stakeStepProvenance: 'not-evidenced-in-preview-response', odds: '0.96', line: '0.5 / 1',
     submitCon: '1', submitRatio: '50',
     currency: 'CNY', amountScale: 0, lockedIdentity: lockedIdentity(),
   })
   assert.equal(result.freshBalanceCny, 500)
-  assert.equal(Object.hasOwn(saved, 'protocolVersion'), true)
+  assert.equal(result.browserSession, session)
+  assert.equal(Object.keys(result).includes('browserSession'), false)
 })
 
 test('strict Submit response accepts only the direct 560 identity and amount/odds echo contract', () => {
@@ -279,6 +303,9 @@ test('strict Submit response accepts only the direct 560 identity and amount/odd
   assert.equal(accepted.kind, 'accepted')
   assert.equal(accepted.providerReferenceCiphertext, 'v2:safe:cipher:text')
   assert.equal(JSON.stringify(accepted).includes('order-safe'), false)
+  assert.equal(parseCrownSubmitResponseStrict(response({ odds: '0.960' }), {
+    expected, sealReference: () => 'v2:safe:cipher:text',
+  }).kind, 'accepted')
 
   for (const values of [
     { code: '561' }, { result: '' }, { gid: 'drift' }, { gtype: 'HT' },
@@ -298,15 +325,15 @@ test('execution provider starts one network call, builds FT_bet internally, and 
     id: 'account-safe', username: 'owner-safe', loginUrl: 'https://crown.example.com',
     perBetLimitMinor: 50, currency: 'CNY',
   }
-  let saved = null
   const session = {
     accountId: account.id, username: account.username, baseUrl: account.loginUrl,
-    uid: 'uid-private', cookies: { SESSION: 'private' }, protocolVersion: 'verified-version',
-    protocolVersionEvidence: { source: 'production-session-metadata', captured: true, verified: true },
+    origin: account.loginUrl, uid: 'uid-private', protocolVersion: 'verified-version',
+    contextGeneration: 'submit-generation',
+    protocolVersionEvidence: { source: 'production-login-response', captured: true, verified: true },
   }
   const submitResponseFields = Object.fromEntries(capability.submitResponseFieldSet.map((field) => [field, 'x']))
   Object.assign(submitResponseFields, {
-    code: '560', gid: 'event-safe', gtype: 'FT', wtype: 'R', rtype: 'RH',
+    code: '560', gid: 'event-safe', gtype: 'FT', wtype: 'R', rtype: 'RC',
     gold: '50', ioratio: '0.96', mid: 'member-private', username: account.username,
     w_id: 'reference-private',
   })
@@ -324,46 +351,26 @@ test('execution provider starts one network call, builds FT_bet internally, and 
       return 'v2:safe:cipher:text'
     },
   }
-  const loginManager = {
-    verifiedBettingSessionFor({ session: storedSession }) {
-      assert.equal(storedSession, session)
+  const browserRuntime = {
+    verifiedBettingSessionFor({ session: currentSession }) {
+      assert.equal(currentSession, session)
       return session
     },
-    bettingStoreFor() {
+    async postSubmitForm(input) {
+      calls.push(input)
+      await input.beforeDispatch()
       return {
-        readSession() { return { session } },
-        saveSession(_account, value) { saved = value },
+        text: xml,
+        transport: { operation: 'FT_bet', endpointPath: '/transform.php', status: 200 },
       }
-    },
-    client: {
-      async postForm(input) {
-        calls.push(input)
-        return { text: xml, cookies: { SESSION: 'rotated-private' } }
-      },
     },
   }
   const lease = {
     leaseKey: 'betting-executor:task10-test', fencingToken: 1,
     assertFence(token) { assert.equal(token, 1); return 1 },
   }
-  let freshPreviewCalls = 0
-  const previewProvider = {
-    async preview({ accountId, batchId, lockedSelection }) {
-      freshPreviewCalls += 1
-      assert.equal(accountId, account.id)
-      assert.equal(batchId, 'batch-safe')
-      assert.deepEqual(lockedSelection, lockedEnvelope())
-      return {
-        lockedIdentity: structuredClone(lockedIdentity()),
-        executionPreview: structuredClone(preview()),
-        freshBalanceCny: 500,
-        capabilityEvidenceId: capability.evidenceId,
-        capabilityVersion: verifyCrownCapabilityMatrix().matrixVersion,
-      }
-    },
-  }
   const provider = new CrownAccountExecutionProvider({
-    repository, loginManager, previewProvider, executorLease: lease, logger: (row) => logs.push(row),
+    repository, browserRuntime, executorLease: lease, logger: (row) => logs.push(row),
   })
   let networkStarted = 0
   const result = await provider.submit({
@@ -376,31 +383,34 @@ test('execution provider starts one network call, builds FT_bet internally, and 
     lockedIdentity: lockedIdentity(),
     lockedSelection: lockedEnvelope(),
     preview: preview(),
+    browserSession: session,
     amountMinor: 50,
     remainingChildAmountMinor: 50,
     onNetworkStarted() { networkStarted += 1 },
   })
-  assert.deepEqual(result, { kind: 'accepted', providerReferenceCiphertext: 'v2:safe:cipher:text' })
+  assert.deepEqual(result, {
+    kind: 'accepted', providerReferenceCiphertext: 'v2:safe:cipher:text',
+    transportKind: 'browser-page-fetch',
+  })
   assert.equal(networkStarted, 1)
-  assert.equal(freshPreviewCalls, 1)
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].form.p, 'FT_bet')
-  assert.equal(calls[0].form.uid, 'uid-private')
-  assert.equal(calls[0].form.golds, '50')
-  assert.equal(calls[0].form.f, '1R')
-  assert.equal(saved.cookies.SESSION, 'rotated-private')
-  assert.doesNotMatch(JSON.stringify({ result, logs }), /uid-private|reference-private|member-private|rotated-private/)
+  assert.equal(calls[0].wireFields.p, 'FT_bet')
+  assert.equal(Object.hasOwn(calls[0].wireFields, 'uid'), false)
+  assert.equal(calls[0].wireFields.golds, '50')
+  assert.equal(calls[0].wireFields.f, '1R')
+  assert.doesNotMatch(JSON.stringify({ result, logs }), /uid-private|reference-private|member-private/)
 })
 
-test('execution provider independently re-reads and re-Previews all identity fields and prepared money before Submit', async (t) => {
+test('execution provider validates every final Preview identity and money field before Browser Submit', async (t) => {
   const capability = listCrownCapabilities().find((row) => row.key === CAPABILITY_KEY)
   const account = {
     id: 'account-safe', username: 'owner-safe', loginUrl: 'https://crown.example.com',
     perBetLimitMinor: 50, currency: 'CNY',
   }
   const session = {
-    accountId: account.id, username: account.username, baseUrl: account.loginUrl,
-    uid: 'uid-private', cookies: {}, protocolVersion: 'verified-version',
+    accountId: account.id, username: account.username, origin: account.loginUrl,
+    baseUrl: account.loginUrl, uid: 'uid-private', protocolVersion: 'verified-version',
+    contextGeneration: 'validation-generation',
     protocolVersionEvidence: { source: 'production-login-response', captured: true, verified: true },
   }
   const baseInput = {
@@ -408,21 +418,21 @@ test('execution provider independently re-reads and re-Previews all identity fie
     submitAttemptId: 'attempt-safe', capabilityVersion: verifyCrownCapabilityMatrix().matrixVersion,
     capabilityEvidenceId: capability.evidenceId, lockedIdentity: lockedIdentity(),
     lockedSelection: lockedEnvelope(), preview: preview(),
+    browserSession: session,
     amountMinor: 50, remainingChildAmountMinor: 50, onNetworkStarted() {},
   }
   const cases = [
     ...Object.keys(lockedIdentity()).map((field) => [field, {
-      identity: { ...lockedIdentity(), [field]: `${lockedIdentity()[field]}-drift` },
+      ...preview(), lockedIdentity: { ...lockedIdentity(), [field]: `${lockedIdentity()[field]}-drift` },
     }]),
-    ['odds', { executionPreview: { ...preview(), odds: '0.95' } }],
-    ['minimum', { executionPreview: { ...preview(), minStakeMinor: 100 } }],
-    ['balance', { balance: 499 }],
+    ['odds', { ...preview(), odds: '0.95' }],
+    ['minimum', { ...preview(), minStakeMinor: 100 }],
+    ['balance', { ...preview(), balanceMinor: 49 }],
   ]
-  for (const [name, mutation] of cases) {
+  for (const [name, finalPreview] of cases) {
     await t.test(name, async () => {
       let submitCalls = 0
       let currentReads = 0
-      let previewCalls = 0
       const repository = {
         getBettingAccountForExecution() { return account },
         getCurrentCrownSelectionForExecution(value) {
@@ -432,40 +442,26 @@ test('execution provider independently re-reads and re-Previews all identity fie
         },
         sealCrownProviderReference() { throw new Error('seal-must-not-run') },
       }
-      const loginManager = {
-        verifiedBettingSessionFor() { return session },
-        bettingStoreFor() { return { readSession() { return { session } }, saveSession() {} } },
-        client: { async postForm() { submitCalls += 1; throw new Error('submit-must-not-run') } },
-      }
-      const previewProvider = {
-        async preview() {
-          previewCalls += 1
-          return {
-            lockedIdentity: mutation.identity || structuredClone(lockedIdentity()),
-            executionPreview: mutation.executionPreview || structuredClone(preview()),
-            freshBalanceCny: mutation.balance ?? 500,
-            capabilityEvidenceId: capability.evidenceId,
-            capabilityVersion: verifyCrownCapabilityMatrix().matrixVersion,
-          }
-        },
-      }
       const provider = new CrownAccountExecutionProvider({
-        repository, loginManager, previewProvider,
+        repository,
+        browserRuntime: {
+          verifiedBettingSessionFor() { return session },
+          async postSubmitForm() { submitCalls += 1; throw new Error('submit-must-not-run') },
+        },
         executorLease: {
           leaseKey: 'betting-executor:task10-recheck', fencingToken: 1,
           assertFence() { return 1 },
         },
       })
-      await assert.rejects(() => provider.submit(baseInput),
+      await assert.rejects(() => provider.submit({ ...baseInput, preview: finalPreview }),
         /crown-submit-(?:current-identity-drift|fresh-preview-drift)/)
       assert.equal(currentReads, 1)
-      assert.equal(previewCalls, 1)
       assert.equal(submitCalls, 0)
     })
   }
 })
 
-test('execution provider rejects latest Crown selection identity and odds drift before fresh Preview or Submit', async (t) => {
+test('execution provider rejects latest Crown selection identity and odds drift before account or Browser Submit', async (t) => {
   const capability = listCrownCapabilities().find((row) => row.key === CAPABILITY_KEY)
   const baseInput = {
     accountId: 'account-safe', batchId: 'batch-safe', childOrderId: 'child-safe',
@@ -476,7 +472,6 @@ test('execution provider rejects latest Crown selection identity and odds drift 
   }
   for (const field of ['gid', 'mode', 'period', 'market', 'lineVariant', 'line', 'side', 'odds']) {
     await t.test(field, async () => {
-      let previewCalls = 0
       let submitCalls = 0
       const current = field === 'odds' ? structuredClone(lockedEnvelope()) : currentEnvelopeWithIdentityDrift(field)
       if (field === 'odds') current.snapshot.selection.oddsRaw = '0.95'
@@ -486,11 +481,10 @@ test('execution provider rejects latest Crown selection identity and odds drift 
           getCurrentCrownSelectionForExecution() { return current },
           sealCrownProviderReference() { throw new Error('seal-must-not-run') },
         },
-        loginManager: {
-          bettingStoreFor() { throw new Error('session-must-not-read') },
-          client: { async postForm() { submitCalls += 1 } },
+        browserRuntime: {
+          verifiedBettingSessionFor() { throw new Error('session-must-not-read') },
+          async postSubmitForm() { submitCalls += 1 },
         },
-        previewProvider: { async preview() { previewCalls += 1 } },
         executorLease: {
           leaseKey: 'betting-executor:task10-current-selection', fencingToken: 1,
           assertFence() { return 1 },
@@ -498,8 +492,203 @@ test('execution provider rejects latest Crown selection identity and odds drift 
       })
       await assert.rejects(() => provider.submit(baseInput),
         /crown-submit-(?:current-identity-drift|fresh-preview-drift)/)
-      assert.equal(previewCalls, 0)
       assert.equal(submitCalls, 0)
     })
   }
+})
+
+function browserSession(account) {
+  return Object.freeze({
+    accountId: account.id,
+    username: account.username,
+    origin: account.loginUrl,
+    baseUrl: account.loginUrl,
+    uid: 'browser-private-uid',
+    protocolVersion: 'browser-version',
+    protocolVersionEvidence: {
+      source: 'production-login-response', captured: true, verified: true,
+    },
+    contextGeneration: 'browser-generation-1',
+  })
+}
+
+test('production Submit forwards B2 beforeDispatch unchanged to BrowserAccountRuntime and accepts the fresh minimum', async (t) => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => { throw new Error('node-fetch-must-not-run') }
+  t.after(() => { globalThis.fetch = originalFetch })
+  const capability = listCrownCapabilities().find((row) => row.key === CAPABILITY_KEY)
+  const account = {
+    id: 'browser-submit', username: 'browser-owner', loginUrl: 'https://crown.example.com',
+    perBetLimitMinor: 200, currency: 'CNY',
+  }
+  const session = browserSession(account)
+  const submitFields = Object.fromEntries(capability.submitResponseFieldSet.map((field) => [field, 'x']))
+  Object.assign(submitFields, {
+    code: '560', gid: 'event-safe', gtype: 'FT', wtype: 'R', rtype: 'RC',
+    gold: '60', ioratio: '0.96', w_id: 'browser-reference-private',
+  })
+  const submitXml = `<serverresponse>${Object.entries(submitFields)
+    .map(([field, value]) => `<${field}>${value}</${field}>`).join('')}</serverresponse>`
+  let submitted = null
+  const browserRuntime = {
+    verifiedBettingSessionFor({ account: checkedAccount, session: checkedSession }) {
+      assert.equal(checkedAccount, account)
+      assert.equal(checkedSession, session)
+      return session
+    },
+    async postSubmitForm(input) {
+      submitted = input
+      await input.beforeDispatch()
+      return {
+        text: submitXml,
+        transport: { operation: 'FT_bet', endpointPath: '/transform.php', status: 200 },
+      }
+    },
+  }
+  const finalExecutionPreview = {
+    ...preview(), minStakeMinor: 60, maxStakeMinor: 1000,
+    balanceMinor: 300, stakeStepMinor: null,
+    stakeStepProvenance: 'not-evidenced-in-preview-response',
+  }
+  const repository = {
+    getBettingAccountForExecution() { return account },
+    getCurrentCrownSelectionForExecution() { return structuredClone(lockedEnvelope()) },
+    sealCrownProviderReference(reference) {
+      assert.equal(reference, 'browser-reference-private')
+      return 'v2:safe:cipher:text'
+    },
+  }
+  const provider = new CrownAccountExecutionProvider({
+    repository,
+    browserRuntime,
+    loginManager: {
+      client: { async postForm() { throw new Error('legacy-post-form-must-not-run') } },
+      bettingStoreFor() { throw new Error('legacy-session-store-must-not-run') },
+    },
+    executorLease: {
+      leaseKey: 'betting-executor:browser-submit', fencingToken: 1,
+      assertFence() { return 1 },
+    },
+  })
+  let networkStarted = 0
+  const beforeDispatch = () => { networkStarted += 1 }
+  const result = await provider.submit({
+    accountId: account.id,
+    batchId: 'browser-submit-batch',
+    childOrderId: 'browser-child',
+    submitAttemptId: 'browser-attempt',
+    capabilityVersion: verifyCrownCapabilityMatrix().matrixVersion,
+    capabilityEvidenceId: capability.evidenceId,
+    lockedIdentity: lockedIdentity(),
+    lockedSelection: lockedEnvelope(),
+    preview: finalExecutionPreview,
+    browserSession: session,
+    amountMinor: 60,
+    remainingChildAmountMinor: 60,
+    onNetworkStarted: beforeDispatch,
+  })
+
+  assert.equal(networkStarted, 1)
+  assert.equal(submitted.beforeDispatch, beforeDispatch)
+  assert.equal(submitted.session, session)
+  assert.equal(submitted.wireFields.golds, '60')
+  assert.deepEqual(result, {
+    kind: 'accepted', providerReferenceCiphertext: 'v2:safe:cipher:text',
+    transportKind: 'browser-page-fetch',
+  })
+})
+
+test('production Submit blocks above-minimum stakes when fresh Preview has no verified step', async () => {
+  const capability = listCrownCapabilities().find((row) => row.key === CAPABILITY_KEY)
+  const account = {
+    id: 'browser-submit', username: 'browser-owner', loginUrl: 'https://crown.example.com',
+    perBetLimitMinor: 500, currency: 'CNY',
+  }
+  const session = browserSession(account)
+  const executionPreview = {
+    ...preview(), minStakeMinor: 60, maxStakeMinor: 1000, balanceMinor: 500,
+    stakeStepMinor: null, stakeStepProvenance: 'not-evidenced-in-preview-response',
+  }
+  let submitCalls = 0
+  const provider = new CrownAccountExecutionProvider({
+    repository: {
+      getBettingAccountForExecution() { return account },
+      getCurrentCrownSelectionForExecution() { return lockedEnvelope() },
+      sealCrownProviderReference() { throw new Error('seal-must-not-run') },
+    },
+    browserRuntime: {
+      verifiedBettingSessionFor() { return session },
+      async postSubmitForm() { submitCalls += 1 },
+    },
+    executorLease: {
+      leaseKey: 'betting-executor:browser-submit-step', fencingToken: 1,
+      assertFence() { return 1 },
+    },
+  })
+  await assert.rejects(() => provider.submit({
+    accountId: account.id, batchId: 'batch', childOrderId: 'child', submitAttemptId: 'attempt',
+    capabilityVersion: verifyCrownCapabilityMatrix().matrixVersion,
+    capabilityEvidenceId: capability.evidenceId, lockedIdentity: lockedIdentity(),
+    lockedSelection: lockedEnvelope(), preview: executionPreview, browserSession: session,
+    amountMinor: 120, remainingChildAmountMinor: 120, onNetworkStarted() {},
+  }), /crown-submit-fresh-preview-drift/)
+  assert.equal(submitCalls, 0)
+})
+
+test('production Submit allows an above-minimum stake only with a provider-evidenced step', async () => {
+  const capability = listCrownCapabilities().find((row) => row.key === CAPABILITY_KEY)
+  const account = {
+    id: 'browser-stepped-submit', username: 'browser-owner', loginUrl: 'https://crown.example.com',
+    perBetLimitMinor: 500, currency: 'CNY',
+  }
+  const session = browserSession(account)
+  const finalPreview = {
+    ...preview(), minStakeMinor: 60, maxStakeMinor: 1000, balanceMinor: 500,
+    stakeStepMinor: 30, stakeStepProvenance: 'provider-preview-response',
+  }
+  const fields = Object.fromEntries(capability.submitResponseFieldSet.map((field) => [field, 'x']))
+  Object.assign(fields, {
+    code: '560', gid: 'event-safe', gtype: 'FT', wtype: 'R', rtype: 'RC',
+    gold: '120', ioratio: '0.96', w_id: 'stepped-reference',
+  })
+  const xml = `<serverresponse>${Object.entries(fields)
+    .map(([field, value]) => `<${field}>${value}</${field}>`).join('')}</serverresponse>`
+  let submitted = null
+  const provider = new CrownAccountExecutionProvider({
+    repository: {
+      getBettingAccountForExecution() { return account },
+      getCurrentCrownSelectionForExecution() { return lockedEnvelope() },
+      sealCrownProviderReference() { return 'v2:safe:stepped' },
+    },
+    browserRuntime: {
+      verifiedBettingSessionFor() { return session },
+      async postSubmitForm(input) {
+        submitted = input
+        await input.beforeDispatch()
+        return {
+          text: xml,
+          transport: { operation: 'FT_bet', endpointPath: '/transform.php', status: 200 },
+        }
+      },
+    },
+    executorLease: {
+      leaseKey: 'betting-executor:browser-submit-step-evidence', fencingToken: 1,
+      assertFence() { return 1 },
+    },
+  })
+  let networkStarted = 0
+  const result = await provider.submit({
+    accountId: account.id, batchId: 'batch', childOrderId: 'child', submitAttemptId: 'attempt',
+    capabilityVersion: verifyCrownCapabilityMatrix().matrixVersion,
+    capabilityEvidenceId: capability.evidenceId, lockedIdentity: lockedIdentity(),
+    lockedSelection: lockedEnvelope(), preview: finalPreview, browserSession: session,
+    amountMinor: 120, remainingChildAmountMinor: 120,
+    onNetworkStarted() { networkStarted += 1 },
+  })
+  assert.equal(networkStarted, 1)
+  assert.equal(submitted.wireFields.golds, '120')
+  assert.deepEqual(result, {
+    kind: 'accepted', providerReferenceCiphertext: 'v2:safe:stepped',
+    transportKind: 'browser-page-fetch',
+  })
 })

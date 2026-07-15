@@ -84,12 +84,16 @@ function defaultRestartLeaseAvailability({ dbPath, leaseKey, appDir, now }) {
     db = new DatabaseSync(resolvedDbPath, { readOnly: true })
     const table = db.prepare("SELECT 1 AS present FROM sqlite_schema WHERE type='table' AND name='runtime_leases'").get()
     if (!table) return true
-    const row = db.prepare('SELECT expires_at FROM runtime_leases WHERE lease_key = ? LIMIT 1').get(leaseKey)
+    const row = db.prepare('SELECT pid,expires_at FROM runtime_leases WHERE lease_key = ? LIMIT 1').get(leaseKey)
     if (!row) return true
     const nowMs = new Date(now).getTime()
     const expiresAt = Date.parse(String(row.expires_at || ''))
     if (!Number.isFinite(expiresAt) || expiresAt <= nowMs) return true
-    return { available: false, retryAfterMs: Math.max(250, expiresAt - nowMs + 25) }
+    return {
+      available: false,
+      retryAfterMs: Math.max(250, expiresAt - nowMs + 25),
+      pid: Number.isSafeInteger(row.pid) && row.pid > 0 ? row.pid : null,
+    }
   } catch {
     return { available: false, retryAfterMs: 1_000 }
   } finally {
@@ -176,12 +180,13 @@ export function createMonitorProcessController({
   }
 
   function normalizeLeaseAvailability(value) {
-    if (value === true) return { available: true, retryAfterMs: 0 }
-    if (value === false) return { available: false, retryAfterMs: 1_000 }
+    if (value === true) return { available: true, retryAfterMs: 0, pid: null }
+    if (value === false) return { available: false, retryAfterMs: 1_000, pid: null }
     const retryAfterMs = Number(value?.retryAfterMs || 1_000)
     return {
       available: value?.available === true,
       retryAfterMs: Number.isSafeInteger(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : 1_000,
+      pid: Number.isSafeInteger(value?.pid) && value.pid > 0 ? value.pid : null,
     }
   }
 
@@ -439,6 +444,69 @@ export function createMonitorProcessController({
     return { stopped: true, pid, forced }
   }
 
+  async function waitForHealthy({ timeoutMs = 10_000, pollMs = 50 } = {}) {
+    const target = child
+    const expectedLeaseKey = childLeaseKey
+    const deadline = Date.now() + Math.max(1, Number(timeoutMs || 1))
+    const interval = Math.max(1, Number(pollMs || 1))
+    while (Date.now() <= deadline) {
+      if (!desiredRunning || child !== target || !isChildRunning(target) || childLeaseKey !== expectedLeaseKey) {
+        const error = new Error('watcher-restart-unhealthy')
+        error.code = 'watcher-restart-unhealthy'
+        throw error
+      }
+      let availability
+      try {
+        availability = normalizeLeaseAvailability(isRestartLeaseAvailable({
+          dbPath: lastLaunch?.dbPath || dbPath,
+          runtimeDir: lastLaunch?.runtimeDir || runtimeDir,
+          leaseKey: expectedLeaseKey,
+          appDir,
+          now: nowIso(),
+        }))
+      } catch {
+        availability = { available: true, retryAfterMs: interval }
+      }
+      if (!availability.available && availability.pid === target.pid) {
+        return { healthy: true, pid: target.pid, leaseKey: expectedLeaseKey }
+      }
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) break
+      await new Promise((resolve) => setTimeoutFn(resolve, Math.min(interval, remaining)))
+    }
+    const error = new Error('watcher-restart-unhealthy')
+    error.code = 'watcher-restart-unhealthy'
+    throw error
+  }
+
+  async function waitForLeaseAvailable({ timeoutMs = 20_000, pollMs = 50 } = {}) {
+    const expectedLeaseKey = lastLaunch?.leaseKey || childLeaseKey
+    if (!expectedLeaseKey) throw new Error('watcher-stop-unsafe')
+    const deadline = Date.now() + Math.max(1, Number(timeoutMs || 1))
+    const interval = Math.max(1, Number(pollMs || 1))
+    while (Date.now() <= deadline) {
+      let availability
+      try {
+        availability = normalizeLeaseAvailability(isRestartLeaseAvailable({
+          dbPath: lastLaunch?.dbPath || dbPath,
+          runtimeDir: lastLaunch?.runtimeDir || runtimeDir,
+          leaseKey: expectedLeaseKey,
+          appDir,
+          now: nowIso(),
+        }))
+      } catch {
+        availability = { available: false }
+      }
+      if (availability.available) return { available: true, leaseKey: expectedLeaseKey }
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) break
+      await new Promise((resolve) => setTimeoutFn(resolve, Math.min(interval, remaining)))
+    }
+    const error = new Error('watcher-stop-unsafe')
+    error.code = 'watcher-stop-unsafe'
+    throw error
+  }
+
   function getStatus() {
     return {
       desiredRunning,
@@ -456,6 +524,8 @@ export function createMonitorProcessController({
     runLoginTest,
     stop,
     stopAndWait,
+    waitForLeaseAvailable,
+    waitForHealthy,
     reset,
   }
 }

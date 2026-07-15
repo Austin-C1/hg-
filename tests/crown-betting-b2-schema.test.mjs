@@ -63,16 +63,19 @@ function insertAttempt(db, {
   previewOdds = '0.95',
   lockedIdentityJson = '{"eventKey":"event-1","lineKey":"line-1"}',
   previewSnapshotJson = '{"odds":"0.95","maxStakeMinor":100}',
+  executionCandidateDigest = HASH_A,
 } = {}) {
   return db.prepare(`
     INSERT INTO bet_submit_attempts (
       submit_attempt_id, child_order_id, authorization_id, attempt_ordinal,
       amount_minor, fencing_token, capability_version,
-      capability_evidence_id, preview_odds, locked_identity_json, preview_snapshot_json,
+      capability_evidence_id, execution_candidate_digest, preview_odds,
+      locked_identity_json, preview_snapshot_json,
       status, prepared_at, created_at, updated_at
     ) VALUES (?, ?, 'authorization-1', ?, ?, 7, 'crown-capability-v1',
-      'capability-evidence-1', ?, ?, ?, ?, '${NOW}', '${NOW}', '${NOW}')
-  `).run(id, childOrderId, ordinal, amountMinor, previewOdds, lockedIdentityJson, previewSnapshotJson, status)
+      'capability-evidence-1', ?, ?, ?, ?, ?, '${NOW}', '${NOW}', '${NOW}')
+  `).run(id, childOrderId, ordinal, amountMinor, executionCandidateDigest,
+    previewOdds, lockedIdentityJson, previewSnapshotJson, status)
 }
 
 test('B2 schema creates durable attempt, reconciliation, evidence, and notification tables', () => {
@@ -91,7 +94,8 @@ test('B2 schema creates durable attempt, reconciliation, evidence, and notificat
   for (const column of [
     'submit_attempt_id', 'child_order_id', 'authorization_id', 'attempt_ordinal',
     'amount_minor', 'fencing_token', 'capability_version', 'capability_evidence_id',
-    'preview_odds', 'locked_identity_json', 'preview_snapshot_json', 'status', 'prepared_at',
+    'execution_candidate_digest', 'preview_odds', 'locked_identity_json',
+    'preview_snapshot_json', 'status', 'prepared_at',
     'dispatched_at', 'result_at', 'provider_reference_ciphertext',
     'result_payload_hash', 'error_code', 'created_at', 'updated_at',
   ]) {
@@ -151,6 +155,7 @@ test('submit attempts preserve immutable identity while allowing only valid life
   `).run(), /constraint/i)
   assert.throws(() => insertAttempt(handle.db, { id: 'attempt-bad-identity', ordinal: 2, lockedIdentityJson: 'not-json' }), /constraint/i)
   assert.throws(() => insertAttempt(handle.db, { id: 'attempt-bad-preview', ordinal: 2, previewSnapshotJson: '[]' }), /constraint/i)
+  assert.throws(() => insertAttempt(handle.db, { id: 'attempt-bad-digest', ordinal: 2, executionCandidateDigest: 'raw' }), /constraint/i)
   assert.throws(() => insertAttempt(handle.db, { id: 'attempt-no-child', childOrderId: 'missing-child' }), /constraint/i)
   assert.throws(() => handle.db.prepare(`
     INSERT INTO bet_submit_attempts (
@@ -164,6 +169,8 @@ test('submit attempts preserve immutable identity while allowing only valid life
   `).run(), /must-start-prepared/i)
 
   assert.throws(() => handle.db.prepare("UPDATE bet_submit_attempts SET amount_minor = 99 WHERE submit_attempt_id = 'attempt-1'").run(), /immutable/i)
+  assert.throws(() => handle.db.prepare(`UPDATE bet_submit_attempts SET execution_candidate_digest='${HASH_B}'
+    WHERE submit_attempt_id='attempt-1'`).run(), /immutable/i)
   assert.throws(() => handle.db.prepare("DELETE FROM bet_submit_attempts WHERE submit_attempt_id = 'attempt-1'").run(), /immutable/i)
   assert.throws(() => handle.db.prepare(`
     UPDATE bet_submit_attempts

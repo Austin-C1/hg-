@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { openAppDatabase } from './app-db.mjs'
+import { bettingRoleLeaseKeys } from './betting-process.mjs'
 
 const CACHE_DIR_NAMES = new Set(['Cache', 'Code Cache', 'GPUCache', 'GrShaderCache', 'ShaderCache', 'DawnCache'])
 const RUNTIME_FILES = [
@@ -26,11 +27,6 @@ const GENERATED_DIRS = [
   'data/crown-probe-smoke',
   'data/runtime/login-diagnostics',
   'data/runtime/betting-intents',
-  'data/runtime/crown-login-debug-profile',
-  'data/runtime/crown-login-debug-profile-2',
-  'data/runtime/crown-login-debug-profile-3',
-  'data/runtime/crown-login-debug-profile-4',
-  'data/runtime/crown-login-debug-profile-5',
   'output/playwright',
   'output/verification',
   'output/task11-review-v1-live',
@@ -41,6 +37,8 @@ const GENERATED_DIRS = [
 const PORTABLE_RUNTIME_DIRS = [
   'login-diagnostics',
   'betting-intents',
+]
+const LEGACY_PROFILE_DIR_NAMES = [
   'crown-login-debug-profile',
   'crown-login-debug-profile-2',
   'crown-login-debug-profile-3',
@@ -48,6 +46,8 @@ const PORTABLE_RUNTIME_DIRS = [
   'crown-login-debug-profile-5',
 ]
 const RESET_TABLES = [
+  'crown_browser_acceptance_cases',
+  'crown_browser_acceptance_campaigns',
   'bet_notification_outbox',
   'bet_reconciliation_evidence',
   'bet_reconciliation_state',
@@ -69,7 +69,6 @@ const RESET_TABLES = [
   'monitor_selection_state',
   'monitor_event_state',
   'monitor_scope_state',
-  'runtime_leases',
   'tracked_matches',
 ]
 
@@ -155,11 +154,17 @@ function portableCleanupTargets({ dataRoot, runtimeDir, profileDir = '' } = {}) 
   }
   for (const name of RUNTIME_FILES) add(path.join(runtime, name), 'monitor-history')
   for (const name of PORTABLE_RUNTIME_DIRS) add(path.join(runtime, name), 'generated-output')
-  if (profile) walkSafeDirectories(profile, (directory, name) => {
-    if (!CACHE_DIR_NAMES.has(name)) return true
-    add(directory, 'browser-cache')
-    return false
-  })
+  for (const directory of [
+    ...LEGACY_PROFILE_DIR_NAMES.map((name) => path.join(runtime, name)),
+    ...(profile ? [profile] : []),
+  ]) {
+    if (!fs.existsSync(directory)) continue
+    walkSafeDirectories(directory, (candidate, name) => {
+      if (!CACHE_DIR_NAMES.has(name)) return true
+      add(candidate, 'browser-cache')
+      return false
+    })
+  }
   const sorted = targets.sort((left, right) => left.path.length - right.path.length)
   return sorted.filter((item, index) => !sorted.slice(0, index).some((parent) => inside(parent.path, item.path)))
 }
@@ -252,20 +257,24 @@ function countFiles(target) {
   return count
 }
 
-function resetRuntimeDatabase(dbPath) {
+function resetRuntimeDatabase(dbPath, existingDb = null, existingRows = null) {
   const resolved = path.resolve(dbPath)
   if (!fs.existsSync(resolved)) throw new Error('app database does not exist')
-  const db = new DatabaseSync(resolved)
+  const db = existingDb || new DatabaseSync(resolved)
+  const ownsTransaction = !existingDb
   try {
     const tables = new Set(db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map((row) => row.name))
-    const before = databaseHistoryCounts(resolved)
+    const before = existingRows || databaseHistoryCounts(resolved)
     let accountsPaused = 0
-    db.exec('PRAGMA foreign_keys = OFF')
-    db.exec('BEGIN IMMEDIATE')
+    if (ownsTransaction) {
+      db.exec('PRAGMA foreign_keys = OFF')
+      db.exec('BEGIN IMMEDIATE')
+    }
     try {
       db.exec('DROP TRIGGER IF EXISTS bet_submit_attempts_immutable_delete')
       db.exec('DROP TRIGGER IF EXISTS bet_reconciliation_evidence_immutable_delete')
       db.exec('DROP TRIGGER IF EXISTS auto_betting_signal_inbox_append_only_delete')
+      db.exec('DROP TRIGGER IF EXISTS crown_browser_acceptance_case_delete_forbidden')
       for (const table of RESET_TABLES) if (tables.has(table)) db.exec(`DELETE FROM "${table}"`)
       if (tables.has('real_betting_runtime')) {
         db.exec("UPDATE real_betting_runtime SET requested=0, runtime_state='off', reason_code='', updated_at='' WHERE singleton_id=1")
@@ -281,28 +290,45 @@ function resetRuntimeDatabase(dbPath) {
           last_xml_response_at='', last_odds_parsed_at='', consecutive_failures=0, auto_relogin_count=0,
           last_login_result_json='{}', last_login_result_at='', last_login_diagnostics_path=''`)
       }
-      db.exec('COMMIT')
-      db.exec('PRAGMA foreign_keys = ON')
+      if (ownsTransaction) {
+        db.exec('COMMIT')
+        db.exec('PRAGMA foreign_keys = ON')
+      }
       return { databaseRows: before, accountsPaused }
     } catch (error) {
-      db.exec('ROLLBACK')
+      if (ownsTransaction) db.exec('ROLLBACK')
       throw error
     }
   } finally {
-    db.close()
+    if (ownsTransaction) db.close()
   }
 }
 
-function hasActiveWatcherLease(dbPath, now = new Date().toISOString()) {
-  if (!fs.existsSync(dbPath)) return false
-  const db = new DatabaseSync(dbPath, { readOnly: true })
-  try {
-    const table = db.prepare("SELECT 1 AS present FROM sqlite_schema WHERE type='table' AND name='runtime_leases'").get()
-    if (!table) return false
-    return Boolean(db.prepare("SELECT 1 AS active FROM runtime_leases WHERE lease_key LIKE 'watcher:%' AND expires_at > ? LIMIT 1").get(now))
-  } finally {
-    db.close()
+function hasBusyLeaseLike(db, leasePattern, now) {
+  const table = db.prepare("SELECT 1 AS present FROM sqlite_schema WHERE type='table' AND name='runtime_leases'").get()
+  if (!table) return false
+  return Boolean(db.prepare(`SELECT 1 AS active FROM runtime_leases
+    WHERE lease_key LIKE ?
+      AND (julianday(expires_at) IS NULL OR julianday(expires_at) > julianday(?))
+    LIMIT 1`).get(leasePattern, now))
+}
+
+function hasBusyLeaseKeys(db, leaseKeys, now) {
+  const table = db.prepare("SELECT 1 AS present FROM sqlite_schema WHERE type='table' AND name='runtime_leases'").get()
+  if (!table) return false
+  const placeholders = leaseKeys.map(() => '?').join(',')
+  return Boolean(db.prepare(`SELECT 1 AS active FROM runtime_leases
+    WHERE lease_key IN (${placeholders})
+      AND (julianday(expires_at) IS NULL OR julianday(expires_at) > julianday(?))
+    LIMIT 1`).get(...leaseKeys, now))
+}
+
+function assertCleanupLeasesInactive(db, dbPath, now = new Date().toISOString()) {
+  if (hasBusyLeaseLike(db, 'watcher:%', now)) throw new Error('watcher-active-unmanaged')
+  if (hasBusyLeaseKeys(db, Object.values(bettingRoleLeaseKeys({ dbPath })), now)) {
+    throw new Error('betting-worker-active')
   }
+  if (hasBusyLeaseLike(db, 'browser-profile:%', now)) throw new Error('browser-profile-active')
 }
 
 export async function runRuntimeCleanup({
@@ -314,6 +340,7 @@ export async function runRuntimeCleanup({
   env = process.env,
   monitorProcess = null,
   bettingProcess = null,
+  humanLoginController = null,
 } = {}) {
   const portable = Boolean(dataRoot)
   const root = path.resolve(dataRoot || workspaceDir)
@@ -328,25 +355,59 @@ export async function runRuntimeCleanup({
   }
   const wasRunning = Boolean(monitorProcess?.isRunning?.())
   const bettingWasRunning = Boolean(bettingProcess?.isRunning?.())
-  if (!wasRunning && hasActiveWatcherLease(resolvedDbPath)) throw new Error('watcher-active-unmanaged')
+  let bettingStoppedSafely = true
+  if (bettingWasRunning) {
+    const stopped = await bettingProcess.stop()
+    bettingStoppedSafely = stopped !== false && stopped?.ok !== false
+  }
   if (wasRunning && (typeof monitorProcess?.stopAndWait !== 'function' || typeof monitorProcess?.start !== 'function')) {
     throw new Error('watcher cannot be stopped and restored safely')
   }
-  if (bettingWasRunning) await bettingProcess.stop()
-  if (wasRunning) await monitorProcess.stopAndWait()
+  let monitorStoppedSafely = true
+  if (wasRunning) {
+    const stopped = await monitorProcess.stopAndWait()
+    monitorStoppedSafely = stopped !== false && stopped?.ok !== false
+    if (monitorStoppedSafely && typeof monitorProcess.waitForLeaseAvailable === 'function') {
+      await monitorProcess.waitForLeaseAvailable()
+    }
+  }
   let result
+  let cleanupStarted = false
   const shouldStartMonitor = wasRunning
   const monitorStartReason = wasRunning ? 'restore-running-watcher' : 'not-running-before-cleanup'
   try {
+    if (!bettingStoppedSafely) throw new Error('betting-worker-active')
+    if (!monitorStoppedSafely) throw new Error('watcher-active-unmanaged')
+    if (bettingProcess?.isRunning?.()) throw new Error('betting-worker-active')
+    if (humanLoginController?.hasUnsafeContext?.()) throw new Error('browser-profile-active')
     const cleanupOptions = portable
       ? { dataRoot: root, runtimeDir, profileDir, dbPath: resolvedDbPath }
       : { workspaceDir: root, runtimeDir, dbPath: resolvedDbPath }
-    const preview = previewRuntimeCleanup(cleanupOptions)
-    for (const target of cleanupTargets(cleanupOptions).sort((left, right) => right.path.length - left.path.length)) {
-      if (portable) assertSafeTree(target.path, target.category)
-      fs.rmSync(target.path, { recursive: true, force: true })
+    if (!fs.existsSync(resolvedDbPath)) throw new Error('app database does not exist')
+    const guardDb = new DatabaseSync(resolvedDbPath)
+    let preview
+    let reset
+    try {
+      guardDb.exec('PRAGMA foreign_keys = OFF')
+      guardDb.exec('BEGIN IMMEDIATE')
+      if (bettingProcess?.isRunning?.()) throw new Error('betting-worker-active')
+      if (humanLoginController?.hasUnsafeContext?.()) throw new Error('browser-profile-active')
+      assertCleanupLeasesInactive(guardDb, resolvedDbPath)
+      preview = previewRuntimeCleanup(cleanupOptions)
+      cleanupStarted = true
+      for (const target of cleanupTargets(cleanupOptions).sort((left, right) => right.path.length - left.path.length)) {
+        if (portable) assertSafeTree(target.path, target.category)
+        fs.rmSync(target.path, { recursive: true, force: true })
+      }
+      reset = resetRuntimeDatabase(resolvedDbPath, guardDb, preview.databaseRows)
+      guardDb.exec('COMMIT')
+    } catch (error) {
+      try { guardDb.exec('ROLLBACK') } catch {}
+      throw error
+    } finally {
+      try { guardDb.exec('PRAGMA foreign_keys = ON') } catch {}
+      guardDb.close()
     }
-    const reset = resetRuntimeDatabase(resolvedDbPath)
     const reopened = openAppDatabase({ dbPath: resolvedDbPath, env })
     reopened.close()
     result = {
@@ -358,8 +419,20 @@ export async function runRuntimeCleanup({
       bettingStopped: bettingWasRunning,
       cleanedAt: new Date().toISOString(),
     }
+  } catch (error) {
+    if (cleanupStarted && !error?.code) error.code = 'runtime-cleanup-partial'
+    throw error
   } finally {
-    if (shouldStartMonitor) monitorProcess.start({ dbPath: resolvedDbPath, runtimeDir: path.resolve(root, runtimeDir) })
+    if (shouldStartMonitor) {
+      monitorProcess.start({ dbPath: resolvedDbPath, runtimeDir: path.resolve(root, runtimeDir) })
+      if (typeof monitorProcess.waitForHealthy === 'function') {
+        await monitorProcess.waitForHealthy()
+      } else if (!monitorProcess.isRunning?.()) {
+        const error = new Error('watcher-restart-unhealthy')
+        error.code = 'watcher-restart-unhealthy'
+        throw error
+      }
+    }
   }
   if (shouldStartMonitor) result.restartedWatcher = true
   return result

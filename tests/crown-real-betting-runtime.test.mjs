@@ -12,6 +12,7 @@ import {
   collectRealBettingPreflight,
   evaluatePureModePreflight,
   getRealBettingStatus,
+  hasOpenBetReconciliation,
   refreshRealBettingRuntime,
   recordRealBettingWorkerExit,
   requestRealBettingStart,
@@ -166,9 +167,13 @@ test('exact collector ignores foreign-prefix leases and validates worker plus ex
     assert.equal(before.executorLeaseFresh, true)
     assert.equal(before.fenceFresh, true)
     const keys = bettingRoleLeaseKeys({ dbPath: handle.dbPath })
-    assert.deepEqual(Object.keys(keys), ['worker', 'executor'])
+    assert.deepEqual(Object.keys(keys), ['worker', 'executor', 'reconciler'])
     const roles = {}
-    for (const [role, ownerId] of [['worker', 'worker-owner'], ['executor', 'executor-owner']]) {
+    for (const [role, ownerId] of [
+      ['worker', 'worker-owner'],
+      ['executor', 'executor-owner'],
+      ['reconciler', 'reconciler-owner'],
+    ]) {
       const lease = new RuntimeLease({ db: handle.db, leaseKey: keys[role], ownerId, now })
       lease.acquire()
       roles[role] = { leaseKey: keys[role], ownerId, fencingToken: lease.fencingToken }
@@ -177,7 +182,7 @@ test('exact collector ignores foreign-prefix leases and validates worker plus ex
     assert.equal(after.executorLeaseFresh, true)
     assert.equal(after.fenceFresh, true)
     const forged = structuredClone(roles)
-    forged.executor.fencingToken += 1
+    forged.reconciler.fencingToken += 1
     assert.equal(collectRealBettingPreflight(handle.db, { dbPath: handle.dbPath, now, readyTicket: { leases: forged } }).fenceFresh, false)
   } finally { handle.close() }
 })
@@ -188,6 +193,22 @@ test('pure capability gate requires Preview and Submit but never reconciliation,
   assert.deepEqual(evaluatePureModePreflight({
     authorizedModes: [], eligibilityVersions: {}, settings, capabilities, hardCapAmountMinor: 0,
   }), { scopeExact: true, capabilityExact: true })
+})
+
+test('reconciliation takeover treats future waiting unknown rows as open work', () => {
+  let sql = ''
+  const database = {
+    prepare(value) {
+      sql = value
+      return { get: () => ({ submit_attempt_id: 'attempt-future' }) }
+    },
+    exec() {},
+  }
+  assert.equal(hasOpenBetReconciliation(database), true)
+  assert.match(sql, /status IN \('pending','waiting'\)/)
+  assert.match(sql, /attempt\.status='unknown'/)
+  assert.match(sql, /child\.status='unknown'/)
+  assert.doesNotMatch(sql, /next_poll_at\s*<=/)
 })
 
 test('unexpected current worker exit blocks requested runtime while stopped intent remains off', () => {

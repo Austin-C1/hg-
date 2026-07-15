@@ -34,7 +34,7 @@
 - `/betting-rules` 对认证失败不再显示“请检查规则字段”；`/monitor-settings` 的 Switch 在请求失败时保持真实服务端状态，并在请求进行中锁定以避免连续点击产生多条错误。
 - `/betting-accounts` 新增“检测账号”：手动触发 fresh Crown 登录、只读赔率访问验证和账号摘要读取。卡片分别显示“登录访问”“Crown 返回余额/额度（仅展示）”和“执行余额”，避免混淆展示值与执行风控余额。
 - 新增 `POST /api/app/betting-accounts/:id/actions`，当前只接受 `check-access`。接口仅返回脱敏状态、错误码、展示余额/币种和检测时间；账号 busy/locked 时返回冲突，不会读取或返回 secret。
-- 手动联机检测可使用账号自身已保存且验证通过的 public HTTPS exact origin；显式 `CROWN_BETTING_ALLOWED_ORIGINS` 会收紧该范围。该动作不会调用投注预览或提交接口，真实投注开关保持不存在。
+- 手动联机检测只使用账号自身已保存且验证通过的 public HTTPS exact origin；不存在额外静态 membership whitelist。该动作不会调用投注预览或提交接口，真实投注开关保持不存在。
 - 编辑旧账号时允许保留 `0` 限额/步进；切换金额精度会移除超出精度的尾随零，真正有值的小数超限显示中文字段错误。零步进账号仍不能进入执行账本。
 - 新建投注账号默认金额精度为 `0 位`，单笔上限和投注步进默认按整数填写；现有账号保持原精度，避免静默改写。
 - 2026-07-11 实机页面验收通过免密规则保存、监控 Switch 关闭/恢复、第一个账号登录和余额/币种展示；第二个账号返回稳定的登录失败状态，未伪造余额。
@@ -315,3 +315,7 @@ node --test tests\crown-dashboard-docker.test.mjs
 - mutation 遇到 `403 csrf-invalid` 时，前端只允许刷新安全上下文并重试一次；服务端 CSRF 校验发生在业务路由前，因此该重试不会重复已执行的写操作。
 - `/api/app/league-options` 从 SQLite active event、tracked match、rule league 与启用的默认联赛生成轻量字符串列表；规则页不再依赖大型赛事聚合响应。
 - 旧账号若整数 CNY 单笔上限为 0，启用会 fail-closed。页面显示明确配置提示，服务端返回稳定错误 `betting-account-limit-required`。
+## 2026-07-15 每日重置与 Watcher 恢复
+
+- 完全重置包含 Browser acceptance campaign/case 运行记录；这是可重复验收状态，不属于需要保留的用户配置。
+- Watcher 自动恢复必须同时满足：托管子进程仍存活、lease key 一致、数据库中有效 lease 的 PID 等于该子进程 PID。否则返回 `watcher-restart-unhealthy`，不显示成功。

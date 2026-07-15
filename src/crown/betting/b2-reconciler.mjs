@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 
 import { decryptSecret } from '../app/app-secret.mjs'
 import { isSafetyFinishReason } from './safety-finish-reasons.mjs'
+import { isCrownAcceptanceCapabilityAuthority } from './crown-browser-acceptance.mjs'
 const BACKOFF_SECONDS = [5, 15, 45]
 
 function dbOf(database) {
@@ -114,8 +115,8 @@ function attemptContext(db, submitAttemptId) {
     FROM bet_submit_attempts AS attempt
     JOIN bet_child_orders AS child ON child.child_order_id=attempt.child_order_id
     JOIN bet_batches AS batch ON batch.batch_id=child.batch_id
-    JOIN execution_authorization_child_budgets AS budget ON budget.child_order_id=child.child_order_id
-    JOIN execution_authorizations AS auth ON auth.authorization_id=attempt.authorization_id
+    LEFT JOIN execution_authorization_child_budgets AS budget ON budget.child_order_id=child.child_order_id
+    LEFT JOIN execution_authorizations AS auth ON auth.authorization_id=attempt.authorization_id
     WHERE attempt.submit_attempt_id=?
   `).get(submitAttemptId)
   if (!row) throw new Error('reconciliation-attempt-not-found')
@@ -236,6 +237,7 @@ function resolveUnknown(db, submitAttemptId, decision, {
   lease,
   deadlineAt,
   hasFutureCapacity = false,
+  acceptanceAuthority = null,
 } = {}) {
   return transaction(db, () => {
     const { at } = assertDbLease(db, lease, now)
@@ -251,7 +253,14 @@ function resolveUnknown(db, submitAttemptId, decision, {
     if (state?.status === 'resolved' && row.status === decision && row.child_status === decision) {
       return { status: 'resolved', finalStatus: decision }
     }
-    if (row.status !== 'unknown' || row.child_status !== 'unknown' || row.binding_status !== 'unknown') {
+    const legacyBound = row.binding_status === 'unknown'
+    let acceptanceBound = false
+    if (acceptanceAuthority) {
+      const binding = acceptanceAuthority.resolveReconciliation({ submitAttemptId })
+      acceptanceBound = binding.childOrderId === row.child_order_id
+        && binding.accountId === row.account_id
+    }
+    if (row.status !== 'unknown' || row.child_status !== 'unknown' || (!legacyBound && !acceptanceBound)) {
       throw new Error('reconciliation-ledger-not-unknown')
     }
     const encryptedReference = providerCiphertext(providerReferenceCiphertext, {
@@ -272,21 +281,25 @@ function resolveUnknown(db, submitAttemptId, decision, {
       WHERE child_order_id=? AND status='unknown'
     `).run(decision, encryptedReference, at, row.child_order_id)
     fault(faultInjector, 'reconcile:after-child-update', { submitAttemptId, decision })
-    const amount = Number(row.binding_amount_minor)
+    const amount = Number(legacyBound ? row.binding_amount_minor : row.requested_amount_minor)
     const accepted = decision === 'accepted' ? amount : 0
-    const authChanged = db.prepare(`
-      UPDATE execution_authorizations
-      SET unknown_amount_minor=unknown_amount_minor-?,
-          accepted_amount_minor=accepted_amount_minor+?, updated_at=?
-      WHERE authorization_id=? AND unknown_amount_minor>=?
-    `).run(amount, accepted, at, row.authorization_id, amount)
-    if (authChanged.changes !== 1) throw new Error('authorization-ledger-invariant')
-    const bindingChanged = db.prepare(`
-      UPDATE execution_authorization_child_budgets
-      SET status=?, updated_at=?
-      WHERE child_order_id=? AND status='unknown'
-    `).run(decision === 'accepted' ? 'accepted' : 'released', at, row.child_order_id)
-    if (bindingChanged.changes !== 1) throw new Error('authorization-child-binding-conflict')
+    if (row.authorization_status) {
+      const authChanged = db.prepare(`
+        UPDATE execution_authorizations
+        SET unknown_amount_minor=unknown_amount_minor-?,
+            accepted_amount_minor=accepted_amount_minor+?, updated_at=?
+        WHERE authorization_id=? AND unknown_amount_minor>=?
+      `).run(amount, accepted, at, row.authorization_id, amount)
+      if (authChanged.changes !== 1) throw new Error('authorization-ledger-invariant')
+    }
+    if (legacyBound) {
+      const bindingChanged = db.prepare(`
+        UPDATE execution_authorization_child_budgets
+        SET status=?, updated_at=?
+        WHERE child_order_id=? AND status='unknown'
+      `).run(decision === 'accepted' ? 'accepted' : 'released', at, row.child_order_id)
+      if (bindingChanged.changes !== 1) throw new Error('authorization-child-binding-conflict')
+    }
     db.prepare('DELETE FROM betting_account_locks WHERE child_order_id=?').run(row.child_order_id)
     recomputeBatch(db, row, decision, at, {
       hasFutureCapacity: decision === 'rejected' ? false : hasFutureCapacity,
@@ -301,6 +314,15 @@ function resolveUnknown(db, submitAttemptId, decision, {
       at,
       submitAttemptId,
     )
+    if (acceptanceAuthority) {
+      acceptanceAuthority.recordReconciledOutcomeInTransaction(db, {
+        submitAttemptId,
+        childOrderId: row.child_order_id,
+        decision,
+        evidenceDigest: evidence.at(-1)?.payloadHash || '',
+        observedAt: at,
+      })
+    }
     enqueueNotification(db, row, decision, at)
     writeAudit(db, `reconciliation_${decision}`, submitAttemptId, {
       decision,
@@ -323,6 +345,19 @@ function normalizedEvidence(submitAttemptId, source, result, at) {
     finalDecision: ['accepted', 'rejected'].includes(decision) ? decision : null,
     providerReferenceCiphertext: result.providerReferenceCiphertext || '',
   }
+}
+
+function acceptedValidationEvidence(submitAttemptId, result, at) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return evidenceRow(submitAttemptId, 'today_wagers', 'unknown', {}, at)
+  }
+  const decision = result.decision === 'accepted'
+    && result.matchStrength === 'strong' && Number(result.matchCount) === 1
+    ? 'accepted'
+    : result.decision === 'pending' && Number(result.matchCount) === 0
+      ? 'pending'
+      : 'unknown'
+  return evidenceRow(submitAttemptId, 'today_wagers', decision, result.payload ?? {}, at)
 }
 
 async function callWithDeadline(operation, { timeoutMs, deadlineAt, nowMs }) {
@@ -355,6 +390,7 @@ export class B2Reconciler {
     requestTimeoutMs = 5_000,
     manualAuthorizer = null,
     hasFutureCapacity = () => true,
+    acceptanceAuthority = null,
   } = {}) {
     this.db = dbOf(database)
     this.lease = lease
@@ -362,8 +398,12 @@ export class B2Reconciler {
       throw new TypeError('reconciliation-source-client')
     }
     if (reconciliationMode !== undefined && reconciliationMode !== 'fixture') throw new Error('reconciliation-mode-forbidden')
+    if (acceptanceAuthority !== null && !isCrownAcceptanceCapabilityAuthority(acceptanceAuthority)) {
+      throw new TypeError('b2-reconciliation-acceptance-authority')
+    }
     this.sourceClient = sourceClient
     this.reconciliationMode = reconciliationMode || null
+    this.acceptanceAuthority = acceptanceAuthority
     this.now = now
     this.faultInjector = faultInjector
     this.secretOptions = { secretKey }
@@ -403,14 +443,90 @@ export class B2Reconciler {
     })
   }
 
+  async validateAccepted({ submitAttemptId } = {}) {
+    assertLease(this.lease)
+    if (!this.acceptanceAuthority) throw new Error('accepted-validation-capability-unverified')
+    const attemptId = required(submitAttemptId, 'submit-attempt-id')
+    const before = attemptContext(this.db, attemptId)
+    if (before.status !== 'accepted' || before.child_status !== 'accepted') {
+      throw new Error('accepted-validation-ledger-not-accepted')
+    }
+    let binding = this.acceptanceAuthority.resolveReconciliation({ submitAttemptId: attemptId })
+    if (binding.state === 'accepted') return { status: 'accepted', decision: 'accepted' }
+    if (binding.state === 'unknown') return { status: 'terminal_unknown', decision: 'unknown' }
+    const observedAt = iso(this.now)
+    if (Date.parse(binding.validationDeadlineAt) <= Date.parse(observedAt)) {
+      return transaction(this.db, () => {
+        const { at } = assertDbLease(this.db, this.lease, this.now)
+        return this.acceptanceAuthority.recordValidationInTransaction(this.db, {
+          submitAttemptId: attemptId, decision: 'unknown', observedAt: at,
+        })
+      })
+    }
+    if (binding.validationNextPollAt
+      && Date.parse(binding.validationNextPollAt) > Date.parse(observedAt)) {
+      return {
+        status: 'waiting_validation',
+        pollCount: binding.validationPollCount,
+        nextPollAt: binding.validationNextPollAt,
+      }
+    }
+    let result
+    try {
+      result = await callWithDeadline(
+        (signal) => this.sourceClient.getTodayWagers({
+          submitAttemptId: attemptId,
+          deadlineAt: binding.validationDeadlineAt,
+          signal,
+        }),
+        {
+          timeoutMs: this.requestTimeoutMs,
+          deadlineAt: binding.validationDeadlineAt,
+          nowMs: Date.parse(observedAt),
+        },
+      )
+    } catch {
+      assertLease(this.lease)
+      return transaction(this.db, () => {
+        const { at } = assertDbLease(this.db, this.lease, this.now)
+        return this.acceptanceAuthority.recordValidationInTransaction(this.db, {
+          submitAttemptId: attemptId, decision: 'pending', observedAt: at,
+        })
+      })
+    }
+    assertLease(this.lease)
+    const completedAt = iso(this.now)
+    let evidence = acceptedValidationEvidence(attemptId, result, completedAt)
+    return transaction(this.db, () => {
+      const { at } = assertDbLease(this.db, this.lease, this.now)
+      const current = attemptContext(this.db, attemptId)
+      if (current.status !== 'accepted' || current.child_status !== 'accepted') {
+        throw new Error('accepted-validation-ledger-not-accepted')
+      }
+      binding = this.acceptanceAuthority.resolveReconciliation({ submitAttemptId: attemptId })
+      if (Date.parse(binding.validationDeadlineAt) <= Date.parse(at) && evidence.decision !== 'unknown') {
+        evidence = evidenceRow(attemptId, 'today_wagers', 'unknown', result?.payload ?? {}, at)
+      }
+      insertEvidence(this.db, evidence, at)
+      return this.acceptanceAuthority.recordValidationInTransaction(this.db, {
+        submitAttemptId: attemptId,
+        decision: evidence.decision,
+        evidenceDigest: evidence.payloadHash,
+        observedAt: at,
+      })
+    })
+  }
+
   async runDue({ submitAttemptId } = {}) {
     assertLease(this.lease)
     const attemptId = required(submitAttemptId, 'submit-attempt-id')
-    if (this.reconciliationMode !== 'fixture') return this._deferCapabilityUnavailable(attemptId)
+    if (this.reconciliationMode !== 'fixture' && !this.acceptanceAuthority) return this._deferCapabilityUnavailable(attemptId)
     const fixtureContext = attemptContext(this.db, attemptId)
     let lockedIdentity
     try { lockedIdentity = JSON.parse(String(fixtureContext.locked_selection_identity || '')) } catch {}
-    if (lockedIdentity?.provider !== 'fixture') throw new Error('reconciliation-capability-unverified')
+    if (this.reconciliationMode === 'fixture' && lockedIdentity?.provider !== 'fixture') {
+      throw new Error('reconciliation-capability-unverified')
+    }
     const at = iso(this.now)
     const state = this.db.prepare('SELECT * FROM bet_reconciliation_state WHERE submit_attempt_id=?').get(attemptId)
     if (!state) throw new Error('reconciliation-not-scheduled')
@@ -490,6 +606,7 @@ export class B2Reconciler {
         lease: this.lease,
         deadlineAt: state.deadline_at,
         hasFutureCapacity: Boolean(this.hasFutureCapacity(context)),
+        acceptanceAuthority: this.acceptanceAuthority,
       })
     }
     const nextPollCount = Number(state.poll_count) + 1

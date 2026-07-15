@@ -147,6 +147,7 @@ test('default controller uses bundled Chromium and fake read-only get_game_list 
     dataRoot,
     runtimeDir,
     profileRoot,
+    dbPath: path.join(dataRoot, 'storage', 'crown.sqlite'),
     chromiumExecutable: executablePath,
     chromium,
     loadAccount: async () => ({
@@ -184,7 +185,7 @@ test('default controller uses bundled Chromium and fake read-only get_game_list 
   assert.equal(Object.hasOwn(launches[0].options, 'channel'), false)
   assert.equal(context.storageStateCalls, 0)
   assert.equal(verified.length, 1)
-  assert.deepEqual(verified[0].cookies, { SID: 'exact-cookie' })
+  assert.equal(Object.hasOwn(verified[0], 'cookies'), false)
 
   const sessionPath = path.join(runtimeDir, 'crown-sessions', 'mon_A', 'api-session.json')
   const saved = JSON.parse(fs.readFileSync(sessionPath, 'utf8'))
@@ -294,6 +295,7 @@ test('save-time account binding drift preserves the previous owner session', asy
   const context = new FakeContext(page)
   const controller = new CrownHumanLoginController({
     installationId: 'install-A', appRoot, dataRoot, runtimeDir, profileRoot,
+    dbPath: path.join(dataRoot, 'storage', 'crown.sqlite'),
     chromiumExecutable: executablePath,
     chromium: { async launchPersistentContext() { return context } },
     loadAccount: async () => ({ ...current }),
@@ -344,6 +346,7 @@ test('shutdown abort reaches the default read-only get_game_list and cannot publ
   const context = new FakeContext(page)
   const controller = new CrownHumanLoginController({
     installationId: 'install-A', appRoot, dataRoot, runtimeDir, profileRoot,
+    dbPath: path.join(dataRoot, 'storage', 'crown.sqlite'),
     chromiumExecutable: executablePath,
     chromium: { async launchPersistentContext() { return context } },
     loadAccount: async () => ({ id: 'mon_A', username: 'owner-user', loginUrl: ORIGIN }),
@@ -421,7 +424,8 @@ test('shutdown remains bounded when an injected operation ignores its AbortSigna
   await new Promise((resolve) => setImmediate(resolve))
   const startedAt = Date.now()
   const result = await controller.shutdown()
-  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(result, { ok: false })
+  assert.equal(controller.hasUnsafeContext(), true)
   assert.equal(Date.now() - startedAt < 500, true)
 })
 
@@ -457,6 +461,58 @@ test('controller challenge and operation collections enforce a fixed capacity an
   await assert.rejects(() => controller.openManualLogin({ accountId: 'mon_A' }), /manual-login-busy/)
   await controller.cancelManualLogin({ accountId: 'mon_A', challengeId: 'challenge-safe' })
   assert.equal((await controller.openManualLogin({ accountId: 'mon_A' })).status, 'awaiting-user')
+})
+
+test('Betting Worker start gate and manual login opening exclude each other synchronously', async (t) => {
+  await t.test('worker gate blocks a new manual login operation', async () => {
+    let releaseStart
+    const startGate = new Promise((resolve) => { releaseStart = resolve })
+    const controller = new CrownHumanLoginController({
+      bridge: {
+        async openManualLogin() { return fakeStatus() },
+        getManualLoginStatus() { return fakeStatus() },
+        async confirmManualLogin() { return fakeStatus('verified') },
+        async cancelManualLogin() { return fakeStatus('failed') },
+      },
+      loadAccount: async () => ({ id: 'mon_A', username: 'owner', loginUrl: ORIGIN }),
+    })
+    const starting = controller.runWithBettingStartGate(() => startGate)
+
+    assert.equal(controller.hasUnsafeContext(), true)
+    await assert.rejects(controller.openManualLogin({ accountId: 'mon_A' }), /manual-login-busy/)
+    releaseStart()
+    await starting
+    assert.equal(controller.hasUnsafeContext(), false)
+  })
+
+  await t.test('in-flight manual login blocks Betting Worker start', async () => {
+    let releaseLoad
+    let markLoadStarted
+    const loadGate = new Promise((resolve) => { releaseLoad = resolve })
+    const loadStarted = new Promise((resolve) => { markLoadStarted = resolve })
+    const controller = new CrownHumanLoginController({
+      bridge: {
+        async openManualLogin() { return fakeStatus() },
+        getManualLoginStatus() { return fakeStatus() },
+        async confirmManualLogin() { return fakeStatus('verified') },
+        async cancelManualLogin() { return fakeStatus('failed') },
+      },
+      async loadAccount() {
+        markLoadStarted()
+        await loadGate
+        return { id: 'mon_A', username: 'owner', loginUrl: ORIGIN }
+      },
+    })
+    const opening = controller.openManualLogin({ accountId: 'mon_A' })
+    await loadStarted
+    let starts = 0
+
+    assert.throws(() => controller.runWithBettingStartGate(() => { starts += 1 }), /manual-login-busy/)
+    assert.equal(starts, 0)
+    releaseLoad()
+    const opened = await opening
+    await controller.cancelManualLogin({ accountId: 'mon_A', challengeId: opened.challengeId })
+  })
 })
 
 test('shutdown cancels tracked challenges and closes every tracked browser without starting a watcher', async () => {
@@ -503,4 +559,271 @@ test('shutdown waits for an in-flight open and cancels the challenge returned du
   assert.equal(cancelled[0].challengeId, 'challenge-safe')
   assert.equal(cancelled[0].signal.aborted, true)
   await assert.rejects(() => controller.openManualLogin({ accountId: 'mon_A' }), /manual-login-controller-closing/)
+})
+
+function leasedControllerFixture(t, {
+  bettingRunning = false,
+  closeRejects = false,
+  closeFailures = null,
+  unexpectedPages = false,
+  launchRejects = false,
+  startHeartbeatThrows = false,
+  assertFenceThrows = false,
+  launchGate = null,
+  onLaunch = () => {},
+} = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-human-lease-'))
+  const appRoot = path.join(root, 'app')
+  const dataRoot = path.join(root, 'data')
+  const runtimeDir = path.join(dataRoot, 'runtime')
+  const profileRoot = path.join(runtimeDir, 'browser-profiles')
+  const dbPath = path.join(dataRoot, 'storage', 'crown.sqlite')
+  const executablePath = path.join(appRoot, 'runtime', 'chromium', 'chrome.exe')
+  fs.mkdirSync(path.dirname(executablePath), { recursive: true })
+  fs.writeFileSync(executablePath, 'fake executable')
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  const events = []
+  const counts = {
+    acquire: 0,
+    heartbeat: 0,
+    stopHeartbeat: 0,
+    release: 0,
+    leaseDatabaseOpen: 0,
+    leaseDatabaseClose: 0,
+    launch: 0,
+  }
+  const page = new FakePage()
+  const context = new FakeContext(page)
+  if (unexpectedPages) context.pages = () => [{}, {}]
+  let remainingCloseFailures = closeFailures ?? (closeRejects ? Number.POSITIVE_INFINITY : 0)
+  context.close = async () => {
+    context.closeCalls += 1
+    events.push('context-close')
+    if (remainingCloseFailures > 0) {
+      remainingCloseFailures -= 1
+      throw new Error('fake-context-close-failed')
+    }
+  }
+  const lease = {
+    acquire() { counts.acquire += 1; events.push('acquire'); return { fencingToken: 1 } },
+    startHeartbeat() {
+      counts.heartbeat += 1
+      events.push('heartbeat')
+      if (startHeartbeatThrows) throw new Error('fake-heartbeat-failed')
+      return true
+    },
+    assertFence() {
+      events.push('fence')
+      if (assertFenceThrows) throw new Error('fake-fence-failed')
+      return 1
+    },
+    stopHeartbeat() { counts.stopHeartbeat += 1; events.push('stop-heartbeat'); return true },
+    release() { counts.release += 1; events.push('release'); return true },
+  }
+  const controller = new CrownHumanLoginController({
+    installationId: 'install-A',
+    appRoot,
+    dataRoot,
+    runtimeDir,
+    profileRoot,
+    dbPath,
+    chromiumExecutable: executablePath,
+    chromium: {
+      async launchPersistentContext() {
+        counts.launch += 1
+        events.push('launch')
+        onLaunch()
+        if (launchGate) await launchGate
+        if (launchRejects) throw new Error('fake-persistent-launch-failed')
+        return context
+      },
+    },
+    bettingProcess: {
+      isRunning: () => bettingRunning,
+      async stop() {},
+    },
+    openLeaseDatabase() {
+      counts.leaseDatabaseOpen += 1
+      events.push('lease-db-open')
+      return {
+        db: {},
+        close() { counts.leaseDatabaseClose += 1; events.push('lease-db-close') },
+      }
+    },
+    createProfileLease() {
+      events.push('lease-create')
+      return lease
+    },
+    loadAccount: async () => ({ id: 'mon_A', username: 'owner-user', loginUrl: ORIGIN }),
+    apiClient: {
+      async fetchGameList(session) {
+        return {
+          classification: { hasServerResponse: true, loginExpired: false, parseError: false },
+          requestScope: { endpointKind: 'get_game_list' },
+          session: { ...session, savedAt: 2_000 },
+        }
+      },
+    },
+  })
+  return { controller, context, counts, events, page }
+}
+
+async function emitLeasedSuccessfulLogin(value) {
+  const request = loginRequest()
+  value.page.emit('request', request)
+  value.page.emit('response', {
+    request: () => request,
+    url: () => `${ORIGIN}/transform_nl.php`,
+    status: () => 200,
+    text: async () => '<serverresponse><status>200</status><uid>owner-uid</uid></serverresponse>',
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+}
+
+test('profile lease acquisition and heartbeat both precede persistent Chromium launch', async (t) => {
+  const value = leasedControllerFixture(t)
+  const opened = await value.controller.openManualLogin({ accountId: 'mon_A' })
+
+  assert.equal(opened.status, 'awaiting-user')
+  assert.deepEqual(value.events.slice(0, 6), [
+    'lease-db-open', 'lease-create', 'acquire', 'heartbeat', 'fence', 'launch',
+  ])
+  await value.controller.cancelManualLogin({ accountId: 'mon_A', challengeId: opened.challengeId })
+})
+
+test('a running Betting Worker blocks lease acquisition and Chromium launch', async (t) => {
+  const value = leasedControllerFixture(t, { bettingRunning: true })
+
+  await assert.rejects(
+    () => value.controller.openManualLogin({ accountId: 'mon_A' }),
+    /manual-login-busy/,
+  )
+  assert.equal(value.counts.leaseDatabaseOpen, 0)
+  assert.equal(value.counts.acquire, 0)
+  assert.equal(value.counts.heartbeat, 0)
+  assert.equal(value.counts.launch, 0)
+})
+
+test('post-acquire heartbeat and fence failures release the unused profile lease', async (t) => {
+  for (const option of ['startHeartbeatThrows', 'assertFenceThrows']) {
+    await t.test(option, async (subtest) => {
+      const value = leasedControllerFixture(subtest, { [option]: true })
+      await assert.rejects(
+        value.controller.openManualLogin({ accountId: 'mon_A' }),
+        /manual-login-browser-open-failed/,
+      )
+      assert.equal(value.counts.acquire, 1)
+      assert.equal(value.counts.stopHeartbeat, 1)
+      assert.equal(value.counts.release, 1)
+      assert.equal(value.counts.leaseDatabaseClose, 1)
+      assert.equal(value.counts.launch, 0)
+      assert.equal(value.controller.hasUnsafeContext(), false)
+    })
+  }
+})
+
+test('confirm, cancel, and shutdown each release one profile lease only after context close', async (t) => {
+  for (const operation of ['confirm', 'cancel', 'shutdown']) {
+    await t.test(operation, async (subtest) => {
+      const value = leasedControllerFixture(subtest)
+      const opened = await value.controller.openManualLogin({ accountId: 'mon_A' })
+      if (operation === 'confirm') {
+        await emitLeasedSuccessfulLogin(value)
+        await value.controller.confirmManualLogin({ accountId: 'mon_A', challengeId: opened.challengeId })
+      } else if (operation === 'cancel') {
+        await value.controller.cancelManualLogin({ accountId: 'mon_A', challengeId: opened.challengeId })
+      } else {
+        assert.deepEqual(await value.controller.shutdown(), { ok: true })
+      }
+
+      assert.equal(value.context.closeCalls, 1)
+      assert.equal(value.counts.stopHeartbeat, 1)
+      assert.equal(value.counts.release, 1)
+      assert.equal(value.events.indexOf('context-close') < value.events.indexOf('stop-heartbeat'), true)
+      assert.equal(value.events.indexOf('stop-heartbeat') < value.events.indexOf('release'), true)
+    })
+  }
+})
+
+test('failed context close stops heartbeat, retains the lease, and makes shutdown unsafe', async (t) => {
+  const value = leasedControllerFixture(t, { closeRejects: true })
+  await value.controller.openManualLogin({ accountId: 'mon_A' })
+  assert.equal(value.controller.hasUnsafeContext(), true)
+
+  const result = await value.controller.shutdown()
+  assert.equal(value.context.closeCalls, 1)
+  assert.equal(value.counts.stopHeartbeat, 1)
+  assert.equal(value.counts.release, 0)
+  assert.deepEqual(result, { ok: false })
+  assert.equal(value.controller.hasUnsafeContext(), true)
+})
+
+test('shutdown tracks a post-launch context whose close fails before launch adoption completes', async (t) => {
+  let releaseLaunch
+  let markLaunchStarted
+  const launchGate = new Promise((resolve) => { releaseLaunch = resolve })
+  const launchStarted = new Promise((resolve) => { markLaunchStarted = resolve })
+  const value = leasedControllerFixture(t, {
+    closeRejects: true,
+    launchGate,
+    onLaunch: markLaunchStarted,
+  })
+  const opening = value.controller.openManualLogin({ accountId: 'mon_A' })
+  await launchStarted
+  const shutdown = value.controller.shutdown()
+  releaseLaunch()
+  const [openResult, shutdownResult] = await Promise.allSettled([opening, shutdown])
+
+  assert.equal(openResult.status, 'rejected')
+  assert.deepEqual(shutdownResult, { status: 'fulfilled', value: { ok: false } })
+  assert.equal(value.context.closeCalls, 1)
+  assert.equal(value.counts.release, 0)
+  assert.equal(value.controller.hasUnsafeContext(), true)
+})
+
+test('launcher validation failure cannot hide a persistent context that also fails to close', async (t) => {
+  const value = leasedControllerFixture(t, { closeRejects: true, unexpectedPages: true })
+  await assert.rejects(
+    value.controller.openManualLogin({ accountId: 'mon_A' }),
+    /manual-login-browser-open-failed/,
+  )
+
+  assert.equal(value.context.closeCalls, 1)
+  assert.equal(value.counts.stopHeartbeat, 1)
+  assert.equal(value.counts.release, 0)
+  assert.equal(value.controller.hasUnsafeContext(), true)
+  assert.deepEqual(await value.controller.shutdown(), { ok: false })
+  assert.equal(value.controller.hasUnsafeContext(), true)
+})
+
+test('portable launcher close retry releases the lease only after closure succeeds', async (t) => {
+  const value = leasedControllerFixture(t, { closeFailures: 1, unexpectedPages: true })
+  await assert.rejects(
+    value.controller.openManualLogin({ accountId: 'mon_A' }),
+    /manual-login-browser-open-failed/,
+  )
+
+  assert.equal(value.context.closeCalls, 1)
+  assert.equal(value.counts.release, 0)
+  assert.equal(value.counts.leaseDatabaseClose, 0)
+  assert.deepEqual(await value.controller.shutdown(), { ok: true })
+  assert.equal(value.context.closeCalls, 2)
+  assert.equal(value.counts.release, 1)
+  assert.equal(value.counts.leaseDatabaseClose, 1)
+  assert.equal(value.events.indexOf('release') < value.events.indexOf('lease-db-close'), true)
+})
+
+test('unknown persistent launch failure retains lease ownership and keeps shutdown unsafe', async (t) => {
+  const value = leasedControllerFixture(t, { launchRejects: true })
+  await assert.rejects(
+    value.controller.openManualLogin({ accountId: 'mon_A' }),
+    /manual-login-browser-open-failed/,
+  )
+
+  assert.equal(value.counts.launch, 1)
+  assert.equal(value.counts.stopHeartbeat, 1)
+  assert.equal(value.counts.release, 0)
+  assert.equal(value.controller.hasUnsafeContext(), true)
+  assert.deepEqual(await value.controller.shutdown(), { ok: false })
 })

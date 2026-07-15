@@ -1,0 +1,615 @@
+{
+  "schemaVersion": "crown-eight-direction-candidates-v1",
+  "sourceBinding": "hmac-sha256:f3c37f9560ded1820ef4bfd892e70d4b2aacd51379ea77114b74c8b9e47ffd6c",
+  "candidates": [
+    {
+      "ordinal": 1,
+      "direction": {
+        "id": "prematch-full-time-asian-handicap-home",
+        "mode": "prematch",
+        "period": "full_time",
+        "marketType": "asian_handicap",
+        "lineVariant": "main",
+        "side": "home"
+      },
+      "status": "candidate",
+      "reason": "preview-success-submit-route-blocked",
+      "dispatchCount": 0,
+      "submitAllowed": false,
+      "capabilityPromoted": false,
+      "runBinding": "hmac-sha256:efd5bc81f068bca99b3495fbbd08acb90f42f8da5d22dee89c244f8f82616e70",
+      "identityBinding": "hmac-sha256:873346698550bd7f812ffd562d12abf380e61aa99da6612832fc660ee1d4859d",
+      "directionWireBinding": "hmac-sha256:eb6d9eff2551932aa82593f5a0ef928008afc6b365de3256ea3f97e5cd51ec7a",
+      "wireTemplate": {
+        "previewStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_order_view"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "R"
+          },
+          {
+            "field": "chose_team",
+            "value": "H"
+          }
+        ],
+        "submitStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_bet"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "R"
+          },
+          {
+            "field": "rtype",
+            "value": "RH"
+          },
+          {
+            "field": "isRB",
+            "value": "N"
+          },
+          {
+            "field": "chose_team",
+            "value": "H"
+          },
+          {
+            "field": "f",
+            "value": "1R"
+          }
+        ]
+      },
+      "lifecycle": [
+        "preview-request",
+        "preview-response",
+        "submit-request",
+        "submit-route-blocked",
+        "submit-request-failed"
+      ]
+    },
+    {
+      "ordinal": 2,
+      "direction": {
+        "id": "prematch-full-time-asian-handicap-away",
+        "mode": "prematch",
+        "period": "full_time",
+        "marketType": "asian_handicap",
+        "lineVariant": "main",
+        "side": "away"
+      },
+      "status": "candidate",
+      "reason": "preview-success-submit-route-blocked",
+      "dispatchCount": 0,
+      "submitAllowed": false,
+      "capabilityPromoted": false,
+      "runBinding": "hmac-sha256:f3978b62d363401fc6555149f10b0be66d4a749914d692470ffbb7281afbc360",
+      "identityBinding": "hmac-sha256:88edb5108d03113061f202d03f53291a5062073175e0dde277da0b63c281cd15",
+      "directionWireBinding": "hmac-sha256:33755a5d8e1c8f55c1db48daaa8c43a9b5892ce7d25a50bcaee06e74b22726a4",
+      "wireTemplate": {
+        "previewStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_order_view"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "R"
+          },
+          {
+            "field": "chose_team",
+            "value": "C"
+          }
+        ],
+        "submitStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_bet"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "R"
+          },
+          {
+            "field": "rtype",
+            "value": "RC"
+          },
+          {
+            "field": "isRB",
+            "value": "N"
+          },
+          {
+            "field": "chose_team",
+            "value": "C"
+          },
+          {
+            "field": "f",
+            "value": "1R"
+          }
+        ]
+      },
+      "lifecycle": [
+        "preview-request",
+        "preview-response",
+        "submit-request",
+        "submit-route-blocked",
+        "submit-request-failed"
+      ]
+    },
+    {
+      "ordinal": 3,
+      "direction": {
+        "id": "prematch-full-time-total-over",
+        "mode": "prematch",
+        "period": "full_time",
+        "marketType": "total",
+        "lineVariant": "main",
+        "side": "over"
+      },
+      "status": "candidate",
+      "reason": "preview-success-submit-route-blocked",
+      "dispatchCount": 0,
+      "submitAllowed": false,
+      "capabilityPromoted": false,
+      "runBinding": "hmac-sha256:bd83c536bc6aa049fcfec948fa9c6e05bb6766bfae5bcd59bcc53701183ddab9",
+      "identityBinding": "hmac-sha256:3a2435f0482203c270112a75327722102d13f02bb3af3c6e703e4deeb4767ba3",
+      "directionWireBinding": "hmac-sha256:6f56f4f8f675b6808675c40512d0e4bc3aadb65594969acb9ec601288052f117",
+      "wireTemplate": {
+        "previewStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_order_view"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "OU"
+          },
+          {
+            "field": "chose_team",
+            "value": "C"
+          }
+        ],
+        "submitStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_bet"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "OU"
+          },
+          {
+            "field": "rtype",
+            "value": "OUC"
+          },
+          {
+            "field": "isRB",
+            "value": "N"
+          },
+          {
+            "field": "chose_team",
+            "value": "C"
+          },
+          {
+            "field": "f",
+            "value": "1R"
+          }
+        ]
+      },
+      "lifecycle": [
+        "preview-request",
+        "preview-response",
+        "submit-request",
+        "submit-route-blocked",
+        "submit-request-failed"
+      ]
+    },
+    {
+      "ordinal": 4,
+      "direction": {
+        "id": "prematch-full-time-total-under",
+        "mode": "prematch",
+        "period": "full_time",
+        "marketType": "total",
+        "lineVariant": "main",
+        "side": "under"
+      },
+      "status": "candidate",
+      "reason": "preview-success-submit-route-blocked",
+      "dispatchCount": 0,
+      "submitAllowed": false,
+      "capabilityPromoted": false,
+      "runBinding": "hmac-sha256:26da8fdb2fa2c22400f509df638576429fc26386258683da35668b5de0556cde",
+      "identityBinding": "hmac-sha256:0b220d42473a4d385d8c325f098a8ce7928c3954997ba91a12be0568ce22833a",
+      "directionWireBinding": "hmac-sha256:72a7762d3c7edb0decded6d269b395fb15f7fed561070a23daed2e91e6ef805e",
+      "wireTemplate": {
+        "previewStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_order_view"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "OU"
+          },
+          {
+            "field": "chose_team",
+            "value": "H"
+          }
+        ],
+        "submitStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_bet"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "OU"
+          },
+          {
+            "field": "rtype",
+            "value": "OUH"
+          },
+          {
+            "field": "isRB",
+            "value": "N"
+          },
+          {
+            "field": "chose_team",
+            "value": "H"
+          },
+          {
+            "field": "f",
+            "value": "1R"
+          }
+        ]
+      },
+      "lifecycle": [
+        "preview-request",
+        "preview-response",
+        "submit-request",
+        "submit-route-blocked",
+        "submit-request-failed"
+      ]
+    },
+    {
+      "ordinal": 5,
+      "direction": {
+        "id": "live-full-time-asian-handicap-home",
+        "mode": "live",
+        "period": "full_time",
+        "marketType": "asian_handicap",
+        "lineVariant": "main",
+        "side": "home"
+      },
+      "status": "candidate",
+      "reason": "preview-success-submit-route-blocked",
+      "dispatchCount": 0,
+      "submitAllowed": false,
+      "capabilityPromoted": false,
+      "runBinding": "hmac-sha256:76cfcf2ff622b72dc6d37f88d68e26392489804913202ff47ab0156467857fc7",
+      "identityBinding": "hmac-sha256:86d811beb97c75073583a096e3f431dd129e471f794dae5e7d5e2a00fb808bca",
+      "directionWireBinding": "hmac-sha256:32379e0c94101043c5c8221647f950c086c68ed8958d056b83c3193a11ce1467",
+      "wireTemplate": {
+        "previewStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_order_view"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "RE"
+          },
+          {
+            "field": "chose_team",
+            "value": "H"
+          }
+        ],
+        "submitStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_bet"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "RE"
+          },
+          {
+            "field": "rtype",
+            "value": "REH"
+          },
+          {
+            "field": "isRB",
+            "value": "Y"
+          },
+          {
+            "field": "chose_team",
+            "value": "H"
+          },
+          {
+            "field": "f",
+            "value": "1R"
+          }
+        ]
+      },
+      "lifecycle": [
+        "preview-request",
+        "preview-response",
+        "submit-request",
+        "submit-route-blocked",
+        "submit-request-failed"
+      ]
+    },
+    {
+      "ordinal": 6,
+      "direction": {
+        "id": "live-full-time-asian-handicap-away",
+        "mode": "live",
+        "period": "full_time",
+        "marketType": "asian_handicap",
+        "lineVariant": "main",
+        "side": "away"
+      },
+      "status": "candidate",
+      "reason": "preview-success-submit-route-blocked",
+      "dispatchCount": 0,
+      "submitAllowed": false,
+      "capabilityPromoted": false,
+      "runBinding": "hmac-sha256:84d0d4b68aa2cb7ca88f5b893cc94c45ec71211a7b747eb91338dc465227eb92",
+      "identityBinding": "hmac-sha256:377da40e8ba3e02e3470b21b1d730432c09ed7cf86a78eb929e3579b4da56665",
+      "directionWireBinding": "hmac-sha256:515324e818e07de01993fb1e29566df4758f28a34dc5c29a632b871ace054f01",
+      "wireTemplate": {
+        "previewStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_order_view"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "RE"
+          },
+          {
+            "field": "chose_team",
+            "value": "C"
+          }
+        ],
+        "submitStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_bet"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "RE"
+          },
+          {
+            "field": "rtype",
+            "value": "REC"
+          },
+          {
+            "field": "isRB",
+            "value": "Y"
+          },
+          {
+            "field": "chose_team",
+            "value": "C"
+          },
+          {
+            "field": "f",
+            "value": "1R"
+          }
+        ]
+      },
+      "lifecycle": [
+        "preview-request",
+        "preview-response",
+        "submit-request",
+        "submit-route-blocked",
+        "submit-request-failed"
+      ]
+    },
+    {
+      "ordinal": 7,
+      "direction": {
+        "id": "live-full-time-total-over",
+        "mode": "live",
+        "period": "full_time",
+        "marketType": "total",
+        "lineVariant": "main",
+        "side": "over"
+      },
+      "status": "candidate",
+      "reason": "preview-success-submit-route-blocked",
+      "dispatchCount": 0,
+      "submitAllowed": false,
+      "capabilityPromoted": false,
+      "runBinding": "hmac-sha256:5750c40ba76a601e6a01860eb3edf5d9777562c033efa98fa419c706410d8c28",
+      "identityBinding": "hmac-sha256:f49c6619da0cfbf0222351bf108c65e0a6ea1bb3cdcb582c7e70107cf991aff0",
+      "directionWireBinding": "hmac-sha256:e0069f938137d47cfc34862d1aa75d8c62160c9475fb5669aa656bd1cba37f78",
+      "wireTemplate": {
+        "previewStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_order_view"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "ROU"
+          },
+          {
+            "field": "chose_team",
+            "value": "C"
+          }
+        ],
+        "submitStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_bet"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "ROU"
+          },
+          {
+            "field": "rtype",
+            "value": "ROUC"
+          },
+          {
+            "field": "isRB",
+            "value": "Y"
+          },
+          {
+            "field": "chose_team",
+            "value": "C"
+          },
+          {
+            "field": "f",
+            "value": "1R"
+          }
+        ]
+      },
+      "lifecycle": [
+        "preview-request",
+        "preview-response",
+        "submit-request",
+        "submit-route-blocked",
+        "submit-request-failed"
+      ]
+    },
+    {
+      "ordinal": 8,
+      "direction": {
+        "id": "live-full-time-total-under",
+        "mode": "live",
+        "period": "full_time",
+        "marketType": "total",
+        "lineVariant": "main",
+        "side": "under"
+      },
+      "status": "candidate",
+      "reason": "preview-success-submit-route-blocked",
+      "dispatchCount": 0,
+      "submitAllowed": false,
+      "capabilityPromoted": false,
+      "runBinding": "hmac-sha256:4d8548a00c766702b1cad7f5cc050c738fb0ef3ae3f47140c4b554fde714f3ff",
+      "identityBinding": "hmac-sha256:3e7f2db7fb06ba900961bf3e12da567618dabfa0d67e2723315d2e2dc8e9787f",
+      "directionWireBinding": "hmac-sha256:e93323217fbb6e612d7d790b4f6d8d56d0bcc1fea7db04d35188363c3cd0ea35",
+      "wireTemplate": {
+        "previewStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_order_view"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "ROU"
+          },
+          {
+            "field": "chose_team",
+            "value": "H"
+          }
+        ],
+        "submitStaticValues": [
+          {
+            "field": "p",
+            "value": "FT_bet"
+          },
+          {
+            "field": "gtype",
+            "value": "FT"
+          },
+          {
+            "field": "wtype",
+            "value": "ROU"
+          },
+          {
+            "field": "rtype",
+            "value": "ROUH"
+          },
+          {
+            "field": "isRB",
+            "value": "Y"
+          },
+          {
+            "field": "chose_team",
+            "value": "H"
+          },
+          {
+            "field": "f",
+            "value": "1R"
+          }
+        ]
+      },
+      "lifecycle": [
+        "preview-request",
+        "preview-response",
+        "submit-request",
+        "submit-route-blocked",
+        "submit-request-failed"
+      ]
+    }
+  ],
+  "candidateDigest": "sha256:00754e2f1541ac1c7397d9479d67fce9b6d65e7fafe86b39c24862c0b57eab59"
+}

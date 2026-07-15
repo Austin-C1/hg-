@@ -14,6 +14,7 @@ function signal(overrides = {}) {
       side: 'home',
     },
     evidence: {
+      mode: 'live',
       marketType: 'asian_handicap',
       period: 'full_time',
       handicap: -0.5,
@@ -32,8 +33,9 @@ function snapshot(overrides = {}) {
   const marketIdentity = 'crown|football|gid=8878931|full_time|asian_handicap|RATIO_RE'
   const base = {
     provider: 'crown',
+    mode: 'live',
     capturedAt: '2026-07-11T02:01:00.000Z',
-    event: { eventKey: 'crown|football|gid=8878931' },
+    event: { eventKey: 'crown|football|gid=8878931', mode: 'live', ids: { gid: '8878931' } },
     market: {
       marketIdentity,
       period: 'full_time',
@@ -58,7 +60,7 @@ function snapshot(overrides = {}) {
   }
 }
 
-test('locks the strict opposite selection on the same canonical market line', () => {
+test('locks the strict opposite selection on the same numerically equivalent market line', () => {
   const queries = []
   const latest = snapshot()
   const locked = lockReverseSelection(signal(), (query) => {
@@ -68,11 +70,15 @@ test('locks the strict opposite selection on the same canonical market line', ()
 
   assert.deepEqual(queries, [{
     provider: 'crown',
+    gid: '8878931',
+    mode: 'live',
     eventKey: 'crown|football|gid=8878931',
     period: 'full_time',
     marketType: 'asian_handicap',
     lineKey: 'RATIO_RE',
     side: 'away',
+    selectionSide: 'away',
+    handicapRaw: '-0.5',
   }])
   assert.equal(locked.provider, 'crown')
   assert.equal(locked.eventKey, 'crown|football|gid=8878931')
@@ -150,6 +156,13 @@ test('fails closed unless both source and latest handicap values are finite numb
   assert.equal(lockReverseSelection(signal(), () => snapshot({ market: { handicap: Number.POSITIVE_INFINITY } })), null)
 })
 
+test('rejects handicap raw text that contradicts either numeric value', () => {
+  assert.equal(lockReverseSelection(signal({ evidence: { handicapRaw: '2.5' } }), () => snapshot()), null)
+  assert.equal(lockReverseSelection(signal(), () => snapshot({ market: { handicapRaw: '2.5' } })), null)
+  assert.equal(lockReverseSelection(signal({ evidence: { handicapRaw: 'not-a-line' } }), () => snapshot()), null)
+  assert.equal(lockReverseSelection(signal(), () => snapshot({ market: { handicapRaw: 'not-a-line' } })), null)
+})
+
 test('rejects a missing, suspended, or same-side result', () => {
   assert.equal(lockReverseSelection(signal(), () => null), null)
   assert.equal(lockReverseSelection(signal(), () => snapshot({ selection: { suspended: true } })), null)
@@ -165,6 +178,13 @@ test('rejects another event, period, market type, provider, or malformed identit
   assert.equal(lockReverseSelection(signal(), () => snapshot({ market: { marketType: 'total' } })), null)
   assert.equal(lockReverseSelection(signal(), () => snapshot({ market: { marketIdentity: 'malformed' } })), null)
   assert.equal(lockReverseSelection(signal({ evidence: { period: 'first_half' } }), () => snapshot()), null)
+})
+
+test('rejects source or latest mode drift even when gid, side, and line still match', () => {
+  assert.equal(lockReverseSelection(signal({ evidence: { mode: 'prematch' } }), () => snapshot()), null)
+  assert.equal(lockReverseSelection(signal(), () => snapshot({ mode: 'prematch' })), null)
+  assert.equal(lockReverseSelection(signal(), () => snapshot({ event: { mode: 'prematch' } })), null)
+  assert.equal(lockReverseSelection(signal({ evidence: { mode: 'unknown' } }), () => snapshot()), null)
 })
 
 test('rejects an adjacent line instead of chasing it', () => {

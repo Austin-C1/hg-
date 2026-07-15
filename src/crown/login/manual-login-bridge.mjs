@@ -108,14 +108,11 @@ function verifiedSession(result, candidate, origin) {
     || String(session.accountId || '') !== candidate.accountId
     || String(session.username || '').trim() !== candidate.username
     || baseUrl !== origin
-    || !session.cookies
-    || typeof session.cookies !== 'object'
-    || Array.isArray(session.cookies)
   ) fail('manual-login-verification-failed')
 
   return {
     uid: candidate.uid,
-    cookies: { ...session.cookies },
+    cookies: { ...candidate.cookies },
     accountId: candidate.accountId,
     username: candidate.username,
     baseUrl: origin,
@@ -125,19 +122,39 @@ function verifiedSession(result, candidate, origin) {
 
 async function closeContext(challenge) {
   if (!challenge.closePromise) {
-    challenge.closed = true
+    challenge.closing = true
     challenge.closePromise = (async () => {
+      let closed = false
       try {
-        await challenge.context?.close?.()
+        if (typeof challenge.finalize === 'function') {
+          closed = await challenge.finalize() === true
+        } else if (challenge.context && typeof challenge.context.close === 'function') {
+          await challenge.context.close()
+          closed = true
+        } else {
+          closed = true
+        }
       } catch {
         // Browser cleanup must not replace the stable login result.
       } finally {
+        challenge.closed = closed
         challenge.context = null
         challenge.page = null
       }
+      return closed
     })()
   }
-  await challenge.closePromise
+  return challenge.closePromise
+}
+
+async function closeReturnedBrowser(browser) {
+  try {
+    if (typeof browser?.finalize === 'function') return await browser.finalize()
+    await browser?.context?.close?.()
+    return true
+  } catch {
+    return false
+  }
 }
 
 export class ManualLoginBridge {
@@ -331,6 +348,13 @@ export class ManualLoginBridge {
       this._markSecurityViolation(challenge, 'manual-login-unexpected-page')
       Promise.resolve(newPage?.close?.()).catch(() => {})
     })
+    const contextClosed = () => {
+      if (challenge.closing || challenge.terminalAt !== null || !ACTIVE_STATES.has(challenge.status)) return
+      this._markTerminal(challenge, 'failed', 'manual-login-context-closed')
+      void closeContext(challenge)
+    }
+    context.on?.('close', contextClosed)
+    context.on?.('disconnected', contextClosed)
   }
 
   _clearActive(challenge) {
@@ -340,7 +364,7 @@ export class ManualLoginBridge {
   }
 
   _markSecurityViolation(challenge, code) {
-    if (challenge.evidenceFrozen || !ACTIVE_STATES.has(challenge.status)) return
+    if (!ACTIVE_STATES.has(challenge.status)) return
     challenge.securityViolation = code
     challenge.generation += 1
   }
@@ -403,7 +427,7 @@ export class ManualLoginBridge {
     ) fail('manual-login-challenge-state-invalid')
   }
 
-  async _assertOpenFence(challenge, generation, returnedContext = null) {
+  async _assertOpenFence(challenge, generation, returnedBrowser = null) {
     if (this._expired(challenge) && challenge.terminalAt === null) {
       this._markTerminal(challenge, 'failed', 'manual-login-challenge-expired')
     }
@@ -416,8 +440,8 @@ export class ManualLoginBridge {
       && this.activeByAccount.get(challenge.accountId) === challenge.challengeId
     if (valid) return
 
-    if (returnedContext && returnedContext !== challenge.context) {
-      await returnedContext.close?.().catch(() => {})
+    if (returnedBrowser?.context && returnedBrowser.context !== challenge.context) {
+      await closeReturnedBrowser(returnedBrowser)
     } else {
       await closeContext(challenge)
     }
@@ -457,7 +481,9 @@ export class ManualLoginBridge {
       expiresAt: createdAt + this.challengeTtlMs,
       context: null,
       page: null,
+      finalize: null,
       closed: false,
+      closing: false,
       closePromise: null,
       uid: '',
       uidSequence: 0,
@@ -478,10 +504,14 @@ export class ManualLoginBridge {
 
     try {
       const browser = await this.launchBrowser({ accountId, origin })
-      if (!browser?.context || !browser?.page) fail('manual-login-browser-context-invalid')
-      await this._assertOpenFence(challenge, openGeneration, browser.context)
+      if (!browser?.context || !browser?.page) {
+        await closeReturnedBrowser(browser)
+        fail('manual-login-browser-context-invalid')
+      }
+      await this._assertOpenFence(challenge, openGeneration, browser)
       challenge.context = browser.context
       challenge.page = browser.page
+      challenge.finalize = typeof browser.finalize === 'function' ? browser.finalize : null
       await this._installGuards(challenge)
       await this._assertOpenFence(challenge, openGeneration)
       if (challenge.securityViolation) return this._fail(challenge, 'manual-login-security-violation')
@@ -494,10 +524,8 @@ export class ManualLoginBridge {
       return this._public(challenge)
     } catch (error) {
       if (error instanceof ManualLoginError) {
-        if (challenge.terminalAt === null && challenge.status !== 'failed') {
-          challenge.status = 'failed'
-          challenge.errorCode = error.code
-          this._clearActive(challenge)
+        if (challenge.terminalAt === null) {
+          this._markTerminal(challenge, 'failed', error.code)
           await closeContext(challenge)
         }
         throw error
@@ -554,16 +582,21 @@ export class ManualLoginBridge {
     }
     const accountForSave = { ...challenge.account }
     challenge.evidenceFrozen = true
-    await closeContext(challenge)
-    await this._assertConfirmFence(challenge, generation)
 
     let session
     try {
-      const result = await this.verifyGameList(candidate, { signal: input.signal })
+      const result = await this.verifyGameList(candidate, {
+        signal: input.signal,
+        page: challenge.page,
+        context: challenge.context,
+        origin: challenge.origin,
+      })
       session = verifiedSession(result, candidate, challenge.origin)
     } catch {
       return this._fail(challenge, 'manual-login-verification-failed')
     }
+    await this._assertConfirmFence(challenge, generation)
+    await closeContext(challenge)
     await this._assertConfirmFence(challenge, generation)
 
     try {

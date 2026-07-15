@@ -2,6 +2,8 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
+const failedLaunchOwnership = new WeakMap()
+
 function fail(code) {
   throw new Error(code)
 }
@@ -58,6 +60,44 @@ async function chromiumType(value) {
   return playwright.chromium
 }
 
+function contextOwnership(context) {
+  let closed = false
+  let closePromise = null
+  context?.on?.('close', () => { closed = true })
+  return {
+    context,
+    finalize() {
+      if (closed) return Promise.resolve(true)
+      if (closePromise) return closePromise
+      closePromise = (async () => {
+        try {
+          await context?.close?.()
+          closed = true
+          return true
+        } catch {
+          return false
+        } finally {
+          closePromise = null
+        }
+      })()
+      return closePromise
+    },
+  }
+}
+
+export function takePortableChromiumFailureOwnership(error) {
+  if (!error || (typeof error !== 'object' && typeof error !== 'function')) return null
+  const ownership = failedLaunchOwnership.get(error) || null
+  failedLaunchOwnership.delete(error)
+  return ownership
+}
+
+function throwable(error) {
+  return error && (typeof error === 'object' || typeof error === 'function')
+    ? error
+    : new Error('portable-chromium-launch-failed')
+}
+
 export async function launchPortableChromium({
   chromium,
   appRoot,
@@ -89,19 +129,30 @@ export async function launchPortableChromium({
     fail('portable-chromium-launcher-invalid')
   }
 
-  const context = await browserType.launchPersistentContext(profileDir, {
-    executablePath: realExecutable,
-    headless: false,
-    acceptDownloads: false,
-  })
+  let context
+  try {
+    context = await browserType.launchPersistentContext(profileDir, {
+      executablePath: realExecutable,
+      headless: false,
+      acceptDownloads: false,
+      serviceWorkers: 'block',
+    })
+  } catch (error) {
+    const failure = throwable(error)
+    failedLaunchOwnership.set(failure, { context: null, finalize: null })
+    throw failure
+  }
 
   try {
     const existingPages = typeof context?.pages === 'function' ? context.pages() : []
+    if (existingPages.length > 1) fail('portable-chromium-unexpected-pages')
     const page = existingPages[0] || await context.newPage()
     return { context, page, profileDir, executablePath: realExecutable }
   } catch (error) {
-    await context?.close?.().catch(() => {})
-    throw error
+    const failure = throwable(error)
+    const ownership = contextOwnership(context)
+    if (!await ownership.finalize()) failedLaunchOwnership.set(failure, ownership)
+    throw failure
   }
 }
 

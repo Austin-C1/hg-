@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -9,6 +10,17 @@ import { encryptSecret } from '../src/crown/app/app-secret.mjs'
 import { RuntimeLease } from '../src/crown/app/runtime-lease.mjs'
 import { CrownAccountExecutionProvider } from '../src/crown/betting/crown-account-execution-provider.mjs'
 import { CrownAccountPreviewProvider } from '../src/crown/betting/crown-account-provider.mjs'
+import {
+  CROWN_CAPABILITY_MATRIX_VERSION,
+  getCrownCapability,
+  listCrownCapabilities,
+} from '../src/crown/betting/crown-capability-matrix.mjs'
+import {
+  createCrownAcceptanceCapabilityAuthority,
+  createCrownBrowserAcceptanceManifest,
+  initializeCrownBrowserAcceptanceCampaign,
+  inspectCrownBrowserAcceptanceCampaign,
+} from '../src/crown/betting/crown-browser-acceptance.mjs'
 import {
   authorizeExecution,
   recoverAuthorizedChildOrders,
@@ -270,6 +282,15 @@ function ledgerSnapshot(db) {
   }
 }
 
+function expectedExecutionCandidateDigest(value) {
+  const stable = (item) => Array.isArray(item)
+    ? item.map(stable)
+    : item && typeof item === 'object'
+      ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, stable(item[key])]))
+      : item
+  return createHash('sha256').update(JSON.stringify(stable(value)), 'utf8').digest('hex')
+}
+
 async function api() {
   const value = await b2Module
   for (const name of [
@@ -306,6 +327,62 @@ test('prepareAuthorizedSubmit commits gate, attempt, child, batch, and lock as o
   context.handle.close()
 })
 
+test('prepare derives and persists a stable digest for the complete execution candidate', async () => {
+  const { prepareAuthorizedSubmit } = await api()
+  const first = setup()
+  const firstInput = prepareInput(first)
+  firstInput.preview = {
+    ...firstInput.preview,
+    ratio: '-0 / 0.5',
+    con: 'preview-con',
+  }
+
+  const firstResult = prepareAuthorizedSubmit(first.db, firstInput, optionsAt())
+  const expected = expectedExecutionCandidateDigest({
+    accountId: first.child.accountId,
+    amountMinor: first.child.amountMinor,
+    capability: {
+      evidenceId: firstInput.capabilityEvidenceId,
+      version: firstInput.capabilityVersion,
+    },
+    currentIdentity: firstInput.currentIdentity,
+    executor: {
+      fencingToken: first.lease.fencingToken,
+      leaseKey: first.lease.leaseKey,
+      ownerId: first.lease.ownerId,
+    },
+    lockedIdentity: firstInput.lockedIdentity,
+    preview: firstInput.preview,
+  })
+  assert.equal(firstResult.attempt.executionCandidateDigest, expected)
+  assert.equal(attemptRows(first.db)[0].execution_candidate_digest, expected)
+
+  const reordered = setup()
+  const reorderedInput = prepareInput(reordered)
+  reorderedInput.preview = {
+    con: 'preview-con',
+    ratio: '-0 / 0.5',
+    line: reorderedInput.preview.line,
+    odds: reorderedInput.preview.odds,
+    stakeStepMinor: reorderedInput.preview.stakeStepMinor,
+    balanceMinor: reorderedInput.preview.balanceMinor,
+    maxStakeMinor: reorderedInput.preview.maxStakeMinor,
+    minStakeMinor: reorderedInput.preview.minStakeMinor,
+  }
+  const reorderedResult = prepareAuthorizedSubmit(reordered.db, reorderedInput, optionsAt())
+  assert.equal(reorderedResult.attempt.executionCandidateDigest, expected)
+
+  const changed = setup()
+  const changedInput = prepareInput(changed)
+  changedInput.preview = { ...changedInput.preview, ratio: '-0 / 0.5', con: 'changed-con' }
+  const changedResult = prepareAuthorizedSubmit(changed.db, changedInput, optionsAt())
+  assert.notEqual(changedResult.attempt.executionCandidateDigest, expected)
+
+  first.handle.close()
+  reordered.handle.close()
+  changed.handle.close()
+})
+
 test('prepare uses the current strict Preview step instead of the legacy account step', async () => {
   const { prepareAuthorizedSubmit } = await api()
   const context = setup()
@@ -318,6 +395,34 @@ test('prepare uses the current strict Preview step instead of the legacy account
   assert.equal(childRow(context.db).preview_stake_step_minor, 10)
   assert.equal(context.db.prepare("SELECT stake_step_minor FROM betting_accounts WHERE id='account-real'").get().stake_step_minor, 1)
   context.handle.close()
+})
+
+test('prepare accepts the exact fresh minimum without inventing a stake step', async () => {
+  const { prepareAuthorizedSubmit } = await api()
+  const exactMinimum = setup()
+  const input = prepareInput(exactMinimum)
+  input.preview.minStakeMinor = exactMinimum.child.amountMinor
+  input.preview.stakeStepMinor = null
+  input.preview.stakeStepProvenance = 'not-evidenced-in-preview-response'
+
+  const result = prepareAuthorizedSubmit(exactMinimum.db, input, optionsAt())
+
+  assert.equal(result.child.status, 'submit_prepared')
+  assert.equal(childRow(exactMinimum.db).preview_stake_step_minor, 0)
+  exactMinimum.handle.close()
+
+  const aboveMinimum = setup()
+  const blocked = prepareInput(aboveMinimum)
+  blocked.preview.minStakeMinor = 10
+  blocked.preview.stakeStepMinor = null
+  blocked.preview.stakeStepProvenance = 'not-evidenced-in-preview-response'
+  assert.throws(
+    () => prepareAuthorizedSubmit(aboveMinimum.db, blocked, optionsAt()),
+    /preview-stake-step-unverified/,
+  )
+  assert.equal(attemptRows(aboveMinimum.db).length, 0)
+  assert.equal(childRow(aboveMinimum.db).status, 'reserved')
+  aboveMinimum.handle.close()
 })
 
 test('prepare rejects a fresh Preview odds value outside the frozen rule range before creating an attempt', async () => {
@@ -468,21 +573,37 @@ test('production B2Executor passes the persisted child amount and locked selecti
   const { B2Executor } = await api()
   const context = setupUnbound()
   const previewProvider = Object.create(CrownAccountPreviewProvider.prototype)
-  previewProvider.preview = async () => ({
+  const browserSession = Object.freeze({ accountId: context.child.accountId, generation: 7 })
+  const finalPreview = {
     executionPreview: {
-      minStakeMinor: 10, maxStakeMinor: 50, stakeStepMinor: 1,
+      minStakeMinor: 20, maxStakeMinor: 50, stakeStepMinor: null,
+      stakeStepProvenance: 'not-evidenced-in-preview-response',
       odds: '0.83', line: LOCKED_IDENTITY.line, currency: 'CNY', amountScale: 0,
     },
     freshBalanceCny: 100,
     lockedIdentity: structuredClone(LOCKED_IDENTITY),
     capabilityEvidenceId: 'fixture:b2-ledger:offline:v1',
     capabilityVersion: 'b2-ledger-fixture-v1',
-  })
+  }
+  Object.defineProperty(finalPreview, 'browserSession', { value: browserSession })
+  previewProvider.preview = async () => finalPreview
   let submitted = null
+  let callbackCalls = 0
+  let callbackError = null
   const executionProvider = Object.create(CrownAccountExecutionProvider.prototype)
   executionProvider.submit = async (input) => {
     submitted = structuredClone({ ...input, onNetworkStarted: undefined })
-    input.onNetworkStarted()
+    assert.equal(attemptRows(context.db).length, 0)
+    assert.equal(childRow(context.db).status, 'reserved')
+    callbackCalls += 1
+    try {
+      await input.onNetworkStarted()
+    } catch (error) {
+      callbackError = error
+      throw error
+    }
+    assert.equal(attemptRows(context.db)[0].status, 'submit_dispatched')
+    assert.equal(childRow(context.db).status, 'submit_dispatched')
     return { kind: 'pending' }
   }
   const executor = new B2Executor({
@@ -502,12 +623,313 @@ test('production B2Executor passes the persisted child amount and locked selecti
     attemptOrdinal: 1,
     lockedSelection: PERSISTED_ENVELOPE,
   })
+  assert.ifError(callbackError)
   assert.equal(result.child.status, 'unknown')
+  assert.equal(callbackCalls, 1)
   assert.equal(submitted.amountMinor, context.child.amountMinor)
   assert.equal(submitted.remainingChildAmountMinor, context.child.amountMinor)
+  assert.deepEqual(submitted.browserSession, browserSession)
+  assert.equal(result.attempt.executionCandidateDigest, attemptRows(context.db)[0].execution_candidate_digest)
   assert.deepEqual(submitted.lockedSelection, PERSISTED_ENVELOPE)
   assert.equal(submitted.preview.balanceMinor, 100)
   assert.equal(attemptRows(context.db).length, 1)
+  assert.deepEqual({ ...context.db.prepare(`
+    SELECT status, poll_count, next_poll_at, deadline_at
+    FROM bet_reconciliation_state WHERE submit_attempt_id=?
+  `).get(result.attempt.submitAttemptId) }, {
+    status: 'pending',
+    poll_count: 0,
+    next_poll_at: BASE_TIME,
+    deadline_at: '2026-07-11T00:02:00.000Z',
+  })
+  context.handle.close()
+})
+
+test('production B2Executor keeps callback-before failures retryable without an attempt or permit', async () => {
+  const { B2Executor } = await api()
+  const context = setupUnbound()
+  const previewProvider = Object.create(CrownAccountPreviewProvider.prototype)
+  let previewCalls = 0
+  previewProvider.preview = async () => {
+    previewCalls += 1
+    return {
+      executionPreview: {
+        minStakeMinor: 20, maxStakeMinor: 50, stakeStepMinor: null,
+        stakeStepProvenance: 'not-evidenced-in-preview-response',
+        odds: '0.83', line: LOCKED_IDENTITY.line, currency: 'CNY', amountScale: 0,
+      },
+      freshBalanceCny: 100,
+      lockedIdentity: structuredClone(LOCKED_IDENTITY),
+      capabilityEvidenceId: 'fixture:b2-ledger:offline:v1',
+      capabilityVersion: 'b2-ledger-fixture-v1',
+    }
+  }
+  const executionProvider = Object.create(CrownAccountExecutionProvider.prototype)
+  executionProvider.submit = async () => { throw new Error('final-session-generation-changed') }
+  const executor = new B2Executor({
+    database: context.db,
+    previewProvider,
+    executionProvider,
+    lease: context.lease,
+    env: realEnv(),
+    now: () => new Date(BASE_TIME),
+  })
+  const input = {
+    ruleId: context.child.ruleId,
+    batchId: context.child.batchId,
+    childOrderId: context.child.childOrderId,
+    accountId: context.child.accountId,
+    submitAttemptId: 'submit-child-real-1',
+    attemptOrdinal: 1,
+    lockedSelection: PERSISTED_ENVELOPE,
+  }
+
+  const cancelled = await executor.submit(input)
+
+  assert.deepEqual(cancelled, {
+    status: 'pre-dispatch-cancelled',
+    retryable: true,
+    reason: 'provider-before-dispatch',
+  })
+  assert.equal(previewCalls, 1)
+  assert.equal(attemptRows(context.db).length, 0)
+  assert.equal(childRow(context.db).status, 'reserved')
+  assert.equal(context.db.prepare('SELECT COUNT(*) count FROM bet_reconciliation_state').get().count, 0)
+
+  executionProvider.submit = async ({ onNetworkStarted }) => {
+    await onNetworkStarted()
+    return { kind: 'rejected' }
+  }
+  const retried = await executor.submit(input)
+  assert.equal(retried.child.status, 'rejected')
+  assert.equal(previewCalls, 2)
+  assert.equal(attemptRows(context.db).length, 1)
+  context.handle.close()
+})
+
+test('B2 claims an optional acceptance permit between prepare and dispatch in the same transaction', async () => {
+  const { B2Executor } = await api()
+  const makeProviders = (context) => {
+    let previewCalls = 0
+    const crownIdentity = {
+      provider: 'crown', gid: '8878933', mode: 'live', period: 'full_time',
+      market: 'asian_handicap', lineVariant: 'main', line: '-0 / 0.5', side: 'home',
+    }
+    const capability = getCrownCapability({
+      mode: crownIdentity.mode, period: crownIdentity.period, marketType: crownIdentity.market,
+      lineVariant: crownIdentity.lineVariant, selectionSide: crownIdentity.side,
+    })
+    const previewProvider = Object.create(CrownAccountPreviewProvider.prototype)
+    previewProvider.preview = async () => {
+      previewCalls += 1
+      const result = {
+      executionPreview: {
+        minStakeMinor: 20, maxStakeMinor: 50, stakeStepMinor: null,
+        stakeStepProvenance: 'not-evidenced-in-preview-response', odds: '0.83',
+        line: crownIdentity.line, currency: 'CNY', amountScale: 0,
+      },
+      freshBalanceCny: 100,
+      lockedIdentity: structuredClone(crownIdentity),
+      capabilityEvidenceId: capability.evidenceId,
+      capabilityVersion: CROWN_CAPABILITY_MATRIX_VERSION,
+      }
+      Object.defineProperty(result, 'browserSession', {
+        value: { contextGeneration: 'acceptance-context-1' },
+      })
+      return result
+    }
+    const executionProvider = Object.create(CrownAccountExecutionProvider.prototype)
+    executionProvider.submit = async ({ onNetworkStarted }) => {
+      await onNetworkStarted()
+      return { kind: 'rejected' }
+    }
+    return { previewProvider, executionProvider, previewCalls: () => previewCalls }
+  }
+  const acceptanceAuthority = (context) => {
+    const manifest = createCrownBrowserAcceptanceManifest({ capabilityVersion: CROWN_CAPABILITY_MATRIX_VERSION })
+    initializeCrownBrowserAcceptanceCampaign(context.db, { manifest, secretKey: PROVIDER_REFERENCE_KEY })
+    context.db.prepare(`UPDATE crown_browser_acceptance_cases SET state='accepted'
+      WHERE campaign_id=? AND ordinal < 5`).run(manifest.campaignId)
+    const authority = createCrownAcceptanceCapabilityAuthority({
+      database: context.db,
+      manifest,
+      secretKey: PROVIDER_REFERENCE_KEY,
+      candidateCatalog: listCrownCapabilities(),
+    })
+    return {
+      manifest,
+      authority,
+      candidateClaim: authority.claimCandidate(manifest.directions[4]),
+    }
+  }
+  const submitInput = (context) => ({
+    ruleId: context.child.ruleId,
+    batchId: context.child.batchId,
+    childOrderId: context.child.childOrderId,
+    accountId: context.child.accountId,
+    submitAttemptId: 'submit-child-real-1',
+    attemptOrdinal: 1,
+    lockedSelection: PERSISTED_ENVELOPE,
+  })
+
+  const committed = setupUnbound()
+  const committedProviders = makeProviders(committed)
+  const committedAcceptance = acceptanceAuthority(committed)
+  assert.throws(() => new B2Executor({
+    database: committed.db,
+    ...committedProviders,
+    lease: committed.lease,
+    env: realEnv(),
+    acceptanceAuthority: { claimDispatchInTransaction() {} },
+  }), /b2-acceptance-authority/)
+  const committedExecutor = new B2Executor({
+    database: committed.db,
+    ...committedProviders,
+    lease: committed.lease,
+    env: realEnv(),
+    now: () => new Date(BASE_TIME),
+    acceptanceAuthority: committedAcceptance.authority,
+  })
+  const accepted = await committedExecutor.submit({
+    ...submitInput(committed), acceptanceClaim: committedAcceptance.candidateClaim,
+  })
+  assert.equal(accepted.child.status, 'rejected')
+  assert.equal(committedProviders.previewCalls(), 2)
+  const committedSummary = inspectCrownBrowserAcceptanceCampaign(committed.db, {
+    manifest: committedAcceptance.manifest,
+    secretKey: PROVIDER_REFERENCE_KEY,
+  })
+  assert.equal(committedSummary.submitDispatchCount, 1)
+  assert.equal(committedSummary.rejectedCount, 1)
+  const committedCase = committedSummary.cases.find((item) => item.submit_attempt_id === accepted.attempt.submitAttemptId)
+  assert.equal(committedCase.submit_attempt_id, accepted.attempt.submitAttemptId)
+  assert.equal(committedCase.execution_candidate_digest, accepted.attempt.executionCandidateDigest)
+  committed.handle.close()
+
+  const validationDeferred = setupUnbound()
+  const validationProviders = makeProviders(validationDeferred)
+  validationProviders.executionProvider.submit = async ({ onNetworkStarted }) => {
+    await onNetworkStarted()
+    return { kind: 'accepted', providerReferenceCiphertext: PROVIDER_REFERENCE_CIPHERTEXT }
+  }
+  const deferredAcceptance = acceptanceAuthority(validationDeferred)
+  const deferredExecutor = new B2Executor({
+    database: validationDeferred.db,
+    ...validationProviders,
+    lease: validationDeferred.lease,
+    env: realEnv(),
+    now: () => new Date(BASE_TIME),
+    secretKey: PROVIDER_REFERENCE_KEY,
+    acceptanceAuthority: deferredAcceptance.authority,
+    acceptedValidator: { async validateAccepted() { throw new Error('validation-query-unavailable') } },
+  })
+  const deferred = await deferredExecutor.submit({
+    ...submitInput(validationDeferred), acceptanceClaim: deferredAcceptance.candidateClaim,
+  })
+  assert.equal(deferred.child.status, 'accepted')
+  assert.deepEqual(deferred.acceptedValidation, { status: 'deferred' })
+  const deferredSummary = deferredAcceptance.authority.inspect()
+  assert.equal(deferredSummary.status, 'active')
+  assert.equal(deferredSummary.acceptedCount, 4)
+  assert.equal(deferredSummary.cases.find((item) => item.submit_attempt_id === deferred.attempt.submitAttemptId).state, 'validating')
+  assert.equal(deferredAcceptance.authority.claimNextCandidate().validationRequired, true)
+  validationDeferred.handle.close()
+
+  const rolledBack = setupUnbound()
+  const rolledBackProviders = makeProviders(rolledBack)
+  const rolledBackAcceptance = acceptanceAuthority(rolledBack)
+  const rolledBackExecutor = new B2Executor({
+    database: rolledBack.db,
+    ...rolledBackProviders,
+    lease: rolledBack.lease,
+    env: realEnv(),
+    now: () => new Date(BASE_TIME),
+    acceptanceAuthority: rolledBackAcceptance.authority,
+    faultInjector(phase) {
+      if (phase === 'dispatch:after-acceptance-permit') throw new Error('acceptance-permit-fault')
+    },
+  })
+  const cancelled = await rolledBackExecutor.submit({
+    ...submitInput(rolledBack), acceptanceClaim: rolledBackAcceptance.candidateClaim,
+  })
+  assert.equal(cancelled.status, 'pre-dispatch-cancelled')
+  assert.equal(attemptRows(rolledBack.db).length, 0)
+  assert.equal(childRow(rolledBack.db).status, 'reserved')
+  const rolledBackSummary = inspectCrownBrowserAcceptanceCampaign(rolledBack.db, {
+    manifest: rolledBackAcceptance.manifest,
+    secretKey: PROVIDER_REFERENCE_KEY,
+  })
+  assert.equal(rolledBackSummary.submitDispatchCount, 0)
+  rolledBack.handle.close()
+
+  const aboveMinimum = setupUnbound()
+  const aboveMinimumProviders = makeProviders(aboveMinimum)
+  aboveMinimumProviders.previewProvider.preview = async () => {
+    const capability = getCrownCapability({
+      mode: 'live', period: 'full_time', marketType: 'asian_handicap',
+      lineVariant: 'main', selectionSide: 'home',
+    })
+    const result = {
+      executionPreview: {
+        minStakeMinor: 10, maxStakeMinor: 50, stakeStepMinor: 1,
+        stakeStepProvenance: 'provider-preview-response', odds: '0.83',
+        line: '-0 / 0.5', currency: 'CNY', amountScale: 0,
+      },
+      freshBalanceCny: 100,
+      lockedIdentity: {
+        provider: 'crown', gid: '8878933', mode: 'live', period: 'full_time',
+        market: 'asian_handicap', lineVariant: 'main', line: '-0 / 0.5', side: 'home',
+      },
+      capabilityEvidenceId: capability.evidenceId,
+      capabilityVersion: CROWN_CAPABILITY_MATRIX_VERSION,
+    }
+    Object.defineProperty(result, 'browserSession', {
+      value: { contextGeneration: 'acceptance-context-1' },
+    })
+    return result
+  }
+  const aboveMinimumAcceptance = acceptanceAuthority(aboveMinimum)
+  const aboveMinimumExecutor = new B2Executor({
+    database: aboveMinimum.db,
+    ...aboveMinimumProviders,
+    lease: aboveMinimum.lease,
+    env: realEnv(),
+    now: () => new Date(BASE_TIME),
+    acceptanceAuthority: aboveMinimumAcceptance.authority,
+  })
+  const minimumOnly = await aboveMinimumExecutor.submit({
+    ...submitInput(aboveMinimum), acceptanceClaim: aboveMinimumAcceptance.candidateClaim,
+  })
+  assert.equal(minimumOnly.status, 'pre-dispatch-cancelled')
+  assert.equal(attemptRows(aboveMinimum.db).length, 0)
+  assert.equal(inspectCrownBrowserAcceptanceCampaign(aboveMinimum.db, {
+    manifest: aboveMinimumAcceptance.manifest,
+    secretKey: PROVIDER_REFERENCE_KEY,
+  }).submitDispatchCount, 0)
+  aboveMinimum.handle.close()
+})
+
+test('an active acceptance authority never settles or rolls back an ordinary non-acceptance attempt', async () => {
+  const { prepareAuthorizedSubmit, recordAuthorizedDispatch, recordAuthorizedOutcome } = await api()
+  const context = setup()
+  const manifest = createCrownBrowserAcceptanceManifest({ capabilityVersion: CROWN_CAPABILITY_MATRIX_VERSION })
+  initializeCrownBrowserAcceptanceCampaign(context.db, { manifest, secretKey: PROVIDER_REFERENCE_KEY })
+  const authority = createCrownAcceptanceCapabilityAuthority({
+    database: context.db, manifest, secretKey: PROVIDER_REFERENCE_KEY,
+    candidateCatalog: listCrownCapabilities(),
+  })
+  const attempt = prepareInput(context)
+  const options = optionsAt(BASE_TIME, { acceptanceAuthority: authority })
+  prepareAuthorizedSubmit(context.db, attempt, options)
+  recordAuthorizedDispatch(context.db, {
+    ...gateInput(context), submitAttemptId: attempt.submitAttemptId,
+  }, options)
+  const result = recordAuthorizedOutcome(context.db, {
+    ...gateInput(context), submitAttemptId: attempt.submitAttemptId,
+    outcome: { kind: 'accepted', providerReferenceCiphertext: PROVIDER_REFERENCE_CIPHERTEXT },
+  }, options)
+  assert.equal(result.child.status, 'accepted')
+  assert.equal(authority.inspect().submitDispatchCount, 0)
   context.handle.close()
 })
 
@@ -735,6 +1157,9 @@ test('restart recovery never submits prepared, dispatched, or unknown attempts a
       assert.equal(authRow(reopened.db).unknown_amount_minor, 20)
       assert.equal(lockRow(reopened.db).status, 'unknown')
       assert.equal(lockRow(reopened.db).fencing_token, takeover.fencingToken)
+      assert.equal(reopened.db.prepare(`
+        SELECT status FROM bet_reconciliation_state WHERE submit_attempt_id=?
+      `).get(attempt.submitAttemptId)?.status, 'pending')
       reopened.close()
     })
   }

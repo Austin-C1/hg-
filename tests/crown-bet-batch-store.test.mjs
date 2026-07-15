@@ -169,7 +169,7 @@ test('authorized batch allocation atomically creates child budget bindings while
   handle.close()
 })
 
-test('local recovery converts legacy authorized attempts and budgets to unknown without remote reconciliation', () => {
+test('local recovery converts a dispatched attempt to unknown and schedules reconciliation idempotently', () => {
   const handle = openAppDatabase({ dbPath: ':memory:' })
   seed(handle.db, { signals: ['signal-a'], accounts: ['account-a'] })
   handle.db.prepare(`UPDATE betting_rules SET enabled=1,execution_mode='real_eligible' WHERE id='rule-a'`).run()
@@ -225,6 +225,12 @@ test('local recovery converts legacy authorized attempts and budgets to unknown 
       'legacy-recovery-attempt', child.childOrderId, authorization.authorizationId, 1, 20, lease.fencingToken,
       'v1', 'e1', '0.88', '{}', '{}', NOW, NOW, NOW,
     )
+    store.markDispatched(child.childOrderId, { fencingToken: lease.fencingToken, at: NOW })
+    handle.db.prepare(`
+      UPDATE bet_submit_attempts
+      SET status='submit_dispatched', dispatched_at=?, updated_at=?
+      WHERE submit_attempt_id='legacy-recovery-attempt'
+    `).run(NOW, NOW)
 
     const recovered = store.recover({ fencingToken: lease.fencingToken, at: NOW })
     assert.equal(recovered.unknownCount, 1)
@@ -241,6 +247,24 @@ test('local recovery converts legacy authorized attempts and budgets to unknown 
       reserved_amount_minor: 0,
       unknown_amount_minor: 20,
     })
+    const scheduled = { ...handle.db.prepare(`
+      SELECT status,poll_count,next_poll_at,deadline_at,created_at,updated_at
+      FROM bet_reconciliation_state WHERE submit_attempt_id='legacy-recovery-attempt'
+    `).get() }
+    assert.deepEqual(scheduled, {
+      status: 'pending', poll_count: 0, next_poll_at: NOW,
+      deadline_at: '2026-07-10T12:02:00.000Z', created_at: NOW, updated_at: NOW,
+    })
+
+    assert.equal(store.recover({ fencingToken: lease.fencingToken, at: NOW }).unknownCount, 0)
+    assert.equal(handle.db.prepare(`
+      SELECT COUNT(*) AS count FROM bet_reconciliation_state
+      WHERE submit_attempt_id='legacy-recovery-attempt'
+    `).get().count, 1)
+    assert.deepEqual({ ...handle.db.prepare(`
+      SELECT status,poll_count,next_poll_at,deadline_at,created_at,updated_at
+      FROM bet_reconciliation_state WHERE submit_attempt_id='legacy-recovery-attempt'
+    `).get() }, scheduled)
   } finally {
     lease.release()
     handle.close()
@@ -448,6 +472,31 @@ test('reserveRound validates preview stake steps from preview minimum offset', (
 
   const second = store.createBatch(batchInput('signal-b'))
   assert.throws(() => store.reserveRound(second.batchId, [{ ...offsetAllocation, amountMinor: 60 }]), /preview-stake-step/)
+  handle.close()
+})
+
+test('reserveRound treats preview step zero as exact-minimum-only', () => {
+  const handle = openAppDatabase({ dbPath: ':memory:' })
+  seed(handle.db)
+  const store = new BetBatchStore(handle.db, { fencingToken: 1 })
+  const exact = store.createBatch(batchInput('signal-a'))
+  const minimumOnly = {
+    ...allocation('account-a', 60),
+    previewMinStakeMinor: 60,
+    previewStakeStepMinor: 0,
+  }
+
+  const [child] = store.reserveRound(exact.batchId, [minimumOnly])
+  assert.equal(childRow(handle.db, child.childOrderId).preview_stake_step_minor, 0)
+  store.cancelUnsubmitted(exact.batchId, { at: NOW })
+
+  const above = store.createBatch(batchInput('signal-b'))
+  assert.throws(() => store.reserveRound(above.batchId, [{
+    ...minimumOnly,
+    amountMinor: 61,
+  }]), /preview-stake-step/)
+  assert.equal(handle.db.prepare('SELECT COUNT(*) AS count FROM bet_child_orders WHERE batch_id=?')
+    .get(above.batchId).count, 0)
   handle.close()
 })
 

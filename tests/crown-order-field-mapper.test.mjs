@@ -1,244 +1,199 @@
-import test from 'node:test'
 import assert from 'node:assert/strict'
+import test from 'node:test'
 
+import { getCrownCapability } from '../src/crown/betting/crown-capability-matrix.mjs'
 import {
-  buildCrownOrderFields,
   buildStrictCrownPreviewFields,
   buildStrictCrownPreviewWireFields,
+  buildStrictCrownSubmitWireFields,
 } from '../src/crown/betting/crown-order-field-mapper.mjs'
 
-function liveCapability(overrides = {}) {
-  return {
-    evidenceStatus: 'verified',
-    previewAllowed: true,
-    evidenceId: 'fixture:live-full-time-asian-handicap-main:v1',
-    mode: 'live',
-    period: 'full_time',
-    marketType: 'asian_handicap',
-    lineVariant: 'main',
-    mapperEvidence: {
-      ratioFields: ['RATIO_RE'],
-      oddsFields: ['IOR_REC', 'IOR_REH'],
-      oddsFieldsBySide: { home: 'IOR_REH', away: 'IOR_REC' },
-      wtype: 'RE',
-      wireDefaults: { langx: 'zh-cn', odd_f_type: 'H', p: 'FT_order_view' },
-    },
-    requestFieldSet: ['chose_team', 'gid', 'gtype', 'langx', 'odd_f_type', 'p', 'ver', 'wtype'],
-    ...overrides,
-  }
+const DIRECTIONS = Object.freeze([
+  ['prematch', 'asian_handicap', 'home', 'RATIO_R', 'IOR_RH', 'R', 'H'],
+  ['prematch', 'asian_handicap', 'away', 'RATIO_R', 'IOR_RC', 'R', 'C'],
+  ['prematch', 'total', 'over', 'RATIO_OUO', 'IOR_OUC', 'OU', 'C'],
+  ['prematch', 'total', 'under', 'RATIO_OUU', 'IOR_OUH', 'OU', 'H'],
+  ['live', 'asian_handicap', 'home', 'RATIO_RE', 'IOR_REH', 'RE', 'H'],
+  ['live', 'asian_handicap', 'away', 'RATIO_RE', 'IOR_REC', 'RE', 'C'],
+  ['live', 'total', 'over', 'RATIO_ROUO', 'IOR_ROUC', 'ROU', 'C'],
+  ['live', 'total', 'under', 'RATIO_ROUU', 'IOR_ROUH', 'ROU', 'H'],
+])
+
+function capability(direction) {
+  const [mode, marketType, selectionSide] = direction
+  return getCrownCapability({
+    mode, period: 'full_time', marketType, lineVariant: 'main', selectionSide,
+  })
 }
 
-function liveRecord(overrides = {}) {
+function record(direction, overrides = {}) {
+  const [mode, marketType, side, ratioField, oddsField] = direction
   return {
-    mode: 'live',
+    mode,
     event: { ids: { gid: '8878933' } },
     market: {
-      marketType: 'asian_handicap',
-      period: 'full_time',
-      lineVariant: 'main',
-      lineKey: 'ah:ft:-0.25',
-      ratioField: 'RATIO_RE',
-      handicapRaw: '-0 / 0.5',
+      marketType, period: 'full_time', lineVariant: 'main', ratioField,
+      handicapRaw: marketType === 'total' ? '2.5' : '-0 / 0.5',
     },
-    selection: { side: 'home', oddsField: 'IOR_REH', oddsRaw: '1.09' },
+    selection: { side, oddsField, oddsRaw: '0.96' },
     ...overrides,
   }
 }
 
-test('maps live asian handicap home selection to Crown fields', () => {
-  const fields = buildCrownOrderFields({
-    event: { ids: { gid: '8878933' } },
-    market: { marketType: 'asian_handicap', period: 'full_time', ratioField: 'RATIO_RE', handicapRaw: '-0 / 0.5' },
-    selection: { side: 'home', oddsField: 'IOR_REH', oddsRaw: '1.09' },
-    stake: 50,
-  })
-  assert.equal(fields.preview.wtype, 'RE')
-  assert.equal(fields.preview.chose_team, 'H')
-  assert.equal(fields.submit.rtype, 'REH')
-  assert.equal(fields.submit.golds, '50')
+test('strict Preview mapper uses the exact captured side wire for all eight directions', () => {
+  for (const direction of DIRECTIONS) {
+    const [, , side, , , wtype, choseTeam] = direction
+    const row = capability(direction)
+    const mapped = buildStrictCrownPreviewFields(record(direction), { capability: row })
+    assert.equal(mapped.operation, 'FT_order_view')
+    assert.deepEqual(mapped.preview, {
+      gid: '8878933', gtype: 'FT', wtype, chose_team: choseTeam,
+    })
+    assert.equal(mapped.identity.side, side)
+    const wire = buildStrictCrownPreviewWireFields(mapped.preview, {
+      capability: row,
+      protocolVersion: 'fixture-version',
+      protocolVersionEvidence: {
+        source: 'production-session-metadata', captured: true, verified: true,
+      },
+    })
+    assert.deepEqual(Object.keys(wire).sort(), row.requestFieldSets.preview)
+    assert.equal(wire.ver, 'fixture-version')
+  }
 })
 
-test('maps live first-half total under selection to Crown fields', () => {
-  const fields = buildCrownOrderFields({
-    event: { ids: { gid: '8878931' } },
-    market: { marketType: 'total', period: 'first_half', ratioField: 'RATIO_HROUO', handicapRaw: '4 / 4.5' },
-    selection: { side: 'under', oddsField: 'IOR_HROUH', oddsRaw: '0.75' },
-    stake: 50,
-  })
-  assert.equal(fields.preview.wtype, 'ROU')
-  assert.equal(fields.preview.chose_team, 'C')
-  assert.equal(fields.submit.rtype, 'ROUC')
-  assert.equal(fields.submit.f, '1R')
+test('strict Preview mapper fails closed on side, ratio, odds, and field-set drift', () => {
+  const row = capability(DIRECTIONS[4])
+  assert.throws(
+    () => buildStrictCrownPreviewFields(record(DIRECTIONS[5]), { capability: row }),
+    /selectionSide/,
+  )
+  assert.throws(
+    () => buildStrictCrownPreviewFields(record(DIRECTIONS[4], {
+      market: { ...record(DIRECTIONS[4]).market, ratioField: 'RATIO_UNKNOWN' },
+    }), { capability: row }),
+    /ratioField/,
+  )
+  assert.throws(
+    () => buildStrictCrownPreviewFields(record(DIRECTIONS[4], {
+      selection: { ...record(DIRECTIONS[4]).selection, oddsField: 'IOR_UNKNOWN' },
+    }), { capability: row }),
+    /oddsField/,
+  )
+  assert.throws(
+    () => buildStrictCrownPreviewFields(record(DIRECTIONS[4]), {
+      capability: { ...row, requestFieldSets: { ...row.requestFieldSets, preview: ['gid'] } },
+    }),
+    /request-keys/,
+  )
 })
 
-test('maps prematch full-time total under selection to Crown preview fields', () => {
-  const fields = buildCrownOrderFields({
-    event: { ids: { gid: '8892295' } },
-    market: { marketType: 'total', period: 'full_time', ratioField: 'RATIO_OUO', handicapRaw: '2.5' },
-    selection: { side: 'under', oddsField: 'IOR_OUH', oddsRaw: '0.71' },
-    stake: 50,
-  })
-  assert.equal(fields.preview.wtype, 'OU')
-  assert.equal(fields.preview.chose_team, 'C')
-  assert.equal(fields.submit.rtype, 'OUC')
-  assert.equal(fields.submit.isRB, 'N')
-  assert.equal(fields.submit.f, '')
+test('strict Preview wire requires a verified runtime protocol version', () => {
+  const row = capability(DIRECTIONS[4])
+  const mapped = buildStrictCrownPreviewFields(record(DIRECTIONS[4]), { capability: row })
+  assert.throws(
+    () => buildStrictCrownPreviewWireFields(mapped.preview, { capability: row }),
+    /field-source-unproven:ver/,
+  )
+  assert.throws(
+    () => buildStrictCrownPreviewWireFields({ ...mapped.preview, extra: 'x' }, {
+      capability: row,
+      protocolVersion: 'fixture-version',
+      protocolVersionEvidence: {
+        source: 'production-session-metadata', captured: true, verified: true,
+      },
+    }),
+    /invalid-crown-preview-request-fields/,
+  )
 })
 
-test('maps prematch first-half total under selection to Crown preview fields', () => {
-  const fields = buildCrownOrderFields({
-    event: { ids: { gid: '8892295' } },
-    market: { marketType: 'total', period: 'first_half', ratioField: 'RATIO_HOUO', handicapRaw: '1' },
-    selection: { side: 'under', oddsField: 'IOR_HOUH', oddsRaw: '0.71' },
-    stake: 50,
-  })
-  assert.equal(fields.preview.wtype, 'OU')
-  assert.equal(fields.preview.chose_team, 'C')
-  assert.equal(fields.submit.rtype, 'OUC')
-  assert.equal(fields.submit.isRB, 'N')
-  assert.equal(fields.submit.f, '1R')
+test('strict Submit mapper does not infer a wire for an unaccepted side', () => {
+  const home = capability(DIRECTIONS[0])
+  const identity = {
+    provider: 'crown', gid: '1', mode: 'prematch', period: 'full_time',
+    market: 'asian_handicap', lineVariant: 'main', line: '0.5', side: 'home',
+  }
+  assert.throws(() => buildStrictCrownSubmitWireFields({
+    lockedIdentity: identity,
+    currentIdentity: identity,
+  }, { capability: home }), /unverified-crown-submit-capability/)
 })
 
-test('maps prematch first-half asian handicap away selection to Crown preview fields', () => {
-  const fields = buildCrownOrderFields({
-    event: { ids: { gid: '8892295' } },
-    market: { marketType: 'asian_handicap', period: 'first_half', ratioField: 'RATIO_HR', handicapRaw: '0' },
-    selection: { side: 'away', oddsField: 'IOR_HRC', oddsRaw: '0.99' },
-    stake: 50,
-  })
-  assert.equal(fields.preview.wtype, 'R')
-  assert.equal(fields.preview.chose_team, 'C')
-  assert.equal(fields.submit.rtype, 'RC')
-  assert.equal(fields.submit.isRB, 'N')
-  assert.equal(fields.submit.f, '1R')
-})
-
-test('rejects unsupported markets before request construction', () => {
-  assert.throws(() => buildCrownOrderFields({
-    event: { ids: { gid: '1' } },
-    market: { marketType: 'moneyline', period: 'full_time' },
-    selection: { side: 'home', oddsRaw: '1.2' },
-    stake: 10,
-  }), /unsupported-crown-market/)
-})
-
-test('rejects alternate-line handicap fields that are not verified for execution', () => {
-  assert.throws(() => buildCrownOrderFields({
-    event: { ids: { gid: '1001' } },
-    market: { marketType: 'asian_handicap', period: 'full_time', ratioField: 'RATIO_AR', handicapRaw: '0 / 0.5' },
-    selection: { side: 'home', oddsField: 'IOR_ARH', oddsRaw: '0.79' },
-    stake: 50,
-  }), /unsupported-crown-market/)
-})
-
-test('strict mapper constructs only evidenced FT_order_view fields and preserves lock identity', () => {
-  const fields = buildStrictCrownPreviewFields(liveRecord(), { capability: liveCapability() })
-
-  assert.equal(fields.operation, 'FT_order_view')
-  assert.deepEqual(fields.preview, {
-    gid: '8878933',
-    gtype: 'FT',
-    wtype: 'RE',
-    chose_team: 'H',
-  })
-  assert.deepEqual(Object.keys(fields.preview).sort(), ['chose_team', 'gid', 'gtype', 'wtype'])
-  const wire = buildStrictCrownPreviewWireFields(fields.preview, {
-    capability: liveCapability(),
+test('strict Submit mapper accepts the exact fresh minimum without a fabricated 50-unit quantum', () => {
+  const away = capability(DIRECTIONS[1])
+  const identity = {
+    provider: 'crown', gid: '8878933', mode: 'prematch', period: 'full_time',
+    market: 'asian_handicap', lineVariant: 'main', line: '0.5 / 1', side: 'away',
+  }
+  const preview = {
+    lockedIdentity: identity,
+    line: identity.line,
+    currency: 'CNY',
+    amountScale: 0,
+    minStakeMinor: 73,
+    maxStakeMinor: 999,
+    balanceMinor: 500,
+    stakeStepMinor: null,
+    stakeStepProvenance: 'not-evidenced-in-preview-response',
+    odds: '0.96',
+    submitCon: '1',
+    submitRatio: '50',
+  }
+  const options = {
+    capability: away,
     protocolVersion: 'fixture-version',
     protocolVersionEvidence: {
       source: 'production-session-metadata', captured: true, verified: true,
     },
-  })
-  assert.deepEqual(Object.keys(wire).sort(), liveCapability().requestFieldSet)
-  assert.equal(wire.p, 'FT_order_view')
-  assert.equal(wire.langx, 'zh-cn')
-  assert.equal(wire.odd_f_type, 'H')
-  assert.equal(wire.ver, 'fixture-version')
-  assert.deepEqual(fields.identity, {
-    gid: '8878933',
-    mode: 'live',
-    period: 'full_time',
-    market: 'asian_handicap',
-    lineVariant: 'main',
-    line: '-0 / 0.5',
-    side: 'home',
-  })
-  assert.equal(fields.capabilityEvidenceId, 'fixture:live-full-time-asian-handicap-main:v1')
-  assert.equal('submit' in fields, false)
+  }
+
+  const wire = buildStrictCrownSubmitWireFields({
+    lockedIdentity: identity,
+    currentIdentity: { ...identity },
+    preview,
+    amountMinor: 73,
+  }, options)
+  assert.equal(wire.golds, '73')
+
+  assert.throws(() => buildStrictCrownSubmitWireFields({
+    lockedIdentity: identity,
+    currentIdentity: { ...identity },
+    preview,
+    amountMinor: 74,
+  }, options), /crown-submit-stake-step-unverified/)
 })
 
-test('strict mapper requires explicit verified preview capability evidence', () => {
-  assert.throws(() => buildStrictCrownPreviewFields(liveRecord()), /missing-crown-preview-capability/)
-  assert.throws(
-    () => buildStrictCrownPreviewFields(liveRecord(), { capability: liveCapability({ evidenceStatus: 'provisional' }) }),
-    /unverified-crown-preview-capability/,
-  )
-  assert.throws(
-    () => buildStrictCrownPreviewFields(liveRecord(), { capability: liveCapability({ previewAllowed: false }) }),
-    /unverified-crown-preview-capability/,
-  )
-  assert.throws(
-    () => buildStrictCrownPreviewFields(liveRecord(), { capability: liveCapability({ evidenceId: '' }) }),
-    /missing-crown-preview-evidence/,
-  )
-})
-
-test('strict mapper rejects unsupported prematch evidence, alternate, and capability mismatches', () => {
-  assert.throws(
-    () => buildStrictCrownPreviewFields(liveRecord({ mode: 'prematch' }), {
-      capability: liveCapability({ mode: 'prematch' }),
-    }),
-    /crown-preview-capability-mismatch:wtype/,
-  )
-  assert.throws(
-    () => buildStrictCrownPreviewFields(liveRecord({
-      market: { ...liveRecord().market, lineVariant: 'alternate' },
-    }), { capability: liveCapability({ lineVariant: 'alternate' }) }),
-    /unsupported-crown-preview-line-variant/,
-  )
-  assert.throws(
-    () => buildStrictCrownPreviewFields(liveRecord(), {
-      capability: liveCapability({ period: 'first_half' }),
-    }),
-    /crown-preview-capability-mismatch:period/,
-  )
-  assert.throws(
-    () => buildStrictCrownPreviewFields(liveRecord(), {
-      capability: liveCapability({
-        mapperEvidence: { ...liveCapability().mapperEvidence, oddsFieldsBySide: { home: 'IOR_UNKNOWN' } },
-      }),
-    }),
-    /crown-preview-capability-mismatch:oddsField/,
-  )
-})
-
-test('strict mapper rejects capability request-key drift instead of forwarding extra fields', () => {
-  assert.throws(
-    () => buildStrictCrownPreviewFields(liveRecord(), {
-      capability: liveCapability({ requestFieldSet: ['gid', 'gtype', 'wtype', 'chose_team', 'uid'] }),
-    }),
-    /invalid-crown-preview-request-keys/,
-  )
-  assert.throws(
-    () => buildStrictCrownPreviewFields(liveRecord(), {
-      capability: liveCapability({
-        mapperEvidence: { ...liveCapability().mapperEvidence, wtype: 'OU' },
-      }),
-    }),
-    /crown-preview-capability-mismatch:wtype/,
-  )
-})
-
-test('strict wire mapper blocks missing version source and exact-field drift', () => {
-  const mapped = buildStrictCrownPreviewFields(liveRecord(), { capability: liveCapability() })
-  assert.throws(
-    () => buildStrictCrownPreviewWireFields(mapped.preview, { capability: liveCapability() }),
-    /crown-preview-field-source-unproven:ver/,
-  )
-  assert.throws(
-    () => buildStrictCrownPreviewWireFields({ ...mapped.preview, extra: 'x' }, {
-      capability: liveCapability(), protocolVersion: 'fixture-version',
-    }),
-    /invalid-crown-preview-request-fields/,
-  )
+test('strict Submit mapper permits above-minimum amounts only with an evidenced step', () => {
+  const away = capability(DIRECTIONS[1])
+  const identity = {
+    provider: 'crown', gid: '8878933', mode: 'prematch', period: 'full_time',
+    market: 'asian_handicap', lineVariant: 'main', line: '0.5 / 1', side: 'away',
+  }
+  const base = {
+    lockedIdentity: identity,
+    line: identity.line,
+    currency: 'CNY', amountScale: 0,
+    minStakeMinor: 73, maxStakeMinor: 999, balanceMinor: 500,
+    stakeStepMinor: 5,
+    odds: '0.96', submitCon: '1', submitRatio: '50',
+  }
+  const options = {
+    capability: away,
+    protocolVersion: 'fixture-version',
+    protocolVersionEvidence: {
+      source: 'production-session-metadata', captured: true, verified: true,
+    },
+  }
+  assert.equal(buildStrictCrownSubmitWireFields({
+    lockedIdentity: identity,
+    currentIdentity: { ...identity },
+    preview: { ...base, stakeStepProvenance: 'provider-preview-response' },
+    amountMinor: 83,
+  }, options).golds, '83')
+  assert.throws(() => buildStrictCrownSubmitWireFields({
+    lockedIdentity: identity,
+    currentIdentity: { ...identity },
+    preview: { ...base, stakeStepProvenance: 'local-conservative-policy' },
+    amountMinor: 83,
+  }, options), /crown-submit-stake-step-unverified/)
 })

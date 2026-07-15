@@ -19,6 +19,93 @@ import { JsonlV2AuditStore } from '../src/crown/storage/jsonl-v2-audit-store.mjs
 
 const listXml = fs.readFileSync('data/fixtures/crown/transform-xml/get-game-list-today.xml', 'utf8')
 
+test('live get_game_more request scope keeps detail snapshots live when response omits mode fields', async () => {
+  const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-v2-live-detail-mode-'))
+  const stateStore = openMonitorStateStore({ dbPath: path.join(runtimeDir, 'crown.sqlite') })
+  const auditStore = new JsonlV2AuditStore({
+    snapshotsPath: path.join(runtimeDir, 'snapshots.jsonl'),
+    changesPath: path.join(runtimeDir, 'changes.jsonl'),
+  })
+  const game = ({ includeMode }) => `<?xml version="1.0"?><serverresponse><game>
+    ${includeMode ? '<SHOWTYPE>rb</SHOWTYPE><IS_RB>Y</IS_RB>' : ''}
+    <GID>live-detail-1</GID><LID>live-league-1</LID><ECID>live-ec-1</ECID>
+    <LEAGUE>Live Detail League</LEAGUE><TEAM_H>Live Home</TEAM_H><TEAM_C>Live Away</TEAM_C>
+    <RATIO_RE>0.5</RATIO_RE><IOR_REH>0.91</IOR_REH><IOR_REC>0.93</IOR_REC>
+  </game></serverresponse>`
+
+  try {
+    const list = await processDirectXmlV2({
+      body: game({ includeMode: true }),
+      endpointKind: 'get_game_list',
+      capturedAt: '2026-07-15T08:00:00.000Z',
+      pollId: 'poll-live-detail-mode',
+      requestScope: { endpointKind: 'get_game_list', showtype: 'live', isRB: 'Y' },
+      stateStore,
+      auditStore,
+    })
+    const detail = await processDirectXmlV2({
+      body: game({ includeMode: false }),
+      endpointKind: 'get_game_more',
+      capturedAt: '2026-07-15T08:00:01.000Z',
+      pollId: 'poll-live-detail-mode',
+      requestScope: {
+        endpointKind: 'get_game_more', gid: 'live-detail-1', showtype: 'live', isRB: 'Y',
+      },
+      stateStore,
+      auditStore,
+    })
+
+    assert.ok(list.records.length > 0)
+    assert.ok(detail.records.length > 0)
+    assert.ok(detail.records.every((record) => record.mode === 'live' && record.event.mode === 'live'))
+    assert.equal(stateStore.getEvent('crown|football|gid=live-detail-1').event.mode, 'live')
+    for (const record of detail.records) {
+      const persisted = stateStore.getSelection(record.selection.selectionIdentity)?.snapshot
+      assert.equal(persisted?.mode, 'live')
+      assert.equal(persisted?.event?.mode, 'live')
+    }
+  } finally {
+    stateStore.close()
+  }
+})
+
+test('direct-v2 SQLite retains main-line and event mode facts for all eight execution directions', async () => {
+  const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-v2-execution-directions-'))
+  const stateStore = openMonitorStateStore({ dbPath: path.join(runtimeDir, 'crown.sqlite') })
+  const auditStore = new JsonlV2AuditStore({
+    snapshotsPath: path.join(runtimeDir, 'snapshots.jsonl'),
+    changesPath: path.join(runtimeDir, 'changes.jsonl'),
+  })
+
+  try {
+    const result = await processDirectXmlV2({
+      body: listXml,
+      endpointKind: 'get_game_list',
+      capturedAt: '2026-07-08T12:00:00.000Z',
+      pollId: 'poll-eight-execution-directions',
+      requestScope: {
+        endpointKind: 'get_game_list',
+        p3type: '', date: '', gtype: 'ft', showtype: 'today', rtype: 'r', ltype: '3', filter: 'MIX',
+      },
+      stateStore,
+      auditStore,
+    })
+    const directions = result.records.filter((record) => record.market.period === 'full_time')
+
+    assert.equal(directions.length, 8)
+    for (const record of directions) {
+      const persisted = stateStore.getSelection(record.selection.selectionIdentity)?.snapshot
+      assert.ok(persisted, record.selection.selectionIdentity)
+      assert.equal(persisted.market.lineVariant, 'main')
+      assert.equal(persisted.market.isMainMarket, true)
+      assert.equal(persisted.event.mode, record.mode)
+      assert.equal(persisted.mode, record.mode)
+    }
+  } finally {
+    stateStore.close()
+  }
+})
+
 function detailXml(gid, { withoutEcid = true, changedOdds = null } = {}) {
   const block = listXml.match(new RegExp(`<game id="${gid}">[\\s\\S]*?</game>`))?.[0]
   assert.ok(block, `fixture game ${gid} must exist`)
@@ -363,7 +450,7 @@ test('audit outbox retries partial JSONL failure after restart without duplicate
       stateStore,
       auditStore: partialFailure,
     }), /injected changes append failure/)
-    assert.equal(stateStore.listPendingAuditFacts().length, 9)
+    assert.equal(stateStore.listPendingAuditFacts().length, 5)
     const snapshotsAfterFailure = lines(snapshotsPath).length
     const changesAfterFailure = lines(changesPath).length
     stateStore.close()
@@ -410,15 +497,15 @@ test('audit retry after append succeeds but delivery mark fails does not duplica
   }
   try {
     await assert.rejects(processDirectXmlV2(input), /injected mark failure/)
-    assert.equal(lines(snapshotsPath).length, 8)
-    assert.equal(stateStore.listPendingAuditFacts().length, 8)
+    assert.equal(lines(snapshotsPath).length, 4)
+    assert.equal(stateStore.listPendingAuditFacts().length, 4)
     stateStore.markAuditFactsDelivered = originalMark
     stateStore.close()
 
     stateStore = openMonitorStateStore({ dbPath })
     const retried = await processDirectXmlV2({ ...input, stateStore })
     assert.equal(retried.changes.length, 0)
-    assert.equal(lines(snapshotsPath).length, 8)
+    assert.equal(lines(snapshotsPath).length, 4)
     assert.deepEqual(stateStore.listPendingAuditFacts(), [])
   } finally {
     stateStore.close()

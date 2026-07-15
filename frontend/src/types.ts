@@ -502,6 +502,39 @@ export interface RealBettingStatus {
   blockingReasons: string[]
 }
 
+export type BrowserBettingSessionState = 'stopped' | 'starting' | 'login_required' | 'ready' | 'stale' | 'blocked' | 'error'
+export type BrowserBettingAcceptanceState = 'pending' | 'previewing' | 'dispatched' | 'accepted' | 'rejected' | 'unknown'
+
+export interface BrowserBettingSummary {
+  transportKind: 'browser-page-fetch'
+  protocolLibraryVersion: string
+  sessions: Array<{
+    accountId: string
+    state: BrowserBettingSessionState
+    lastHeartbeatAt: string | null
+    sessionGeneration: number
+    lastApiSuccessAt: string | null
+  }>
+  directions: Array<{
+    key: string
+    previewAllowed: boolean
+    submitAllowed: boolean
+    reconciliationAllowed: boolean
+    blockedReason: string
+    acceptanceState: BrowserBettingAcceptanceState | null
+  }>
+  campaign: {
+    campaignId: string
+    state: 'active' | 'completed' | 'failed'
+    acceptedCount: number
+    targetCount: number
+    unknownCount: number
+    totalAcceptedAmountMinor: number
+    queueDepth: number
+    inFlightCount: number
+  } | null
+}
+
 export interface OperationsSummary {
   serverTime: string
   freshness: { lastOddsAt: string | null; ageMs: number | null; state: 'fresh' | 'stale' | 'missing'; staleAfterMs: number }
@@ -524,6 +557,7 @@ export interface OperationsSummary {
     state: 'ready' | 'action-required' | 'blocked' | 'off'; ready: boolean; reason: string
   }>
   runtime: { requested: boolean; state: RealBettingRuntimeState; reasonCode: string; updatedAt: string }
+  browserBetting: BrowserBettingSummary
   monitorAlerts: Record<AutoBetMode, { enabled: boolean; reviewRequired: boolean; markets: { asianHandicap: boolean; total: boolean } }>
   ruleCards?: { total: number; enabled: number; reviewRequired: number; ownedLeagues: number }
   rules: { total: number; monitorEnabled: number; realEnabled: number; hitCount: number; recentHitCount: number }
@@ -642,6 +676,36 @@ export interface BettingHistory {
   oddsRaw?: string
   details?: Record<string, unknown>
   createdAt: string
+}
+
+export type BetTargetHistoryStatus = 'all' | 'active' | 'completed' | 'partial' | 'failed' | 'waiting_result'
+export type BetTargetHistoryMode = 'all' | 'prematch' | 'live'
+
+export interface BetTargetHistoryItem {
+  historyKey: string
+  createdAt: string
+  finishedAt: string | null
+  match: { leagueName: string; homeTeam: string; awayTeam: string }
+  direction: {
+    mode: string
+    period: string
+    marketType: string
+    side: string
+    handicapRaw: string
+  }
+  status: string
+  finishReason: string
+  acceptedBetCount: number
+  averageAcceptedOdds: string | null
+  completedAmount: string
+  targetAmount: string
+  unknownAmount: string
+  currency: string
+}
+
+export interface BetTargetHistoryPage {
+  items: BetTargetHistoryItem[]
+  nextCursor: string | null
 }
 
 export interface BootstrapPayload {

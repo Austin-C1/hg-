@@ -55,6 +55,25 @@ test('direct API watch builds get_game_more targets with tracked matches first',
   assert.equal(targets[0].tracked, true)
 })
 
+test('direct API watch game_more targets preserve the hot prematch list scope', () => {
+  const prematch = {
+    mode: 'prematch',
+    event: {
+      eventKey: 'event-prematch-hot',
+      status: 'not_started',
+      ids: { lid: '102', ecid: '202' },
+    },
+  }
+
+  const [target] = buildGameMoreTargets([prematch], {
+    maxTargets: 1,
+    prematchShowtype: 'hot',
+  })
+
+  assert.equal(target.showtype, 'hot')
+  assert.equal(target.isRB, 'N')
+})
+
 test('watch fixture mode writes runtime snapshot and change files without browser actions', async () => {
   const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-watch-'))
   const stats = await runFixtureWatch({
@@ -69,7 +88,7 @@ test('watch fixture mode writes runtime snapshot and change files without browse
   assert.ok(fs.existsSync(changesPath))
   assert.equal(fs.readFileSync(snapshotsPath, 'utf8').trim().split(/\r?\n/).length, stats.normalizedRecords)
   assert.ok(stats.normalizedRecords > stats.filteredRecords)
-  assert.equal(stats.filteredRecords, 100)
+  assert.equal(stats.filteredRecords, 60)
   assert.equal(stats.oddsChanges, 0)
   assert.equal(fs.existsSync(path.join(runtimeDir, 'crown-odds-snapshots-v2.jsonl')), false)
   assert.equal(fs.existsSync(path.join(runtimeDir, 'crown-odds-changes-v2.jsonl')), false)
@@ -161,7 +180,7 @@ test('DOM poll mode extracts current page events, normalizes them, and writes JS
   assert.equal(stats.domPolls, 1)
   assert.equal(stats.domEvents, 38)
   assert.ok(stats.normalizedRecords > stats.filteredRecords)
-  assert.equal(stats.filteredRecords, 100)
+  assert.equal(stats.filteredRecords, 60)
   assert.match(first.source.endpointKey, /^DOM /)
   assert.ok(first.warnings.includes('inferred-dom-market'))
 })

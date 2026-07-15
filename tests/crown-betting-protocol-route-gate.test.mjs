@@ -136,13 +136,16 @@ test('multipart and JSON-like FT_bet fragments without outer braces fail closed'
   }, {
     method: 'POST', url: '/transform.php',
     postData: 'prefix p:FT_bet,golds:1 trailing',
+  }, {
+    method: 'POST', url: '/transform.php',
+    postData: 'prefix "telemetry":"ok", p:"FT_bet", golds:"50"',
   }]
 
-  for (const record of records) {
+  for (const [index, record] of records.entries()) {
     const decision = shouldBlockProtocolRequest(record)
-    assert.equal(decision.classification.stage, 'submit')
+    assert.equal(decision.classification.stage, index === 1 ? 'candidate' : 'submit')
     assert.equal(decision.block, true)
-    assert.equal(decision.reason, 'real-submit-disabled')
+    assert.equal(decision.reason, index === 1 ? 'unverified-post-candidate' : 'real-submit-disabled')
   }
 
   assert.equal(shouldBlockProtocolRequest({
@@ -153,6 +156,155 @@ test('multipart and JSON-like FT_bet fragments without outer braces fail closed'
     method: 'POST', url: '/telemetry',
     postData: 'prefix"alphabet":"checkout","priority":"amount","ordinary":"selection" trailing',
   }).block, false)
+
+  for (const postData of [
+    'p/*comment*/:"FT_bet",golds:"50"',
+    '"p"/*comment*/:"FT_bet","golds":"50"',
+  ]) {
+    const decision = shouldBlockProtocolRequest({
+      method: 'POST', url: '/transform.php', postData,
+    }, { allowRealSubmit: true })
+    assert.equal(decision.block, true)
+    assert.equal(decision.reason, 'unverified-post-candidate')
+    assert.equal(decision.classification.stage, 'candidate')
+    assert.equal(decision.classification.routeRisk, 'order-like-post')
+  }
+})
+
+test('unsupported multipart field-name encodings remain blocked even when real Submit is enabled', () => {
+  const bodies = [[
+    '--offline',
+    "Content-Disposition: form-data; name*0*=UTF-8''%70; name*1*=",
+    '',
+    'FT_bet',
+    '--offline',
+    'Content-Disposition: form-data; name="golds"',
+    '',
+    '999999',
+    '--offline--',
+  ].join('\r\n'), [
+    '--offline',
+    "Content-Disposition: form-data; name=\"p\"; name*=UTF-8''%ZZ",
+    '',
+    'FT_bet',
+    '--offline',
+    'Content-Disposition: form-data; name="golds"',
+    '',
+    '999999',
+    '--offline--',
+  ].join('\r\n'), [
+    '--offline',
+    'Content-Disposition: form-data; name="telemetry"; name="p"',
+    '',
+    'FT_bet',
+    '--offline--',
+  ].join('\r\n'), [
+    '--offline',
+    "Content-Disposition: form-data; name*=UTF-8''telemetry; name*=UTF-8''%70",
+    '',
+    'FT_bet',
+    '--offline--',
+  ].join('\r\n'), [
+    '--offline',
+    'Content-Disposition: form-data; name="telemetry"',
+    'Content-Disposition: form-data; name="p"',
+    '',
+    'FT_bet',
+    '--offline--',
+  ].join('\r\n'), [
+    '--offline',
+    'Content-Disposition: form-data; name="\\p"',
+    '',
+    'FT_bet',
+    '--offline',
+    'Content-Disposition: form-data; name="\\golds"',
+    '',
+    '999999',
+    '--offline--',
+  ].join('\r\n'), [
+    '--offline',
+    `Content-Disposition: form-data; name="p${String.fromCharCode(1)}"`,
+    '',
+    'FT_bet',
+    '--offline--',
+  ].join('\r\n')]
+
+  for (const postData of bodies) {
+    const decision = shouldBlockProtocolRequest({
+      method: 'POST',
+      url: '/transform.php',
+      headers: { 'content-type': 'multipart/form-data; boundary=offline' },
+      postData,
+    }, { allowRealSubmit: true })
+    assert.equal(decision.block, true)
+    assert.equal(decision.reason, 'unverified-post-candidate')
+    assert.equal(decision.classification.stage, 'candidate')
+    assert.equal(decision.classification.routeRisk, 'order-like-post')
+  }
+})
+
+test('multipart requires one matching line-boundary delimiter and rejects conflicting epilogues', () => {
+  const duplicateBoundary = [
+    '--SAFE',
+    'Content-Disposition: form-data; name="telemetry"', '', 'ok',
+    '--SAFE--',
+    '--EVIL',
+    'Content-Disposition: form-data; name="p"', '', 'FT_bet',
+    '--EVIL',
+    'Content-Disposition: form-data; name="golds"', '', '50',
+    '--EVIL--',
+  ].join('\r\n')
+  const duplicate = shouldBlockProtocolRequest({
+    method: 'POST', url: '/transform.php',
+    headers: { 'content-type': 'multipart/form-data; boundary=SAFE; boundary=EVIL' },
+    postData: duplicateBoundary,
+  }, { allowRealSubmit: true })
+  assert.equal(duplicate.block, true)
+  assert.equal(duplicate.classification.stage, 'candidate')
+  assert.equal(duplicate.classification.routeRisk, 'order-like-post')
+
+  const mismatch = shouldBlockProtocolRequest({
+    method: 'POST', url: '/transform.php',
+    headers: { 'content-type': 'multipart/form-data; boundary=SAFE' },
+    postData: duplicateBoundary.replaceAll('SAFE', 'EVIL'),
+  }, { allowRealSubmit: true })
+  assert.equal(mismatch.block, true)
+  assert.equal(mismatch.classification.stage, 'candidate')
+
+  const fakeDelimiter = [
+    '--SAFE',
+    'Content-Disposition: form-data; name="telemetry"', '', 'ok--SAFE--junk',
+    '--SAFE',
+    'Content-Disposition: form-data; name="p"', '', 'FT_bet',
+    '--SAFE',
+    'Content-Disposition: form-data; name="golds"', '', '50',
+    '--SAFE--',
+  ].join('\r\n')
+  const parsed = shouldBlockProtocolRequest({
+    method: 'POST', url: '/transform.php',
+    headers: { 'content-type': 'multipart/form-data; boundary=SAFE' },
+    postData: fakeDelimiter,
+  })
+  assert.equal(parsed.block, true)
+  assert.equal(parsed.classification.stage, 'submit')
+
+  for (const headers of [{
+    'content-type': 'multipart/form-data',
+  }, {
+    'content-type': 'application/octet-stream',
+  }, {
+    'content-type': 'multipart/form-data; boundary="SAFE "',
+  }, {
+    'content-type': 'multipart/form-data; boundary=SAFE',
+    'Content-Type': 'multipart/form-data; boundary=SAFE',
+  }]) {
+    const invalid = shouldBlockProtocolRequest({
+      method: 'POST', url: '/transform.php', headers, postData: fakeDelimiter,
+    }, { allowRealSubmit: true })
+    assert.equal(invalid.block, true)
+    assert.equal(invalid.classification.stage, 'candidate')
+    assert.equal(invalid.classification.routeRisk, 'order-like-post')
+  }
 })
 
 test('exact submit operation tokens used as field names are blocked across structured transports', () => {
@@ -219,6 +371,26 @@ test('order-like GET and WebSocket handshake routes are blocked with truthful de
   assert.equal(decisions.at(-1).blockReason, 'unverified-order-route')
   assert.equal(decisions.at(-1).classification.stage, 'candidate')
   assert.equal(decisions.at(-1).classification.routeRisk, 'order-like-route')
+})
+
+test('static assets with order-like filenames remain readable unless route fields are present', () => {
+  for (const record of [
+    { url: '/style/bet_game.css?ver=fixture', resourceType: 'stylesheet' },
+    { url: '/style/order.css?ver=fixture', resourceType: 'stylesheet' },
+    { url: '/scripts/checkout.js?v=1', resourceType: 'script' },
+    { url: '/images/submit.svg', resourceType: 'image' },
+  ]) {
+    const decision = shouldBlockProtocolRequest({ method: 'GET', postData: '', ...record })
+    assert.equal(decision.block, false, record.url)
+    assert.equal(decision.classification.stage, 'unknown', record.url)
+  }
+
+  const hazardous = shouldBlockProtocolRequest({
+    method: 'GET', resourceType: 'stylesheet',
+    url: '/style/order.css?stake=1&selection=home', postData: '',
+  })
+  assert.equal(hazardous.block, true)
+  assert.equal(hazardous.reason, 'unverified-order-route')
 })
 
 test('empty or opaque POSTs to order endpoints fail closed before dispatch', async () => {

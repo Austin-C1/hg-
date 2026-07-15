@@ -11,9 +11,12 @@ import {
   getCrownCapability,
 } from './crown-capability-matrix.mjs'
 import { isSafetyFinishReason } from './safety-finish-reasons.mjs'
+import { isCrownAcceptanceCapabilityAuthority } from './crown-browser-acceptance.mjs'
 
 const FIXTURE_CAPABILITY_VERSION = 'b2-ledger-fixture-v1'
 const FIXTURE_CAPABILITY_EVIDENCE_ID = 'fixture:b2-ledger:offline:v1'
+const DEFAULT_RECONCILIATION_DEADLINE_MS = 120_000
+const ACTIVE_IMMEDIATE = new WeakSet()
 export function deterministicSubmitAttemptId(childOrderId, attemptOrdinal) {
   const childId = required(childOrderId, 'child-order-id')
   if (Number(attemptOrdinal) !== 1) throw new Error('submit-attempt-ordinal')
@@ -58,7 +61,9 @@ function envFrom(options = {}) {
 }
 
 function immediate(db, operation) {
+  if (ACTIVE_IMMEDIATE.has(db)) return operation()
   db.exec('BEGIN IMMEDIATE')
+  ACTIVE_IMMEDIATE.add(db)
   try {
     const result = operation()
     db.exec('COMMIT')
@@ -66,6 +71,8 @@ function immediate(db, operation) {
   } catch (error) {
     try { db.exec('ROLLBACK') } catch {}
     throw error
+  } finally {
+    ACTIVE_IMMEDIATE.delete(db)
   }
 }
 
@@ -85,6 +92,28 @@ function stable(value) {
 
 function stableJson(value) {
   return JSON.stringify(stable(value))
+}
+
+function executionCandidateDigest({ row, input, preview, fencingToken }) {
+  return createHash('sha256').update(stableJson({
+    accountId: row.account_id,
+    amountMinor: preview.amount,
+    capability: {
+      evidenceId: required(input.capabilityEvidenceId, 'capability-evidence-id'),
+      version: required(input.capabilityVersion, 'capability-version'),
+    },
+    currentIdentity: preview.current,
+    ...(input.acceptanceClaim ? {
+      browserContextGeneration: required(input.browserContextGeneration, 'browser-context-generation'),
+    } : {}),
+    executor: {
+      fencingToken,
+      leaseKey: required(input.leaseKey, 'executor-lease-key'),
+      ownerId: required(input.executorOwnerId, 'executor-owner-id'),
+    },
+    lockedIdentity: preview.locked,
+    preview: preview.preview,
+  }), 'utf8').digest('hex')
 }
 
 function objectValue(value, code) {
@@ -187,7 +216,7 @@ function parseCardScopes(row) {
   return scopes
 }
 
-function requireUnboundContext(db, input, at, { settlement = false } = {}) {
+function requireUnboundContext(db, input, at, { settlement = false, acceptance = false } = {}) {
   const childOrderId = required(input.childOrderId, 'child-order-id')
   const row = db.prepare(`
     SELECT
@@ -261,9 +290,11 @@ function requireUnboundContext(db, input, at, { settlement = false } = {}) {
     if (Number(row.card_migration_review_required) !== 0) throw new Error('migration-review-required')
     if (row.card_currency !== 'CNY' || Number(row.card_amount_scale) !== 0) throw new Error('execution-money-mismatch')
   } else if (rowHasMode) {
-    if (Number(row.setting_enabled) !== 1) throw new Error('betting-mode-disabled')
-    if (Number(row.setting_migration_review_required) !== 0) throw new Error('migration-review-required')
-    if (row.setting_currency !== 'CNY' || Number(row.setting_amount_scale) !== 0) throw new Error('execution-money-mismatch')
+    if (!acceptance) {
+      if (Number(row.setting_enabled) !== 1) throw new Error('betting-mode-disabled')
+      if (Number(row.setting_migration_review_required) !== 0) throw new Error('migration-review-required')
+      if (row.setting_currency !== 'CNY' || Number(row.setting_amount_scale) !== 0) throw new Error('execution-money-mismatch')
+    }
   } else {
     if (row.rule_currency !== 'CNY' || Number(row.rule_amount_scale) !== 0) throw new Error('execution-money-mismatch')
     assertCanonicalRealRule({
@@ -279,7 +310,10 @@ function requireUnboundContext(db, input, at, { settlement = false } = {}) {
 
 function requireContext(db, input, options, at, { settlement = false } = {}) {
   if (!String(input.authorizationId || '').trim()) {
-    return requireUnboundContext(db, input, at, { settlement })
+    return requireUnboundContext(db, input, at, {
+      settlement,
+      acceptance: Boolean(input.acceptanceClaim && isCrownAcceptanceCapabilityAuthority(options.acceptanceAuthority)),
+    })
   }
   const authorizationId = required(input.authorizationId, 'authorization-id')
   const childOrderId = required(input.childOrderId, 'child-order-id')
@@ -410,6 +444,7 @@ function capabilityInput(input) {
     period: identity.period,
     marketType: identity.market,
     lineVariant: identity.lineVariant,
+    selectionSide: identity.side,
   }
 }
 
@@ -425,7 +460,17 @@ function assertCapability(input, options) {
   if (identity.provider !== 'crown') throw new Error('crown-capability-provider-mismatch')
   if (String(input.capabilityVersion) !== CROWN_CAPABILITY_MATRIX_VERSION) throw new Error('crown-capability-version-mismatch')
   const row = getCrownCapability(capabilityInput(input))
-  const capability = assertCrownCapability(row, { operation: 'submit' })
+  let capability
+  try {
+    capability = assertCrownCapability(row, { operation: 'submit' })
+  } catch (error) {
+    if (!input.acceptanceClaim || !isCrownAcceptanceCapabilityAuthority(options.acceptanceAuthority)) throw error
+    capability = options.acceptanceAuthority.resolveCapability({
+      operation: 'submit',
+      direction: capabilityInput(input),
+      candidateClaim: input.acceptanceClaim,
+    })
+  }
   if (capability.evidenceId !== String(input.capabilityEvidenceId)) throw new Error('crown-capability-evidence-mismatch')
 }
 
@@ -452,10 +497,28 @@ function assertPreview(row, input) {
   const min = safeMinor(preview.minStakeMinor, 'preview-min-stake', { positive: true })
   const max = safeMinor(preview.maxStakeMinor, 'preview-max-stake', { positive: true })
   const balance = safeMinor(preview.balanceMinor, 'preview-balance')
-  const step = safeMinor(preview.stakeStepMinor, 'preview-stake-step', { positive: true })
   const amount = safeMinor(Number(row.requested_amount_minor), 'requested-amount', { positive: true })
+  if (input.amountMinor !== undefined
+    && safeMinor(input.amountMinor, 'requested-amount', { positive: true }) !== amount) {
+    throw new Error('requested-amount-changed')
+  }
   if (min > max || amount < min || amount > max || amount > balance) throw new Error('preview-capacity-blocked')
-  if ((amount - min) % step !== 0) throw new Error('preview-stake-step-mismatch')
+  const stepProvenance = String(preview.stakeStepProvenance || '')
+  let step
+  if (preview.stakeStepMinor === null) {
+    if (stepProvenance !== 'not-evidenced-in-preview-response' || amount !== min) {
+      throw new Error('preview-stake-step-unverified')
+    }
+    step = 0
+  } else {
+    step = safeMinor(preview.stakeStepMinor, 'preview-stake-step', { positive: true })
+    if (amount !== min) {
+      const evidenced = current.provider === 'fixture'
+        || ['provider-preview-response', 'verified-account-policy'].includes(stepProvenance)
+      if (!evidenced) throw new Error('preview-stake-step-unverified')
+      if ((amount - min) % step !== 0) throw new Error('preview-stake-step-mismatch')
+    }
+  }
   if (amount > Number(row.per_bet_limit_minor)) throw new Error('account-per-bet-limit')
   const odds = required(preview.odds, 'preview-odds')
   const exactOdds = exactDecimal(odds)
@@ -478,6 +541,7 @@ function attemptResult(row) {
     amountMinor: Number(row.amount_minor),
     status: row.status,
     previewOdds: row.preview_odds,
+    executionCandidateDigest: row.execution_candidate_digest,
     preparedAt: row.prepared_at,
     dispatchedAt: row.dispatched_at,
     resultAt: row.result_at,
@@ -558,6 +622,27 @@ function writeAudit(db, action, subjectId, details, at) {
   `).run(randomUUID(), action, subjectId, JSON.stringify(details), at)
 }
 
+function reconciliationDeadline(at) {
+  return new Date(Date.parse(at) + DEFAULT_RECONCILIATION_DEADLINE_MS).toISOString()
+}
+
+function scheduleUnknownState(db, submitAttemptId, at) {
+  const deadline = reconciliationDeadline(at)
+  db.prepare(`
+    INSERT INTO bet_reconciliation_state (
+      submit_attempt_id, status, poll_count, next_poll_at, deadline_at, created_at, updated_at
+    ) VALUES (?, 'pending', 0, ?, ?, ?, ?)
+    ON CONFLICT(submit_attempt_id) DO UPDATE SET
+      deadline_at=CASE
+        WHEN bet_reconciliation_state.deadline_at <= excluded.deadline_at
+          THEN bet_reconciliation_state.deadline_at
+        ELSE excluded.deadline_at
+      END,
+      updated_at=excluded.updated_at
+    WHERE bet_reconciliation_state.status <> 'resolved'
+  `).run(submitAttemptId, at, deadline, at, at)
+}
+
 function result(db, childOrderId, submitAttemptId) {
   const child = db.prepare('SELECT * FROM bet_child_orders WHERE child_order_id=?').get(childOrderId)
   return {
@@ -576,7 +661,12 @@ export function assertAuthorizedSubmitContext(database, input = {}, options = {}
     if ((row.authorization_id && row.binding_status !== 'reserved') || row.status !== 'reserved') {
       throw new Error('authorization-child-not-reserved')
     }
-    return { childOrderId: row.child_order_id, batchId: row.batch_id, authorizationId: row.authorization_id }
+    return {
+      childOrderId: row.child_order_id,
+      batchId: row.batch_id,
+      authorizationId: row.authorization_id,
+      requestedAmountMinor: safeMinor(Number(row.requested_amount_minor), 'requested-amount', { positive: true }),
+    }
   })
 }
 
@@ -596,13 +686,15 @@ export function prepareAuthorizedSubmit(database, input = {}, options = {}) {
     `).all(row.child_order_id)
     if (previous.length !== 0 || row.status !== 'reserved') throw new Error('submit-attempt-state')
     const preview = assertPreview(row, input)
+    const candidateDigest = executionCandidateDigest({ row, input, preview, fencingToken })
     db.prepare(`
       INSERT INTO bet_submit_attempts (
         submit_attempt_id, child_order_id, authorization_id, attempt_ordinal,
         amount_minor, fencing_token, capability_version, capability_evidence_id,
-        locked_identity_json, preview_snapshot_json, preview_odds, status,
+        execution_candidate_digest, locked_identity_json, preview_snapshot_json,
+        preview_odds, status,
         prepared_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submit_prepared', ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submit_prepared', ?, ?, ?)
     `).run(
       submitAttemptId,
       row.child_order_id,
@@ -612,6 +704,7 @@ export function prepareAuthorizedSubmit(database, input = {}, options = {}) {
       fencingToken,
       required(input.capabilityVersion, 'capability-version'),
       required(input.capabilityEvidenceId, 'capability-evidence-id'),
+      candidateDigest,
       stableJson(preview.locked),
       stableJson(preview.preview),
       preview.odds,
@@ -695,6 +788,44 @@ export function recordAuthorizedDispatch(database, input = {}, options = {}) {
     if (lockChanged.changes !== 1) throw new Error('child-order-lock-missing')
     writeAudit(db, 'submit_dispatched', submitAttemptId, { childOrderId: row.child_order_id }, at)
     return result(db, row.child_order_id, submitAttemptId)
+  })
+}
+
+function acceptanceDirection(identity) {
+  return {
+    mode: identity.mode,
+    period: identity.period,
+    marketType: identity.market,
+    lineVariant: identity.lineVariant,
+    selectionSide: identity.side,
+  }
+}
+
+function claimAcceptanceDispatch(db, authority, input, prepared) {
+  if (!input.acceptanceClaim) return
+  if (!authority) throw new Error('acceptance-worker-authority-required')
+  authority.claimDispatchInTransaction(db, {
+    direction: acceptanceDirection(input.currentIdentity),
+    childOrderId: prepared.child.childOrderId,
+    submitAttemptId: prepared.attempt.submitAttemptId,
+    capabilityVersion: required(input.capabilityVersion, 'capability-version'),
+    capabilityEvidenceId: required(input.capabilityEvidenceId, 'capability-evidence-id'),
+    executionCandidateDigest: prepared.attempt.executionCandidateDigest,
+    amountMinor: prepared.child.requestedAmountMinor,
+    candidateClaim: input.acceptanceClaim,
+  })
+}
+
+export function prepareAuthorizedSubmitDispatch(database, input = {}, options = {}) {
+  const db = dbOf(database)
+  return immediate(db, () => {
+    const prepared = prepareAuthorizedSubmit(db, input, options)
+    claimAcceptanceDispatch(db, options.acceptanceAuthority, input, prepared)
+    fault(options, 'dispatch:after-acceptance-permit', {
+      childOrderId: prepared.child.childOrderId,
+      submitAttemptId: prepared.attempt.submitAttemptId,
+    })
+    return recordAuthorizedDispatch(db, input, options)
   })
 }
 
@@ -785,7 +916,10 @@ export function recordAuthorizedOutcome(database, input = {}, options = {}) {
     const { row, attempt, submitAttemptId } = requireAttemptContext(db, input, options, at, { settlement: true })
     const standard = ledgerOutcome(kind)
     if (standard) {
-      if (attempt.status === standard.attempt && row.status === standard.child) return result(db, row.child_order_id, submitAttemptId)
+      if (attempt.status === standard.attempt && row.status === standard.child) {
+        if (standard.child === 'unknown') scheduleUnknownState(db, submitAttemptId, at)
+        return result(db, row.child_order_id, submitAttemptId)
+      }
       if (attempt.status !== 'submit_dispatched' || row.status !== 'submit_dispatched') throw new Error('submit-attempt-not-dispatched')
       const encryptedReference = providerReferenceCiphertext(outcome.providerReferenceCiphertext, {
         childOrderId: row.child_order_id,
@@ -833,8 +967,23 @@ export function recordAuthorizedOutcome(database, input = {}, options = {}) {
       fault(options, 'outcome:after-batch-recompute', { childOrderId: row.child_order_id, kind })
       updateAuthorization(db, row, standard.binding, at)
       fault(options, 'outcome:after-authorization-update', { childOrderId: row.child_order_id, kind })
+      if (standard.child === 'unknown') {
+        scheduleUnknownState(db, submitAttemptId, at)
+        fault(options, 'outcome:after-reconciliation-schedule', { childOrderId: row.child_order_id, kind })
+      }
       enqueueNotification(db, row, standard.child, at)
       writeAudit(db, `submit_${standard.child}`, submitAttemptId, { childOrderId: row.child_order_id, outcome: kind }, at)
+      if (options.acceptanceAuthority?.isDispatchBoundInTransaction?.(db, {
+        childOrderId: row.child_order_id, submitAttemptId,
+      })) {
+        options.acceptanceAuthority.settleDispatchInTransaction(db, {
+          childOrderId: row.child_order_id,
+          submitAttemptId,
+          kind: standard.child,
+          sealedProviderReference: encryptedReference,
+          observedAt: at,
+        })
+      }
       return result(db, row.child_order_id, submitAttemptId)
     }
 
@@ -884,6 +1033,11 @@ export function recoverAuthorizedAttempts(database, input = {}, options = {}) {
         `).run(at, at, row.submit_attempt_id)
         recoveredCount += 1
       }
+      options.acceptanceAuthority?.recoverUnknownInTransaction?.(db, {
+        submitAttemptId: row.submit_attempt_id,
+        childOrderId: row.child_order_id,
+        sealedProviderReference: row.provider_reference_ciphertext,
+      })
       if (row.child_status !== 'unknown') {
         db.prepare(`
           UPDATE bet_child_orders
@@ -905,6 +1059,7 @@ export function recoverAuthorizedAttempts(database, input = {}, options = {}) {
           WHERE child_order_id=? AND status='reserved'
         `).run(at, row.child_order_id)
       }
+      scheduleUnknownState(db, row.submit_attempt_id, at)
       batches.add(row.batch_id)
       enqueueNotification(db, row, 'unknown', at)
       writeAudit(db, 'submit_recovered_unknown', row.submit_attempt_id, { childOrderId: row.child_order_id }, at)
@@ -963,9 +1118,15 @@ export function recoverAuthorizedAttempt(database, input = {}, options = {}) {
         WHERE child_order_id=? AND status IN ('submit_prepared','submit_dispatched')
       `).run(row.child_order_id)
     }
+    options.acceptanceAuthority?.recoverUnknownInTransaction?.(db, {
+      submitAttemptId,
+      childOrderId: row.child_order_id,
+      sealedProviderReference: attempt.provider_reference_ciphertext,
+    })
     if (row.binding_status === 'reserved') updateAuthorization(db, row, 'unknown', at)
     upsertUnknownLock(db, row, fencingToken, at)
     recomputeBatch(db, row.batch_id, at)
+    scheduleUnknownState(db, submitAttemptId, at)
     enqueueNotification(db, row, 'unknown', at)
     writeAudit(db, 'submit_recovered_unknown', submitAttemptId, { childOrderId: row.child_order_id }, at)
     return result(db, row.child_order_id, submitAttemptId)
@@ -987,6 +1148,11 @@ export function recordSubmitDispatch(database, input = {}, options = {}) {
   return recordAuthorizedDispatch(database, input, options)
 }
 
+export function prepareSubmitAttemptDispatch(database, input = {}, options = {}) {
+  if (String(input.authorizationId || '').trim()) throw new Error('authorization-not-supported-by-neutral-submit')
+  return prepareAuthorizedSubmitDispatch(database, input, options)
+}
+
 export function recordSubmitOutcome(database, input = {}, options = {}) {
   if (String(input.authorizationId || '').trim()) throw new Error('authorization-not-supported-by-neutral-submit')
   return recordAuthorizedOutcome(database, input, options)
@@ -1006,16 +1172,27 @@ export class B2Executor {
     env = process.env,
     now = () => new Date(),
     secretKey,
+    acceptanceAuthority = null,
+    acceptedValidator = null,
+    faultInjector = null,
   } = {}) {
     this.database = dbOf(database)
     if (!(previewProvider instanceof CrownAccountPreviewProvider)) throw new TypeError('b2-preview-provider')
     if (!(executionProvider instanceof CrownAccountExecutionProvider)) throw new TypeError('b2-execution-provider')
     if (!lease || typeof lease.assertFence !== 'function') throw new TypeError('b2-executor-lease')
     if (!/^betting-executor:\S+$/.test(String(lease.leaseKey || ''))) throw new TypeError('b2-executor-lease-key')
+    if (acceptanceAuthority !== null
+      && !isCrownAcceptanceCapabilityAuthority(acceptanceAuthority)) {
+      throw new TypeError('b2-acceptance-authority')
+    }
+    if (acceptedValidator !== null && typeof acceptedValidator.validateAccepted !== 'function') {
+      throw new TypeError('b2-accepted-validator')
+    }
     this.previewProvider = previewProvider
     this.executionProvider = executionProvider
     this.lease = lease
-    this.options = { env, now, secretKey }
+    this.acceptedValidator = acceptedValidator
+    this.options = { env, now, secretKey, acceptanceAuthority, faultInjector }
   }
 
   _gate(input) {
@@ -1042,16 +1219,40 @@ export class B2Executor {
     const gate = this._gate(input)
     const legacyAuthorized = Boolean(gate.authorizationId)
     const assertContext = legacyAuthorized ? assertAuthorizedSubmitContext : assertSubmitContext
-    const prepare = legacyAuthorized ? prepareAuthorizedSubmit : prepareSubmitAttempt
-    const dispatch = legacyAuthorized ? recordAuthorizedDispatch : recordSubmitDispatch
-    const recover = legacyAuthorized ? recoverAuthorizedAttempt : recoverSubmitAttempt
+    const prepareDispatch = legacyAuthorized ? prepareAuthorizedSubmitDispatch : prepareSubmitAttemptDispatch
     const recordOutcome = legacyAuthorized ? recordAuthorizedOutcome : recordSubmitOutcome
-    assertContext(this.database, gate, this.options)
-    const previewResult = await this.previewProvider.preview({
+    const validatedContext = assertContext(this.database, {
+      ...gate,
+      ...(input.acceptanceClaim ? { acceptanceClaim: input.acceptanceClaim } : {}),
+    }, this.options)
+    const previewInput = {
       accountId: input.accountId,
       batchId: input.batchId,
       lockedSelection: input.lockedSelection,
-    })
+      ...(input.acceptanceClaim ? { acceptanceClaim: input.acceptanceClaim } : {}),
+    }
+    let previewResult = input.acceptanceInitialPreview || await this.previewProvider.preview(previewInput)
+    if (input.acceptanceClaim) {
+      try {
+        this.options.acceptanceAuthority.freezePreview(input.acceptanceClaim, {
+          ...previewResult, accountId: input.accountId, browserSession: previewResult.browserSession,
+        })
+        previewResult = await this.previewProvider.preview(previewInput)
+        this.options.acceptanceAuthority.confirmPreview(input.acceptanceClaim, {
+          ...previewResult, accountId: input.accountId, browserSession: previewResult.browserSession,
+        })
+      } catch (error) {
+        if (error?.code !== 'acceptance-preview-drift') {
+          try { this.options.acceptanceAuthority.cancelPreviewCycle(input.acceptanceClaim) } catch {}
+        }
+        return {
+          status: 'pre-dispatch-cancelled', retryable: true,
+          reason: error?.code === 'acceptance-preview-drift'
+            ? 'acceptance-preview-drift'
+            : 'acceptance-preview-failed',
+        }
+      }
+    }
     const executionPreview = previewResult?.executionPreview
     const freshBalanceCny = previewResult?.freshBalanceCny
     if (
@@ -1068,16 +1269,19 @@ export class B2Executor {
       lockedIdentity: previewResult.lockedIdentity,
       currentIdentity: previewResult.lockedIdentity,
       preview: { ...executionPreview, balanceMinor: freshBalanceCny },
+      browserContextGeneration: previewResult.browserSession?.contextGeneration,
+      amountMinor: validatedContext.requestedAmountMinor,
+      ...(input.acceptanceClaim ? { acceptanceClaim: input.acceptanceClaim } : {}),
     }
-    const prepared = prepare(this.database, trusted, this.options)
     let dispatched = false
+    let prepared = null
+    let callbackCalled = false
     const onNetworkStarted = () => {
-      if (dispatched) throw new Error('provider-network-started-twice')
-      dispatch(this.database, {
-        ...gate,
-        submitAttemptId: input.submitAttemptId,
-      }, this.options)
+      if (callbackCalled) throw new Error('provider-network-started-twice')
+      callbackCalled = true
+      prepared = prepareDispatch(this.database, trusted, this.options)
       dispatched = true
+      return prepared
     }
     let outcome
     try {
@@ -1092,33 +1296,49 @@ export class B2Executor {
         lockedIdentity: trusted.lockedIdentity,
         lockedSelection: input.lockedSelection,
         preview: trusted.preview,
-        amountMinor: prepared.child.requestedAmountMinor,
-        remainingChildAmountMinor: prepared.child.requestedAmountMinor,
+        browserSession: previewResult.browserSession,
+        amountMinor: validatedContext.requestedAmountMinor,
+        remainingChildAmountMinor: validatedContext.requestedAmountMinor,
         onNetworkStarted,
+        ...(input.acceptanceClaim ? { acceptanceClaim: input.acceptanceClaim } : {}),
       })
     } catch {
       if (!dispatched) {
-        recover(this.database, {
-          ...gate,
-          submitAttemptId: input.submitAttemptId,
-        }, this.options)
-        return { ...prepared, status: 'unknown', reason: 'provider-before-dispatch-uncertain' }
+        if (input.acceptanceClaim) {
+          try { this.options.acceptanceAuthority.cancelPreviewCycle(input.acceptanceClaim) } catch {}
+        }
+        return {
+          status: 'pre-dispatch-cancelled',
+          retryable: true,
+          reason: 'provider-before-dispatch',
+        }
       }
       outcome = { kind: 'disconnect' }
     }
     if (!dispatched) {
-      recover(this.database, {
-        ...gate,
-        submitAttemptId: input.submitAttemptId,
-      }, this.options)
-      return { ...prepared, status: 'unknown', reason: 'provider-dispatch-contract' }
+      return {
+        status: 'pre-dispatch-cancelled',
+        retryable: true,
+        reason: 'provider-before-dispatch',
+      }
     }
-    return recordOutcome(this.database, {
+    const recorded = recordOutcome(this.database, {
       ...gate,
       submitAttemptId: input.submitAttemptId,
       outcome,
       hasFutureCapacity: input.hasFutureCapacity,
     }, this.options)
+    if (input.acceptanceClaim && recorded?.attempt?.status === 'accepted' && this.acceptedValidator) {
+      try {
+        const validation = await this.acceptedValidator.validateAccepted({
+          submitAttemptId: input.submitAttemptId,
+        })
+        return { ...recorded, acceptedValidation: validation }
+      } catch {
+        return { ...recorded, acceptedValidation: { status: 'deferred' } }
+      }
+    }
+    return recorded
   }
 
   recover(authorizationId) {
@@ -1130,5 +1350,44 @@ export class B2Executor {
       executorOwnerId: this.lease.ownerId,
       fencingToken,
     }, this.options)
+  }
+
+  recoverAcceptance() {
+    if (!this.options.acceptanceAuthority) return { recoveredCount: 0 }
+    const fencingToken = this.lease.fencingToken
+    this.lease.assertFence(fencingToken)
+    const rows = this.database.prepare(`SELECT acceptance.submit_attempt_id,
+      child.child_order_id,child.batch_id,child.account_id,
+      batch.rule_id,batch.card_id,batch.card_snapshot_json,batch.betting_mode,batch.settings_version
+      FROM crown_browser_acceptance_cases acceptance
+      JOIN bet_submit_attempts attempt ON attempt.submit_attempt_id=acceptance.submit_attempt_id
+      JOIN bet_child_orders child ON child.child_order_id=attempt.child_order_id
+      JOIN bet_batches batch ON batch.batch_id=child.batch_id
+      WHERE acceptance.state='dispatched'
+      ORDER BY acceptance.ordinal,acceptance.case_version`).all()
+    for (const row of rows) {
+      let scope
+      if (row.rule_id) scope = { ruleId: row.rule_id }
+      else if (row.card_id) {
+        let card
+        try { card = JSON.parse(row.card_snapshot_json) } catch { card = {} }
+        scope = {
+          cardId: row.card_id,
+          eligibilityVersion: card.realEligibilityVersion,
+          bettingMode: row.betting_mode,
+        }
+      } else scope = { bettingMode: row.betting_mode, settingsVersion: Number(row.settings_version) }
+      recoverSubmitAttempt(this.database, {
+        ...scope,
+        batchId: row.batch_id,
+        childOrderId: row.child_order_id,
+        accountId: row.account_id,
+        submitAttemptId: row.submit_attempt_id,
+        leaseKey: this.lease.leaseKey,
+        executorOwnerId: this.lease.ownerId,
+        fencingToken,
+      }, this.options)
+    }
+    return { recoveredCount: rows.length }
   }
 }

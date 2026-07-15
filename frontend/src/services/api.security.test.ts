@@ -170,6 +170,34 @@ describe('Dashboard API session contract', () => {
     expect(csrfHeader(requests[4])).toBe('csrf-card')
   })
 
+  test('betting manual-login services use fixed encoded routes and CSRF-protected empty mutations', async () => {
+    const requests: AxiosRequestConfig[] = []
+    apiClient.defaults.adapter = async (config) => {
+      requests.push(config)
+      if (config.url === '/app/security-context') return response(config, {
+        csrfToken: 'csrf-login', dashboardAccessMode: 'local-trust',
+        appContractVersion: 'dynamic-betting-cards-v1', schemaVersion: 'dynamic-betting-cards-v1',
+      })
+      return response(config, { item: { challengeId: 'challenge-safe', accountId: 'account-safe', status: 'awaiting-user', errorCode: '', expiresAt: 1 } })
+    }
+    await api.sessionBootstrap()
+    await api.openBettingManualLogin('account/unsafe ?')
+    await api.getBettingManualLoginStatus('account/unsafe ?', 'challenge/unsafe ?')
+    await api.confirmBettingManualLogin('account/unsafe ?', 'challenge/unsafe ?')
+    await api.cancelBettingManualLogin('account/unsafe ?', 'challenge/unsafe ?')
+
+    expect(requests.slice(1).map((request) => request.url)).toEqual([
+      '/app/betting-accounts/account%2Funsafe%20%3F/manual-login/open',
+      '/app/betting-accounts/account%2Funsafe%20%3F/manual-login/challenge%2Funsafe%20%3F',
+      '/app/betting-accounts/account%2Funsafe%20%3F/manual-login/challenge%2Funsafe%20%3F/confirm',
+      '/app/betting-accounts/account%2Funsafe%20%3F/manual-login/challenge%2Funsafe%20%3F/cancel',
+    ])
+    expect(requests.slice(1).filter((request) => request.method === 'post').map(csrfHeader)).toEqual([
+      'csrf-login', 'csrf-login', 'csrf-login',
+    ])
+    expect(requests.slice(1).filter((request) => request.method === 'post').map((request) => JSON.parse(String(request.data)))).toEqual([{}, {}, {}])
+  })
+
   test('maps settings CAS conflicts to one stable operator message', async () => {
     apiClient.defaults.adapter = async (config) => {
       if (config.url === '/app/security-context') return response(config, { appContractVersion: 'dynamic-betting-cards-v1', schemaVersion: 'dynamic-betting-cards-v1' })

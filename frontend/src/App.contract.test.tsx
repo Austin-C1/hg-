@@ -41,6 +41,11 @@ vi.mock('./services/api', () => ({
       changes: { items: [] },
     })),
     getBettingAccountOverview: vi.fn(async () => ({ bettingAccounts: [], bettingHistory: [] })),
+    getOperationsSummary: vi.fn(async () => { throw new Error('operations-unavailable-in-app-contract-test') }),
+    openBettingManualLogin: vi.fn(),
+    getBettingManualLoginStatus: vi.fn(),
+    confirmBettingManualLogin: vi.fn(),
+    cancelBettingManualLogin: vi.fn(),
     login: vi.fn(async () => ({ authenticated: true })),
     sessionBootstrap: vi.fn(async () => ({ csrfToken: undefined, appContractVersion: 'dynamic-betting-cards-v1', schemaVersion: 'dynamic-betting-cards-v1' })),
     getLeagueSummaries: vi.fn(async () => ({
@@ -58,6 +63,7 @@ vi.mock('./services/api', () => ({
     getLeagueOptions: vi.fn(async () => ({ items: [] })),
     changes: vi.fn(async () => ({ items: [] })),
     getBetBatches: vi.fn(async () => ({ items: [] })),
+    getBetTargetHistory: vi.fn(async () => ({ items: [], nextCursor: null })),
     getBetBatchChildren: vi.fn(async () => ({ items: [] })),
     getDefaultLeagues: vi.fn(async () => ({ stats: { configuredCount: 0, hitCount: 0, missingCount: 0, disabledCount: 0 }, items: [], config: { version: 1, leagues: [] } })),
     updateDefaultLeagues: vi.fn(async () => ({ stats: { configuredCount: 0, hitCount: 0, missingCount: 0, disabledCount: 0 }, items: [], config: { version: 1, leagues: [] } })),
@@ -214,7 +220,16 @@ describe('Crown React app contract', () => {
     expect(screen.getByText('监控报警')).toBeInTheDocument()
     expect(screen.getByText('投注规则')).toBeInTheDocument()
     expect(screen.getByText('投注账号配置')).toBeInTheDocument()
+    expect(screen.getByText('投注历史')).toBeInTheDocument()
     expect(screen.getByText('设置')).toBeInTheDocument()
+  })
+
+  test('routes the betting history navigation to the real-batch ledger page', async () => {
+    window.history.pushState({}, '', '/betting-history')
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: '投注历史' })).toBeInTheDocument()
+    expect(screen.getByText('暂无真实投注历史')).toBeInTheDocument()
+    expect(api.getBetTargetHistory).toHaveBeenCalledWith({ limit: 20, cursor: undefined, status: 'all', mode: 'all' })
   })
 
   test('removes system update navigation and redirects the retired route', async () => {

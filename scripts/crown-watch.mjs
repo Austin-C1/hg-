@@ -617,9 +617,15 @@ export async function processDirectXmlV2({
 } = {}) {
   if (!stateStore || typeof stateStore.applyBatch !== 'function') throw new TypeError('stateStore is required')
   if (!auditStore || typeof auditStore.appendFacts !== 'function') throw new TypeError('auditStore is required')
+  const requestedMode = endpointKind === 'get_game_more'
+    && (String(requestScope?.showtype || '').toLowerCase() === 'live'
+      || String(requestScope?.showtype || '').toLowerCase() === 'rb'
+      || String(requestScope?.isRB || '').toUpperCase() === 'Y')
+    ? 'live'
+    : ''
   const normalized = normalizeCrownTransformBatch({
     body,
-    metadata: { ...metadata, endpointKind, capturedAt },
+    metadata: { ...metadata, endpointKind, capturedAt, requestedMode },
   })
   const batch = buildSnapshotBatch({
     endpointKind,
@@ -1610,7 +1616,7 @@ function activeTrackedEventKeys(trackedMatches = []) {
     .filter(Boolean))
 }
 
-function gameMoreTargetFromSnapshot(snapshot) {
+function gameMoreTargetFromSnapshot(snapshot, prematchShowtype = 'today') {
   const ids = snapshot?.event?.ids || {}
   const lid = String(ids.lid || '').trim()
   const ecid = String(ids.ecid || '').trim()
@@ -1622,18 +1628,20 @@ function gameMoreTargetFromSnapshot(snapshot) {
     lid,
     ecid,
     mode,
-    showtype: live ? 'live' : 'today',
+    showtype: live ? 'live' : (prematchShowtype === 'hot' ? 'hot' : 'today'),
     isRB: live ? 'Y' : 'N',
   }
 }
 
-export function buildGameMoreTargets(snapshots = [], { trackedMatches = [], maxTargets = 8 } = {}) {
+export function buildGameMoreTargets(snapshots = [], {
+  trackedMatches = [], maxTargets = 8, prematchShowtype = 'today',
+} = {}) {
   const max = Math.max(0, Number(maxTargets || 0))
   if (!max) return []
   const trackedKeys = activeTrackedEventKeys(trackedMatches)
   const byEvent = new Map()
   for (const snapshot of snapshots || []) {
-    const target = gameMoreTargetFromSnapshot(snapshot)
+    const target = gameMoreTargetFromSnapshot(snapshot, prematchShowtype)
     if (!target?.eventKey || byEvent.has(target.eventKey)) continue
     byEvent.set(target.eventKey, {
       ...target,
@@ -1808,6 +1816,7 @@ export async function runDirectApiPollOnce(args, {
     const targets = buildGameMoreTargets(list.result.snapshots, {
       trackedMatches,
       maxTargets: args.maxGameMore,
+      prematchShowtype: fetchResult.requestScope?.showtype,
     })
     for (const target of targets) {
       const detailAt = now()

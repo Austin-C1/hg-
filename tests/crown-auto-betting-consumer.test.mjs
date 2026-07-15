@@ -20,7 +20,7 @@ function selection(input, overrides = {}) {
   const side = opposite[input.target.side]
   return {
     provider: 'crown', mode: input.evidence.mode, capturedAt: '2026-07-12T00:00:01.000Z', event: { eventKey: input.target.eventIdentity, mode: input.evidence.mode },
-    market: { marketIdentity: input.target.marketIdentity, period: input.evidence.period, marketType: input.evidence.marketType, lineKey: input.target.marketIdentity.split('|').at(-1), handicap: input.evidence.handicap },
+    market: { marketIdentity: input.target.marketIdentity, period: input.evidence.period, marketType: input.evidence.marketType, lineKey: input.target.marketIdentity.split('|').at(-1), handicap: input.evidence.handicap, handicapRaw: input.evidence.handicapRaw },
     selection: { selectionIdentity: `${input.target.marketIdentity}|${side}`, side, odds: '0.9', suspended: false },
     ...overrides,
   }

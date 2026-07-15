@@ -3,113 +3,6 @@ function required(value, code) {
   return String(value)
 }
 
-function selectionCode(record) {
-  const marketType = record.market?.marketType
-  const side = record.selection?.side
-  if (marketType === 'asian_handicap' && side === 'home') return { choseTeam: 'H', rtypeSuffix: 'H' }
-  if (marketType === 'asian_handicap' && side === 'away') return { choseTeam: 'C', rtypeSuffix: 'C' }
-  if (marketType === 'total' && side === 'over') return { choseTeam: 'H', rtypeSuffix: 'H' }
-  if (marketType === 'total' && side === 'under') return { choseTeam: 'C', rtypeSuffix: 'C' }
-  throw new Error('unsupported-crown-selection')
-}
-
-function allowedField(value, values) {
-  return !value || values.includes(value)
-}
-
-function marketVariant(record, { ratioFields, oddsFields, wtype, rtypePrefix, f, isRB }) {
-  const ratioField = record.market?.ratioField || ''
-  const oddsField = record.selection?.oddsField || ''
-  if (!allowedField(ratioField, ratioFields) || !allowedField(oddsField, oddsFields)) return null
-  return { wtype, rtypePrefix, f, isRB }
-}
-
-function marketCode(record) {
-  const marketType = record.market?.marketType
-  const period = record.market?.period
-  if (marketType === 'asian_handicap' && period === 'full_time') {
-    const live = marketVariant(record, {
-      ratioFields: ['RATIO_RE'],
-      oddsFields: ['IOR_REH', 'IOR_REC'],
-      wtype: 'RE',
-      rtypePrefix: 'RE',
-      f: '',
-      isRB: 'Y',
-    })
-    if (live) return live
-    const prematch = marketVariant(record, {
-      ratioFields: ['RATIO_R'],
-      oddsFields: ['IOR_RH', 'IOR_RC'],
-      wtype: 'R',
-      rtypePrefix: 'R',
-      f: '',
-      isRB: 'N',
-    })
-    if (prematch) return prematch
-  }
-  if (marketType === 'asian_handicap' && period === 'first_half') {
-    const live = marketVariant(record, {
-      ratioFields: ['RATIO_HRE'],
-      oddsFields: ['IOR_HREH', 'IOR_HREC'],
-      wtype: 'RE',
-      rtypePrefix: 'RE',
-      f: '1R',
-      isRB: 'Y',
-    })
-    if (live) return live
-    const prematch = marketVariant(record, {
-      ratioFields: ['RATIO_HR'],
-      oddsFields: ['IOR_HRH', 'IOR_HRC'],
-      wtype: 'R',
-      rtypePrefix: 'R',
-      f: '1R',
-      isRB: 'N',
-    })
-    if (prematch) return prematch
-  }
-  if (marketType === 'total' && period === 'full_time') {
-    const live = marketVariant(record, {
-      ratioFields: ['RATIO_ROUO', 'RATIO_ROUU'],
-      oddsFields: ['IOR_ROUC', 'IOR_ROUH'],
-      wtype: 'ROU',
-      rtypePrefix: 'ROU',
-      f: '',
-      isRB: 'Y',
-    })
-    if (live) return live
-    const prematch = marketVariant(record, {
-      ratioFields: ['RATIO_OUO', 'RATIO_OUU'],
-      oddsFields: ['IOR_OUC', 'IOR_OUH'],
-      wtype: 'OU',
-      rtypePrefix: 'OU',
-      f: '',
-      isRB: 'N',
-    })
-    if (prematch) return prematch
-  }
-  if (marketType === 'total' && period === 'first_half') {
-    const live = marketVariant(record, {
-      ratioFields: ['RATIO_HROUO', 'RATIO_HROUU'],
-      oddsFields: ['IOR_HROUC', 'IOR_HROUH'],
-      wtype: 'ROU',
-      rtypePrefix: 'ROU',
-      f: '1R',
-      isRB: 'Y',
-    })
-    if (live) return live
-    const prematch = marketVariant(record, {
-      ratioFields: ['RATIO_HOUO', 'RATIO_HOUU'],
-      oddsFields: ['IOR_HOUC', 'IOR_HOUH'],
-      wtype: 'OU',
-      rtypePrefix: 'OU',
-      f: '1R',
-      isRB: 'N',
-    })
-    if (prematch) return prematch
-  }
-  throw new Error('unsupported-crown-market')
-}
-
 const STRICT_PREVIEW_MAPPER_KEYS = ['chose_team', 'gid', 'gtype', 'wtype']
 const STRICT_PREVIEW_WIRE_KEYS = ['chose_team', 'gid', 'gtype', 'langx', 'odd_f_type', 'p', 'ver', 'wtype']
 const STRICT_SUBMIT_WIRE_KEYS = [
@@ -154,6 +47,7 @@ export function buildStrictCrownPreviewFields(record = {}, { capability } = {}) 
   capabilityMatch(capability, 'period', period)
   capabilityMatch(capability, 'marketType', marketType)
   capabilityMatch(capability, 'lineVariant', lineVariant)
+  capabilityMatch(capability, 'selectionSide', side)
   const mapperEvidence = capability.mapperEvidence
   if (!mapperEvidence || typeof mapperEvidence !== 'object' || Array.isArray(mapperEvidence)) {
     throw new Error('missing-crown-preview-mapper-evidence')
@@ -162,34 +56,30 @@ export function buildStrictCrownPreviewFields(record = {}, { capability } = {}) 
     throw new Error('crown-preview-capability-mismatch:ratioField')
   }
   if (!Array.isArray(mapperEvidence.oddsFields)
-    || !mapperEvidence.oddsFields.includes(oddsField)
+    || mapperEvidence.oddsFields.length !== 1
+    || mapperEvidence.oddsFields[0] !== oddsField
     || mapperEvidence.oddsFieldsBySide?.[side] !== oddsField) {
     throw new Error('crown-preview-capability-mismatch:oddsField')
   }
-  if (!exactList(capability.requestFieldSet, STRICT_PREVIEW_WIRE_KEYS)) {
+  if (!exactList(capability.requestFieldSets?.preview || capability.requestFieldSet, STRICT_PREVIEW_WIRE_KEYS)) {
     throw new Error('invalid-crown-preview-request-keys')
   }
-  const expectedWtype = marketType === 'asian_handicap'
-    ? (mode === 'prematch' ? 'R' : 'RE')
-    : marketType === 'total'
-      ? (mode === 'prematch' ? 'OU' : 'ROU')
-      : ''
-  if (!expectedWtype || mapperEvidence.wtype !== expectedWtype) {
-    throw new Error('crown-preview-capability-mismatch:wtype')
-  }
-  const choseTeamValue = selectionCode(record).choseTeam
+  const sideWire = mapperEvidence.previewWireBySide?.[side]
+  if (!exactKeys(sideWire, ['chose_team', 'gtype', 'p', 'wtype'])
+    || sideWire.p !== capability.endpoints?.preview?.functionName
+    || sideWire.gtype !== 'FT') throw new Error('crown-preview-side-wire-unproven')
 
   const gid = required(record.event?.ids?.gid || record.event?.eventId, 'missing-crown-gid')
   const line = required(record.market?.handicapRaw, 'missing-crown-line')
   const preview = {
     gid,
-    gtype: 'FT',
-    wtype: mapperEvidence.wtype,
-    chose_team: choseTeamValue,
+    gtype: sideWire.gtype,
+    wtype: sideWire.wtype,
+    chose_team: sideWire.chose_team,
   }
   if (!exactKeys(preview, STRICT_PREVIEW_MAPPER_KEYS)) throw new Error('invalid-crown-preview-request-fields')
   return {
-    operation: 'FT_order_view',
+    operation: sideWire.p,
     preview,
     identity: { gid, mode, period, market: marketType, lineVariant, line, side },
     capabilityEvidenceId: evidenceId,
@@ -202,9 +92,18 @@ export function buildStrictCrownPreviewWireFields(
 ) {
   if (!capability || capability.evidenceStatus !== 'verified') throw new Error('missing-crown-preview-capability')
   if (!exactKeys(preview, STRICT_PREVIEW_MAPPER_KEYS)) throw new Error('invalid-crown-preview-request-fields')
-  if (!exactList(capability.requestFieldSet, STRICT_PREVIEW_WIRE_KEYS)) throw new Error('invalid-crown-preview-request-keys')
-  const defaults = capability.mapperEvidence?.wireDefaults
-  if (!defaults || defaults.p !== 'FT_order_view' || defaults.langx !== 'zh-cn' || defaults.odd_f_type !== 'H') {
+  if (!exactList(capability.requestFieldSets?.preview || capability.requestFieldSet, STRICT_PREVIEW_WIRE_KEYS)) {
+    throw new Error('invalid-crown-preview-request-keys')
+  }
+  const side = capability.selectionSide
+  const sideWire = capability.mapperEvidence?.previewWireBySide?.[side]
+  if (!exactKeys(sideWire, ['chose_team', 'gtype', 'p', 'wtype'])
+    || sideWire.p !== capability.endpoints?.preview?.functionName
+    || sideWire.gtype !== preview.gtype
+    || sideWire.wtype !== preview.wtype
+    || sideWire.chose_team !== preview.chose_team) throw new Error('crown-preview-side-wire-unproven')
+  const defaults = capability.mapperEvidence?.wireDefaults?.preview
+  if (!defaults || defaults.langx !== 'zh-cn' || defaults.odd_f_type !== 'H') {
     throw new Error('crown-preview-wire-defaults-unproven')
   }
   const source = String(protocolVersionEvidence?.source || '')
@@ -213,7 +112,7 @@ export function buildStrictCrownPreviewWireFields(
     && ['production-login-response', 'production-session-metadata'].includes(source)
   if (!provedVersion) throw new Error('crown-preview-field-source-unproven:ver')
   const ver = required(protocolVersion, 'crown-preview-field-source-unproven:ver')
-  const wire = { ...preview, langx: defaults.langx, odd_f_type: defaults.odd_f_type, p: defaults.p, ver }
+  const wire = { ...preview, langx: defaults.langx, odd_f_type: defaults.odd_f_type, p: sideWire.p, ver }
   if (!exactKeys(wire, STRICT_PREVIEW_WIRE_KEYS)) throw new Error('invalid-crown-preview-wire-fields')
   return wire
 }
@@ -260,13 +159,6 @@ export function buildStrictCrownSubmitWireFields(input = {}, {
   if (!capability || capability.evidenceStatus !== 'verified' || capability.submitAllowed !== true) {
     throw new Error('unverified-crown-submit-capability')
   }
-  if (capability.mode !== 'prematch'
-    || capability.period !== 'full_time'
-    || capability.marketType !== 'asian_handicap'
-    || capability.lineVariant !== 'main'
-    || capability.mapperEvidence?.wtype !== 'R') {
-    throw new Error('unsupported-crown-submit-capability')
-  }
   const lockedIdentity = input.lockedIdentity
   assertSameIdentity(input.currentIdentity, lockedIdentity, 'crown-submit-identity-drift')
   if (!lockedIdentity || lockedIdentity.provider !== 'crown'
@@ -274,7 +166,7 @@ export function buildStrictCrownSubmitWireFields(input = {}, {
     || lockedIdentity.period !== capability.period
     || lockedIdentity.market !== capability.marketType
     || lockedIdentity.lineVariant !== capability.lineVariant
-    || !['home', 'away'].includes(lockedIdentity.side)) {
+    || lockedIdentity.side !== capability.selectionSide) {
     throw new Error('crown-submit-identity-drift')
   }
 
@@ -288,14 +180,23 @@ export function buildStrictCrownSubmitWireFields(input = {}, {
   const minimum = safeInteger(preview.minStakeMinor, 'crown-submit-money-contract', { positive: true })
   const maximum = safeInteger(preview.maxStakeMinor, 'crown-submit-money-contract', { positive: true })
   const balance = safeInteger(preview.balanceMinor, 'crown-submit-money-contract')
-  const step = safeInteger(preview.stakeStepMinor, 'crown-submit-money-contract', { positive: true })
   const amount = safeInteger(input.amountMinor, 'crown-submit-money-contract', { positive: true })
   if (minimum > maximum || amount < minimum || amount > maximum || amount > balance) {
     throw new Error('crown-submit-money-contract')
   }
-  if (step !== 50 || preview.stakeStepProvenance !== 'local-conservative-policy'
-    || amount < 50 || (amount - 50) % 50 !== 0) {
-    throw new Error('crown-submit-local-quantum')
+  const stepProvenance = String(preview.stakeStepProvenance || '')
+  if (preview.stakeStepMinor === null) {
+    if (stepProvenance !== 'not-evidenced-in-preview-response' || amount !== minimum) {
+      throw new Error('crown-submit-stake-step-unverified')
+    }
+  } else {
+    const step = safeInteger(preview.stakeStepMinor, 'crown-submit-money-contract', { positive: true })
+    if (amount !== minimum) {
+      if (!['provider-preview-response', 'verified-account-policy'].includes(stepProvenance)) {
+        throw new Error('crown-submit-stake-step-unverified')
+      }
+      if ((amount - minimum) % step !== 0) throw new Error('crown-submit-stake-step-mismatch')
+    }
   }
   const odds = exactPositiveDecimal(preview.odds, 'crown-submit-odds')
   const submitCon = exactSignedDecimal(preview.submitCon, 'crown-submit-field-source-unproven:con')
@@ -308,78 +209,54 @@ export function buildStrictCrownSubmitWireFields(input = {}, {
     throw new Error('crown-submit-field-source-unproven:ver')
   }
   const ver = required(protocolVersion, 'crown-submit-field-source-unproven:ver')
-  const defaults = capability.mapperEvidence?.submitWireDefaults
-  if (!defaults || defaults.p !== 'FT_bet' || defaults.langx !== 'zh-cn'
-    || defaults.odd_f_type !== 'H' || defaults.isRB !== 'N' || defaults.f !== '1R'
-    || defaults.timestamp2 !== ''
+  const sideWire = capability.mapperEvidence?.submitWireBySide?.[lockedIdentity.side]
+  if (!exactKeys(sideWire, ['chose_team', 'f', 'gtype', 'isRB', 'p', 'rtype', 'wtype'])
+    || sideWire.p !== capability.endpoints?.submit?.functionName
+    || sideWire.gtype !== 'FT') throw new Error('crown-submit-side-wire-unproven')
+  const defaults = capability.mapperEvidence?.wireDefaults?.submit
+  if (!defaults || defaults.langx !== 'zh-cn'
+    || defaults.odd_f_type !== 'H' || defaults.timestamp2 !== ''
     || Object.hasOwn(defaults, 'con') || Object.hasOwn(defaults, 'ratio')
-    || Object.hasOwn(defaults, 'timestamp')) {
+    || Object.hasOwn(defaults, 'timestamp') || Object.hasOwn(defaults, 'gid')
+    || Object.hasOwn(defaults, 'golds') || Object.hasOwn(defaults, 'ioratio')
+    || Object.hasOwn(defaults, 'ver')) {
     throw new Error('crown-submit-wire-defaults-unproven')
   }
-  if (stableJson(capability.mapperEvidence?.submitWireSources) !== stableJson({
-    con: 'preview-response:con',
-    ratio: 'preview-response:ratio',
-    timestamp: 'request-epoch-ms',
-  })) throw new Error('crown-submit-wire-sources-unproven')
-  const home = lockedIdentity.side === 'home'
+  const sources = capability.mapperEvidence?.dynamicFieldSources
+  if (sources?.con !== 'preview-response:con'
+    || sources?.ratio !== 'preview-response:ratio'
+    || sources?.timestamp !== 'request-clock:epoch-ms'
+    || sources?.gid !== 'current-selection:event.ids.gid'
+    || sources?.odds !== 'preview-response:ioratio'
+    || sources?.stake !== 'execution-request:amount-minor'
+    || sources?.ver !== 'verified-session:protocol-version') {
+    throw new Error('crown-submit-wire-sources-unproven')
+  }
   const timestamp = String(Date.now())
   if (!/^\d{13}$/.test(timestamp)) throw new Error('crown-submit-timestamp-unavailable')
   const wire = {
     autoOdd: defaults.autoOdd,
-    chose_team: home ? 'H' : 'C',
+    chose_team: sideWire.chose_team,
     con: submitCon,
-    f: defaults.f,
+    f: sideWire.f,
     gid: required(lockedIdentity.gid, 'missing-crown-gid'),
     golds: String(amount),
-    gtype: 'FT',
+    gtype: sideWire.gtype,
     imp: defaults.imp,
     ioratio: odds,
-    isRB: defaults.isRB,
+    isRB: sideWire.isRB,
     isYesterday: defaults.isYesterday,
     langx: defaults.langx,
     odd_f_type: defaults.odd_f_type,
-    p: defaults.p,
+    p: sideWire.p,
     ptype: defaults.ptype,
     ratio: submitRatio,
-    rtype: home ? 'RH' : 'RC',
+    rtype: sideWire.rtype,
     timestamp,
     timestamp2: defaults.timestamp2,
     ver,
-    wtype: 'R',
+    wtype: sideWire.wtype,
   }
   if (!exactKeys(wire, STRICT_SUBMIT_WIRE_KEYS)) throw new Error('invalid-crown-submit-wire-fields')
   return wire
-}
-
-export function buildCrownOrderFields(record = {}) {
-  const market = marketCode(record)
-  const selection = selectionCode(record)
-  const gid = required(record.event?.ids?.gid || record.event?.eventId, 'missing-crown-gid')
-  const stake = Number(record.stake)
-  if (!Number.isFinite(stake) || stake <= 0) throw new Error('invalid-stake')
-  const base = {
-    gid,
-    gtype: 'FT',
-    wtype: market.wtype,
-    chose_team: selection.choseTeam,
-  }
-  return {
-    preview: base,
-    submit: {
-      ...base,
-      golds: String(stake),
-      rtype: `${market.rtypePrefix}${selection.rtypeSuffix}`,
-      ioratio: required(record.selection?.oddsRaw, 'missing-odds'),
-      con: required(record.market?.handicapRaw, 'missing-handicap'),
-      ratio: '-50',
-      autoOdd: 'Y',
-      timestamp: '',
-      timestamp2: '',
-      isRB: market.isRB,
-      imp: 'N',
-      ptype: '',
-      isYesterday: 'N',
-      f: market.f,
-    },
-  }
 }

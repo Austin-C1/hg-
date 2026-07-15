@@ -46,28 +46,53 @@ async function realBettingService(options, db) {
   return {
     getStatus: async () => {
       const status = refreshRealBettingRuntime(db, { checks: await readChecks(), now: options.now })
-      if (status.state === 'blocked') await options.bettingProcess?.stop?.()
+      if (status.state === 'blocked') {
+        await options.bettingProcess?.stop?.({ startReconciliation: true })
+      }
       return status
     },
     start: async () => {
       armRealBettingStart(db, { now: options.now })
-      await options.bettingProcess?.stop?.()
+      const stopped = await options.bettingProcess?.stop?.()
       const checks = await readChecks()
+      if (stopped?.safe !== true) {
+        return requestRealBettingStart(db, {
+          ...checks,
+          fenceFresh: false,
+          executorLeaseFresh: false,
+        }, { now: options.now })
+      }
       const preflight = evaluateRealBettingStaticPreflight(checks)
-      if (!preflight.ready) return requestRealBettingStart(db, checks, { now: options.now })
+      if (!preflight.ready) {
+        const status = requestRealBettingStart(db, checks, { now: options.now })
+        await options.bettingProcess?.stop?.({ startReconciliation: true })
+        return status
+      }
       try {
-        const started = await options.bettingProcess?.start?.({ dbPath: options.dbPath })
+        const startWorker = () => options.bettingProcess?.start?.({ dbPath: options.dbPath })
+        const controllers = [options.humanLoginController, options.bettingHumanLoginController]
+          .filter((controller, index, values) => controller && values.indexOf(controller) === index)
+        const runGated = async (index) => {
+          if (index >= controllers.length) return startWorker()
+          const controller = controllers[index]
+          if (typeof controller.runWithBettingStartGate === 'function') {
+            return controller.runWithBettingStartGate(() => runGated(index + 1))
+          }
+          if (controller.hasUnsafeContext?.()) throw new Error('manual-login-busy')
+          return runGated(index + 1)
+        }
+        const started = await runGated(0)
         if (!started?.readyTicket) throw new Error('betting-worker-ready-ticket-required')
         const freshChecks = await readChecks(started?.readyTicket || null)
         const committed = commitRealBettingRunning(db, freshChecks, { now: options.now })
         if (committed.state !== 'running') {
-          await options.bettingProcess?.stop?.()
+          await options.bettingProcess?.stop?.({ startReconciliation: true })
           return committed
         }
-        started?.activate?.()
+        await started?.activate?.()
         return committed
       } catch {
-        await options.bettingProcess?.stop?.()
+        await options.bettingProcess?.stop?.({ startReconciliation: true })
         const current = getRealBettingStatus(db, { checks, now: options.now })
         if (!current.requested) return current
         return requestRealBettingStart(db, { ...checks, fenceFresh: false }, { now: options.now })
@@ -75,7 +100,7 @@ async function realBettingService(options, db) {
     },
     stop: async () => {
       const status = requestRealBettingStop(db, { checks: {}, now: options.now })
-      await options.bettingProcess?.stop?.()
+      await options.bettingProcess?.stop?.({ startReconciliation: true })
       return status
     },
   }
@@ -228,11 +253,19 @@ function manualLoginDto(item, expectedAccountId) {
   return { challengeId, accountId, status, errorCode, expiresAt }
 }
 
-function humanLoginController(options) {
-  if (!options.humanLoginController) {
+function humanLoginController(options, name = 'humanLoginController') {
+  if (!options[name]) {
     throw Object.assign(new Error('manual-login-unavailable'), { code: 'manual-login-unavailable' })
   }
-  return options.humanLoginController
+  return options[name]
+}
+
+function assertBettingManualLoginSafe(options) {
+  if (options.bettingProcess?.isStopped?.() !== true) {
+    throw Object.assign(new Error('manual-login-betting-worker-active'), {
+      code: 'manual-login-betting-worker-active',
+    })
+  }
 }
 
 async function dispatch(req, requestUrl, options = {}) {
@@ -262,7 +295,14 @@ async function dispatch(req, requestUrl, options = {}) {
       }),
       run: () => runRuntimeCleanup({
         ...cleanupBoundary, runtimeDir: effectiveRuntimeDir(options), profileDir: options.profileDir, dbPath: options.dbPath,
-        monitorProcess: options.monitorProcess, bettingProcess: options.bettingProcess, env: options.env || process.env,
+        monitorProcess: options.monitorProcess, bettingProcess: options.bettingProcess,
+        humanLoginController: {
+          hasUnsafeContext: () => Boolean(
+            options.humanLoginController?.hasUnsafeContext?.()
+            || options.bettingHumanLoginController?.hasUnsafeContext?.(),
+          ),
+        },
+        env: options.env || process.env,
       }),
     }
     if (method === 'GET') return { statusCode: 200, payload: { item: await cleanup.preview() } }
@@ -347,7 +387,10 @@ async function dispatch(req, requestUrl, options = {}) {
       if (method !== 'GET') return { statusCode: 405, payload: { error: 'method-not-allowed' } }
       return {
         statusCode: 200,
-        payload: { item: repo.getOperationsSummary(options.monitorProcess?.getStatus?.() || null) },
+        payload: { item: repo.getOperationsSummary(
+          options.monitorProcess?.getStatus?.() || null,
+          options.bettingProcess?.getBrowserStatus?.() || null,
+        ) },
       }
     }
 
@@ -562,6 +605,38 @@ async function dispatch(req, requestUrl, options = {}) {
       return { statusCode: 405, payload: { error: 'method-not-allowed' } }
     }
 
+    if (parts.length >= 4 && parts[0] === 'betting-accounts' && parts[2] === 'manual-login') {
+      if (!['password-session', 'local-trust'].includes(options.dashboardAccessMode)) {
+        return { statusCode: 401, payload: { error: 'authentication-required' } }
+      }
+      assertBettingManualLoginSafe(options)
+      const controller = humanLoginController(options, 'bettingHumanLoginController')
+      const accountId = parts[1]
+      if (parts.length === 4 && parts[3] === 'open') {
+        if (method !== 'POST') return { statusCode: 405, payload: { error: 'method-not-allowed' } }
+        validateManualLoginMutationPayload(await readBody(req))
+        const item = await controller.openManualLogin({ accountId })
+        return { statusCode: 200, payload: { item: manualLoginDto(item, accountId) } }
+      }
+      if (parts.length === 4) {
+        if (method !== 'GET') return { statusCode: 405, payload: { error: 'method-not-allowed' } }
+        const challengeId = parts[3]
+        const item = controller.getManualLoginStatus({ accountId, challengeId })
+        return { statusCode: 200, payload: { item: manualLoginDto(item, accountId) } }
+      }
+      if (parts.length === 5 && ['confirm', 'cancel'].includes(parts[4])) {
+        if (method !== 'POST') return { statusCode: 405, payload: { error: 'method-not-allowed' } }
+        validateManualLoginMutationPayload(await readBody(req))
+        const challengeId = parts[3]
+        const operation = parts[4] === 'confirm'
+          ? controller.confirmManualLogin.bind(controller)
+          : controller.cancelManualLogin.bind(controller)
+        const item = await operation({ accountId, challengeId })
+        return { statusCode: 200, payload: { item: manualLoginDto(item, accountId) } }
+      }
+      return { statusCode: 404, payload: { error: 'not-found' } }
+    }
+
     if (parts.length === 2 && parts[0] === 'betting-accounts') {
       if (method === 'PUT') return { statusCode: 200, payload: { item: repo.updateBettingAccount(parts[1], await readBody(req)) } }
       if (method === 'DELETE') return { statusCode: 200, payload: repo.deleteBettingAccount(parts[1]) }
@@ -579,7 +654,6 @@ async function dispatch(req, requestUrl, options = {}) {
           const manager = new CrownApiLoginManager({
             runtimeDir: effectiveRuntimeDir(options),
             fetchImpl: options.fetchImpl || globalThis.fetch,
-            bettingAllowedOrigins: (options.env || process.env).CROWN_BETTING_ALLOWED_ORIGINS || '',
           })
           return manager.testBettingAccountAccess({ account: exactAccount })
         },
@@ -620,7 +694,6 @@ async function dispatch(req, requestUrl, options = {}) {
             const manager = new CrownApiLoginManager({
               runtimeDir: effectiveRuntimeDir(options),
               fetchImpl: options.fetchImpl || globalThis.fetch,
-              bettingAllowedOrigins: (options.env || process.env).CROWN_BETTING_ALLOWED_ORIGINS || '',
             })
             return manager.testBettingAccountAccess({ account: exactAccount })
           },
@@ -648,6 +721,18 @@ async function dispatch(req, requestUrl, options = {}) {
 
     if (parts.length === 1 && parts[0] === 'betting-history' && method === 'GET') {
       return { statusCode: 200, payload: { items: repo.listBettingHistory() } }
+    }
+
+    if (parts.length === 1 && parts[0] === 'bet-target-history' && method === 'GET') {
+      return {
+        statusCode: 200,
+        payload: repo.listBetTargetHistory({
+          limit: requestUrl.searchParams.get('limit') || undefined,
+          cursor: requestUrl.searchParams.get('cursor') || '',
+          status: requestUrl.searchParams.get('status') || 'all',
+          mode: requestUrl.searchParams.get('mode') || 'all',
+        }),
+      }
     }
 
     return { statusCode: 404, payload: { error: 'not-found' } }
@@ -726,8 +811,39 @@ export async function handleAppApi(req, res, requestUrl, options = {}) {
       send(res, 500, { error: 'local-secret-key-unavailable', fields: { secret: 'local secret key file is not writable' } })
       return true
     }
+    const cleanupBusyCode = String(error?.code || error?.message || '')
+    if (['browser-profile-active', 'betting-worker-active'].includes(cleanupBusyCode)) {
+      send(res, 409, { error: cleanupBusyCode })
+      return true
+    }
+    if (cleanupBusyCode === 'watcher-active-unmanaged') {
+      send(res, 409, { error: 'runtime-cleanup-watcher-unmanaged' })
+      return true
+    }
+    if (cleanupBusyCode === 'watcher-restart-unhealthy') {
+      send(res, 503, { error: 'runtime-cleanup-watcher-restart-unhealthy' })
+      return true
+    }
     if (error?.code === 'watcher-stop-unsafe' || String(error?.message || '') === 'watcher-stop-unsafe') {
-      send(res, 503, { error: 'watcher-stop-unsafe' })
+      const cleanupRequest = requestUrl.pathname === '/api/app/runtime-cache-cleanup'
+      send(res, cleanupRequest ? 409 : 503, {
+        error: cleanupRequest ? 'runtime-cleanup-watcher-stop-unsafe' : 'watcher-stop-unsafe',
+      })
+      return true
+    }
+    const cleanupErrors = {
+      'betting-worker-stop-unsafe': [409, 'runtime-cleanup-betting-stop-unsafe'],
+      'runtime-cleanup-partial': [500, 'runtime-cleanup-partial'],
+      'runtime-cleanup-unsafe-reparse': [409, 'runtime-cleanup-unsafe-path'],
+    }
+    if (cleanupErrors[cleanupBusyCode]) {
+      const [statusCode, code] = cleanupErrors[cleanupBusyCode]
+      send(res, statusCode, { error: code })
+      return true
+    }
+    if (requestUrl.pathname === '/api/app/runtime-cache-cleanup'
+      && ['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(String(error?.code || ''))) {
+      send(res, 409, { error: 'runtime-cleanup-files-busy' })
       return true
     }
     const manualLoginCode = String(error?.code || error?.message || '')
@@ -738,7 +854,7 @@ export async function handleAppApi(req, res, requestUrl, options = {}) {
         'manual-login-challenge-binding-mismatch',
       ].includes(manualLoginCode) ? 404
         : manualLoginCode === 'manual-login-challenge-expired' ? 410
-          : ['manual-login-busy', 'manual-login-challenge-state-invalid', 'manual-login-controller-closing'].includes(manualLoginCode) ? 409
+          : ['manual-login-busy', 'manual-login-betting-worker-active', 'manual-login-challenge-state-invalid', 'manual-login-controller-closing'].includes(manualLoginCode) ? 409
             : ['manual-login-verification-failed', 'manual-login-session-evidence-missing'].includes(manualLoginCode) ? 422
               : ['manual-login-unavailable', 'manual-login-browser-open-failed'].includes(manualLoginCode) ? 503
                 : 400

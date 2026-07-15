@@ -11,6 +11,7 @@ import { completeRuleCardSnapshot } from './auto-betting-rule-card-matcher.mjs'
 const TERMINAL_STATUSES = new Set(['accepted', 'rejected', 'cancelled'])
 const STOP_REASONS = SAFETY_FINISH_REASONS
 const IN_TRANSACTION = Symbol('in-transaction')
+const RECONCILIATION_DEADLINE_MS = 120_000
 
 function requiredString(value, field) {
   const result = String(value || '').trim()
@@ -438,10 +439,12 @@ export class BetBatchStore {
       const previewBalanceMinor = allocation.previewBalanceMinor === null
         ? null
         : assertMinor(allocation.previewBalanceMinor, 'previewBalanceMinor')
-      const previewStakeStepMinor = positiveMinor(allocation.previewStakeStepMinor, 'previewStakeStepMinor')
+      const previewStakeStepMinor = assertMinor(allocation.previewStakeStepMinor, 'previewStakeStepMinor')
       if (amountMinor < previewMinStakeMinor || amountMinor > previewMaxStakeMinor) throw new RangeError('preview-stake-range')
       if (previewBalanceMinor !== null && amountMinor > previewBalanceMinor) throw new RangeError('preview-balance')
-      if ((amountMinor - previewMinStakeMinor) % previewStakeStepMinor !== 0) throw new RangeError('preview-stake-step')
+      if (previewStakeStepMinor === 0
+        ? amountMinor !== previewMinStakeMinor
+        : (amountMinor - previewMinStakeMinor) % previewStakeStepMinor !== 0) throw new RangeError('preview-stake-step')
       return {
         accountId,
         amountMinor,
@@ -1145,6 +1148,19 @@ export class BetBatchStore {
         SET status = 'unknown', error_code = CASE WHEN error_code = '' THEN 'recovery-uncertain' ELSE error_code END
         WHERE status IN ('submit_prepared', 'submit_dispatched')
       `).run()
+      const reconciliationDeadline = new Date(
+        Date.parse(changedAt) + RECONCILIATION_DEADLINE_MS,
+      ).toISOString()
+      this.db.prepare(`
+        INSERT INTO bet_reconciliation_state (
+          submit_attempt_id, status, poll_count, next_poll_at, deadline_at, created_at, updated_at
+        )
+        SELECT attempt.submit_attempt_id, 'pending', 0, ?, ?, ?, ?
+        FROM bet_submit_attempts AS attempt
+        JOIN bet_child_orders AS child ON child.child_order_id=attempt.child_order_id
+        WHERE attempt.status='unknown' AND child.status='unknown'
+        ON CONFLICT(submit_attempt_id) DO NOTHING
+      `).run(changedAt, reconciliationDeadline, changedAt, changedAt)
 
       this.db.prepare(`
         DELETE FROM betting_account_locks

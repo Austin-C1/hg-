@@ -1,11 +1,43 @@
 # 模块汇总
 
+## 2026-07-15 Task 6 Browser 投注执行与对账
+
+- 强绑定执行链：`crown-account-provider.mjs` / `crown-account-execution-provider.mjs` → `crown-browser-account-runtime.mjs` → `b2-executor.mjs` / `bet-batch-store.mjs`；生产 Preview、Submit 与结果查询只使用页面上下文 transport。
+- 生命周期链：`betting-process.mjs`、`reconciliation-process.mjs`、`crown-betting-worker.mjs`、`crown-reconciliation-worker.mjs`。正常运行、强制退出、crash recovery、late handoff 和 final shutdown 必须一起验证，不能单独修改其中一端。
+- Reconciliation capability 未验证时仍保持零结果查询网络调用；durable unknown 只保留并等待以后可验证的只读证据，不生成新 child 或第二次 Submit。
+- Task 6 已离线完成。Task 7 Dashboard UI 尚未开始，并按用户要求暂停。
+
+## 2026-07-15 Task 5 浏览器账号 Runtime
+
+- 模块入口：`docs/modules/crown-browser-account-runtime.md`；实现由 `crown-browser-api-client.mjs`、`crown-browser-account-runtime.mjs`、`browser-profile-lease.mjs` 与 `portable-chromium.mjs` 组成。
+- Browser client、账号 context、profile lease、人工登录门禁与 runtime cleanup 是强绑定所有权边界；同一账号不能同时被人工登录、Betting Worker 或 cleanup 占用。
+- 模块可独立离线验证；它只提供安全 Browser transport。正式 Provider/B2/Reconciliation 接线属于 Task 6，不能从 Task 5 的存在推断生产投注已切换。
+
+## 2026-07-15 Task 3 side-aware 程序内协议库
+
+- `crown-capability-matrix.mjs`、strict mapper/parser、account providers 与 B2 attempt 是强绑定执行边界；canonical Preview/Submit/Reconciliation 为 `8/1/0`，仅赛前全场让球 away 允许 Submit。
+- 八方向通过五维 key O(1) 定位，生产运行不读取 fixture。Task 2 safe artifacts 仅用于显式开发审计；自洽伪造 row、字段集合或跳过 fixture audit 均不能通过 verifier。
+- 稳定 `protocolEvidenceDigest` 与每次执行的 `executionCandidateDigest` 分离；后者随账号、executor context、identity、Preview 与金额写入不可变 B2 attempt。
+- 投注协议模块可独立离线验证；与第四阶段监控标准化只通过 canonical identity/字段交接，不重构 Watcher、Signal、Telegram 或 monitor state 生命周期。
+
+## 2026-07-15 Task 4 监控执行候选
+
+- `crown-transform-xml.mjs` 复用 Task 3 capability evidence，把赛前/滚球 × 全场让球/大小球 × 两侧八个方向精确标为 `main`；cross-mode、first-half、alternate 保持 `unknown`。
+- `execution-identity.mjs` 只增加固定十字段 snapshot 投影；`locked-selection.mjs` 用 gid、mode、market、side 与盘口定位，并校验原始盘口文本和 numeric 值一致。
+- 本阶段只改标准化与锁定边界；Watcher lease、SnapshotBatch、Strategy、Signal、Telegram、monitor state schema 和生命周期未改。监控模块可独立验证，Task 6 再把候选接到 browser runtime。
+
+## 2026-07-15 Task 2 浏览器协议采集
+
+- `scripts/crown-betting-protocol-capture.mjs`、`scripts/crown-betting-protocol-analyze.mjs` 与 `src/crown/betting-protocol/` 共同形成强绑定的全 BrowserContext 采集、阻断、脱敏和离线重算链。
+- 八方向证据已完整：Preview `8/8`，真实 Submit dispatch `0/8`；三份 safe artifact 可独立离线重放并与 fixture 逐字节核对。
+- 采集层可独立验证；它只证明静态 wire 与 Preview 成功，不自行提升 production Submit 或 Reconciliation capability。
+
 ## 2026-07-14 真实投注 runtime 两阶段启动
 
 - 启动静态门禁为规则卡、可用账号、exact capability、schema；通过后才能 spawn worker。readyTicket 返回后再执行完整 worker/executor fence preflight，成功才 `running + GO`。
 - `app-api.mjs`、`real-betting-runtime.mjs` 与 `betting-process.mjs` 是强绑定启动链；缺 ticket 或 post-ready 检查失败必须停止 worker，不能提交 running。执行期 Submit gate 未改变。
 
-## 2026-07-14 Task 10 accepted-only execution
+## 历史：2026-07-14 Task 10 accepted-only execution（已被顶部 Task 3 取代）
 
 - 强绑定执行链已接通：Watcher exact row `prematch/full_time/asian_handicap/main` → capability matrix Preview/Submit/Reconciliation `1/1/0` → strict Preview → coordinator/B2 持久化 child amount 与 locked selection → 单次 production Submit → accepted/unknown ledger。
 - `crown-transform-xml`、capability matrix、order mapper、response parser、account Preview/Submit providers、real worker factory、B2 executor 和 repository ciphertext seal 必须一起验证；任一 identity、字段集、session provenance、fence、金额、赔率或盘口漂移均 fail-closed。
@@ -15,7 +47,7 @@
 ## 历史：2026-07-14 exact execution evidence candidate（已被 Task 10 accepted-only evidence 取代）
 
 - `scripts/crown-betting-protocol-analyze.mjs` 新增离线 exact evidence builder，严格绑定 matching raw/public record、account/session/execution/result identity、直接 Preview/Submit 值和字段集合指纹；任一重复、漂移、未知敏感字段、额外关键字段或截断都会 fail-closed。
-- 当时为 capture `20260714-085221` 生成 safe candidate：4 条记录、6 个排除字段、8 个 HMAC binding；因 `rejected-attempt-required`、`integer-cny-step-unproven`、`exact-capability-unproven` 保持 evidence incomplete，capability 当时为 `0/0/0`。当前值以顶部 Task 10 的 `1/1/0` 为准。
+- 当时为 capture `20260714-085221` 生成 safe candidate：4 条记录、6 个排除字段、8 个 HMAC binding；因 `rejected-attempt-required`、`integer-cny-step-unproven`、`exact-capability-unproven` 保持 evidence incomplete，capability 当时为 `0/0/0`。当前值以顶部 Task 3 的 `8/1/0` 为准。
 - 该模块可独立离线验证；只有取得单独 rejected capture 后，才需要开发跨 capture combiner。与 production capability gate 强绑定的启用逻辑本次未改。
 
 ## 2026-07-14 账号现场可执行性
@@ -29,7 +61,7 @@
 - 强绑定执行链为：监控变化 → 冻结规则卡快照 → fresh Preview → 顺序账号分配 → 单次 Submit → outcome/锁处理。盘口身份以 `handicapRaw` 为准；fresh Preview 赔率必须仍位于冻结规则区间。
 - 账号按 `bet_order` 顺序使用；`perBetLimit` 投注上限保留并允许用户手工修改，`50 CNY` 只属于测试配置。明确 `rejected` 后剩余金额转下一个未使用账号；`unknown` 保留锁且不重试。
 - Submit 网络请求一旦开始，每个 child 最多一次提交；恢复路径不能生成第二次请求。
-- 该历史阶段的生产 Preview/Submit capability 为 `0/0`。随后在 2026-07-14 完成一笔受控 accepted `FT_bet`；当前 capability 以顶部 Task 10 的 exact row `1/1/0` 为准。
+- 该历史阶段的生产 Preview/Submit capability 为 `0/0`。随后在 2026-07-14 完成一笔受控 accepted `FT_bet`；当前 capability 以顶部 Task 3 的 side-aware `8/1/0` 为准。
 - 可独立开发：Watcher 退出诊断与有界恢复、只读 Operations 投影。强绑定验证：execution identity、规则冻结快照、coordinator、B2、attempt recovery、capability/evidence gate 必须一起验证。
 - 当时规格与计划入口：`docs/superpowers/specs/2026-07-13-crown-demo-account-auto-betting-design.md`、`docs/superpowers/plans/2026-07-13-crown-demo-account-auto-betting.md`。下方旧阶段口径只作历史依据。
 
@@ -59,11 +91,11 @@
 - Card schema/API：`app-db.mjs`、`app-repository.mjs`、`app-api.mjs`、`today-betting-leagues.mjs`。卡片 mode-agnostic，联赛必选且 `UNIQUE(league_name)`；目录从皇冠当前开盘 active events 中筛选默认白名单和 exact 手动追踪，手动联赛必须显式选择；停用仍占用，物理删除释放。
 - Signal/B2：`monitor-state-store.mjs`、`auto-betting-inbox-store.mjs`、`auto-betting-consumer.mjs`、`bet-batch-store.mjs`、`market-once-store.mjs`、`execution-gate.mjs`、`b2-executor.mjs` 强绑定。Signal 原子产物、card snapshot、card-scoped authorization、delete race 与 B2 recovery 必须一起验证。
 - Dashboard：`frontend/src/pages/AutoBetRules.tsx` 动态卡片/create-edit modal；Operations 使用 `ruleCards` 计数；完全重置保留卡片/联赛配置并清理 card snapshot 在内的运行历史。
-- 历史阶段 Contract/capability：app/frontend/schema 均为 `dynamic-betting-cards-v1`；canonical Crown Preview/Submit/Reconciliation 当时为 `0/0/0`，当前值以顶部 Task 10 的 `1/1/0` 为准。
+- 历史阶段 Contract/capability：app/frontend/schema 均为 `dynamic-betting-cards-v1`；canonical Crown Preview/Submit/Reconciliation 当时为 `0/0/0`，当前值以顶部 Task 3 的 `8/1/0` 为准。
 
 ## 历史：2026-07-12 C 阶段完成与运行数据策略
 
-- C Task 1–11 当时已完成，历史代码验证基线为 backend 874/874、syntax 180、frontend 66/66；真实投注当时被 capability `0/0/0` 阻断，当前值以顶部 Task 10 的 `1/1/0` 为准。
+- C Task 1–11 当时已完成，历史代码验证基线为 backend 874/874、syntax 180、frontend 66/66；真实投注当时被 capability `0/0/0` 阻断，当前值以顶部 Task 3 的 `8/1/0` 为准。
 - 监控 SQLite 只保存当前运行状态、待处理事务和幂等边界；已投递 audit outbox 立即清除。
 - 原始 snapshot/change JSONL 正常保留到用户在运维控制台手动执行“每日开工完全重置”；没有定时或启动自动清理。
 - 完全重置会删除点击前的监控状态、候选、投注账本、market-once 幂等锁、pending/unknown、提交/对账、通知与执行审计；账号、登录会话、规则、Telegram、协议证据和运行依赖保留。重置后真实投注回到 off，旧盘口允许重新下注。
@@ -88,7 +120,7 @@
 - B1 Task 1–9、B2 Task 10–12 已完成代码实现和独立复核；最终 focused 108/108、backend 749/749、syntax 162、frontend 48/48、build/Compose config 通过。
 - 投注执行模块现包含 ExecutionAuthorization、durable submit attempt、fenced single-child recovery、persistent reconciliation evidence、context-bound provider reference、outcome outbox 和 Telegram consumer。
 - 强绑定模块：`execution-gate.mjs`、`b2-executor.mjs`、`b2-reconciler.mjs`、`app-db.mjs` 必须一起验证；通知链 `b2-outcome-dispatcher.mjs`、`telegram-alert.mjs`、`telegram-client.mjs`、`crown-b2-notifications.mjs` 必须一起验证。
-- 当时生产 Crown capability matrix 的 preview/submit 均为 0，真实提交和自动对账 fail-closed；offline fixture 不能证明 Crown batch。该历史阶段未执行真实 preview、`FT_bet` 或 Telegram 发送；当前 capability 以顶部 Task 10 的 exact row `1/1/0` 为准。
+- 当时生产 Crown capability matrix 的 preview/submit 均为 0，真实提交和自动对账 fail-closed；offline fixture 不能证明 Crown batch。该历史阶段未执行真实 preview、`FT_bet` 或 Telegram 发送；当前 capability 以顶部 Task 3 的 side-aware `8/1/0` 为准。
 - B 报告入口：`.superpowers/sdd/task-12-report.md`。C 设计草案：`docs/superpowers/specs/2026-07-11-crown-c-strategy-mobile-console-design.md`，待范围确认后进入计划。
 
 ## 历史：2026-07-11 B 阶段方案 A 当时状态
@@ -97,7 +129,7 @@
 - B1 Task 1–9 与 B2 Task 10–12 代码已完成并通过独立复核；当时最终 backend 749/749、syntax 162、frontend 48/48、production build 与 Compose 配置通过。
 - B1 提供 exact minor-unit money、规则/账号原子 CRUD、确定性 Signal→batch、child ledger、账号锁、unknown 恢复、严格盘口锁、Simulated Provider、默认 off worker、preview/simulated 零真实网络，以及 batch/child Dashboard。
 - 赛前/滚球可同时启用但由单 watcher 处理；Dashboard 显示北京时间质量/warnings 和逐赛事诊断；watcher 与 Executor 使用不同 canonical fenced lease key。
-- B2 Task 11–12 当时已完成 sanitized fixture/offline-only 验收；该历史阶段 canonical Crown preview/submit 能力为 0。历史诊断实际清理和凭据/session 轮换完成前不执行真实 preview；真实小额 `FT_bet` 仍需验收当次新授权。当前 capability 以顶部 Task 10 的 exact row `1/1/0` 为准。
+- B2 Task 11–12 当时已完成 sanitized fixture/offline-only 验收；该历史阶段 canonical Crown preview/submit 能力为 0。当前 capability 以顶部 Task 3 的 side-aware `8/1/0` 为准。
 
 
 ## 2026-07-10 A 阶段 schema-v2 监控迁移
@@ -160,7 +192,7 @@
 | 皇冠足球监控 | `docs/modules/crown-football-monitor.md`、`scripts/crown-watch.mjs`、`src/crown/monitor/`、`src/crown/storage/`、`src/crown/crown-transform-xml.mjs`、`src/crown/login/crown-api-login-manager.mjs` | XML 主源、SnapshotBatch、canonical identity/time、SQLite state、Change→Strategy→Signal、Dispatcher、候选；prematch/live 同进程双模式、canonical watcher lease、schema-v1 回滚和 DOM/fixture compatibility | 部分；持久契约强绑定 | `node --test tests\crown-watch-state-version.test.mjs tests\crown-monitor-v2-integration.test.mjs tests\crown-monitor-state-store.test.mjs tests\crown-strategy-engine.test.mjs tests\crown-alert-dispatcher.test.mjs` |
 | 皇冠 Telegram 通知 | `docs/modules/crown-telegram-notifications.md`、`src/crown/telegram/`、`src/crown/alerts/telegram-*.mjs` | schema-v2 Signal 命中后发送无抬头五行中文赔率变化 TG；显示联赛、比赛、类型、盘口与新旧赔率和北京时间；支持多个 Chat ID、群话题、Chat ID 获取、重试和测试发送 | 是 | `node --test tests\crown-telegram-client.test.mjs tests\crown-alerts.test.mjs tests\crown-alert-dispatcher.test.mjs tests\crown-telegram-settings.test.mjs` |
 | 皇冠监控 Dashboard | `Dockerfile`、`docker-compose.yml`、`scripts/crown-dashboard.mjs`、`src/crown/dashboard/`、`src/crown/app/`、`src/crown/config/`、`src/crown/monitor/`、`frontend/`、`docs/modules/crown-dashboard.md` | Docker-first 本地配置与赔率监控 App；React + Ant Design UI 展示七个页面，SQLite 保存配置与 monitor 当前状态；`/matches` 当前列表读取只读 SQLite 投影并按 DB+WAL 版本缓存，30 秒静默刷新，单场详情才按 `eventKey` 读取 JSONL 变化历史；`/monitor-account` 每 5 秒轻量刷新 runtime 状态；`/betting-rules` 和 `/betting-accounts` 使用横向卡片；旧 JSONL odds API 保持兼容 | 是 | `node --test tests\crown-current-odds-state.test.mjs tests\crown-app-api.test.mjs tests\crown-dashboard-css-contract.test.mjs`、`npm --prefix frontend test -- --run src/pages/MatchSelection.test.tsx src/pages/MonitorSettings.test.tsx`、`npm test`、`npm run check`、`npm --prefix frontend run test` |
-| 投注协议与执行模块 | `docs/modules/crown-betting-protocol.md`、`docs/betting-architecture.md`、`docs/betting-contract.md`、`docs/crown-betting-protocol-map.md`、`src/crown/betting-protocol/`、`src/crown/betting/`、`src/betting/`、`scripts/crown-betting-protocol-capture.mjs`、`scripts/crown-betting-protocol-analyze.mjs`、`scripts/crown-betting-worker.mjs` | B1 exact money、Signal 幂等 batch、child ledger、账号锁/unknown 恢复、严格盘口锁与 B2 durable submit 已完成；exact `prematch/full_time/asian_handicap/main` 由同 capture watcher 的 `RATIO_R + gid/side/line/odds` 内容绑定，canonical capability 为 `1/1/0`。Submit 前独立重读 latest selection 并 fresh Preview；其余 row 仍关闭 | 是 | `node --test tests\crown-betting-protocol-execution-evidence.test.mjs tests\crown-capability-matrix.test.mjs tests\crown-task10-auto-submit.test.mjs tests\crown-app-repository.test.mjs`、`npm test`、`npm run check` |
+| 投注协议与执行模块 | `docs/modules/crown-betting-protocol.md`、`docs/betting-architecture.md`、`docs/betting-contract.md`、`docs/crown-betting-protocol-map.md`、`src/crown/betting-protocol/`、`src/crown/betting/`、`src/betting/`、`scripts/crown-betting-protocol-capture.mjs`、`scripts/crown-betting-protocol-analyze.mjs`、`scripts/crown-betting-worker.mjs` | B1 exact money、Signal 幂等 batch、child ledger、账号锁/unknown 恢复、严格盘口锁与 B2 durable submit 已完成；八个 full-time main 方向均可 strict Preview，canonical capability 为 `8/1/0`，仅 `prematch/full_time/asian_handicap/main/away` 允许 Submit。Submit 前独立重读 latest selection 并 fresh Preview | 是 | `node --test tests\crown-betting-protocol-execution-evidence.test.mjs tests\crown-capability-matrix.test.mjs tests\crown-task10-auto-submit.test.mjs tests\crown-app-repository.test.mjs`、`npm test`、`npm run check` |
 
 ## 模块关系
 

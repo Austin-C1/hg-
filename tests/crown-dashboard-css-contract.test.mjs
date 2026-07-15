@@ -329,3 +329,10 @@ test('dynamic rule page mobile actions keep a 44px touch target', () => {
   const mobile = css.slice(css.indexOf('@media (max-width: 480px)'))
   assert.match(mobile, /\.rule-page-title \.ant-btn,\s*\.rule-cards-page \.ant-empty \.ant-btn\s*\{[^}]*min-height:\s*44px/)
 })
+
+test('browser betting matrix stays readable at 390px and its controls keep a 44px touch target', () => {
+  const mobile = css.slice(css.indexOf('@media (max-width: 480px)'))
+  assert.match(mobile, /\.browser-direction-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/)
+  assert.match(mobile, /\.browser-betting-panel \.ant-btn[^\{]*\{[^}]*min-height:\s*44px/)
+  assert.doesNotMatch(css, /\.browser-betting-panel[^\{]*\{[^}]*animation:/)
+})

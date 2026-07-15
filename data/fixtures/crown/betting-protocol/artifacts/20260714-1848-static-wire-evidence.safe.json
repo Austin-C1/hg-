@@ -1,0 +1,3974 @@
+{
+  "schemaVersion": "crown-static-wire-evidence-v1",
+  "sourceBinding": "hmac-sha256:a729219b226581dd4d2b4b657efe7014b1ec48d01fdad41435d520346fb81233",
+  "entries": [
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "FT_bet",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "autoOdd",
+            "type": "string"
+          },
+          {
+            "name": "chose_team",
+            "type": "string"
+          },
+          {
+            "name": "con",
+            "type": "string"
+          },
+          {
+            "name": "f",
+            "type": "string"
+          },
+          {
+            "name": "gid",
+            "type": "string"
+          },
+          {
+            "name": "golds",
+            "type": "string"
+          },
+          {
+            "name": "gtype",
+            "type": "string"
+          },
+          {
+            "name": "imp",
+            "type": "string"
+          },
+          {
+            "name": "ioratio",
+            "type": "string"
+          },
+          {
+            "name": "isRB",
+            "type": "string"
+          },
+          {
+            "name": "isYesterday",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "odd_f_type",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ptype",
+            "type": "string"
+          },
+          {
+            "name": "ratio",
+            "type": "string"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "timestamp",
+            "type": "string"
+          },
+          {
+            "name": "timestamp2",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          },
+          {
+            "name": "wtype",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:32418aa18d4e5448a16b7a3280d8988fb7b9d5fc6b153541d96fa5932dbb3542"
+      },
+      "response": {
+        "fields": [],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:0a03b4dd9925c7df9606fc24ee22934bafb478f031efc622c46225e7fd32639f"
+      },
+      "staticValues": [
+        {
+          "field": "p",
+          "value": "FT_bet"
+        }
+      ],
+      "sourceBinding": "hmac-sha256:55f6f8a91c605d5674230133f93e337ee417c259c2c1bd35075121c0865c93f0"
+    },
+    {
+      "endpointPath": "/transform_nl.php",
+      "functionName": "alert_msg",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 6,
+        "fullFieldSetBinding": "hmac-sha256:90bfb991b4dae9461511fbd308af284de3893a77a3c32eec6a83b9ef04c5726d"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:bf90f51204319246d30db68daa96e4313c34c66b6790cb558ce6ed16c877772d"
+    },
+    {
+      "endpointPath": "/transform_nl.php",
+      "functionName": "check_login_domain",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 2,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:ecbab730aed3abf0d87d79a8c1bbdf89b22378644162b069e92952f8a1225d01"
+      },
+      "response": {
+        "fields": [],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:0a03b4dd9925c7df9606fc24ee22934bafb478f031efc622c46225e7fd32639f"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:b4eb156728a42909deab679bc8e27a3cb91403f6f00d7d6040dcb1fe0f66707a"
+    },
+    {
+      "endpointPath": "/transform_nl.php",
+      "functionName": "chk_login",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "app",
+            "type": "string"
+          },
+          {
+            "name": "auto",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 3,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:14a97c70878d3c68bc980293f22aec8b9faa526ab55298c510b654d3b4494a51"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "currency",
+            "type": "string"
+          },
+          {
+            "name": "ltype",
+            "type": "string"
+          },
+          {
+            "name": "pay_type",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 4,
+        "dynamicFieldNameCount": 8,
+        "fullFieldSetBinding": "hmac-sha256:f7b09235b017675e66af230e6787f58b29acefbd522f17bfc6ddd6eb3597f060"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:d51f15bc1ba98424d4b724a0f3d8707ec33dc0f38026e3285f65d703cf8c7b35"
+    },
+    {
+      "endpointPath": "/transform_nl.php",
+      "functionName": "icon_all",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 2,
+        "fullFieldSetBinding": "hmac-sha256:37403cd1bda1e86ea0cd24a8e64c124b6aff5445f3e33d95e9beef2d23e07849"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:6cf72e52d1729174f3d1251a830bd85a172a52efb6eeb4387400b49466507461"
+    },
+    {
+      "endpointPath": "/transform_nl.php",
+      "functionName": "login",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "concede",
+            "type": "string"
+          },
+          {
+            "name": "count",
+            "type": "string"
+          },
+          {
+            "name": "date",
+            "type": "string"
+          },
+          {
+            "name": "dg",
+            "type": "string"
+          },
+          {
+            "name": "gid",
+            "type": "array"
+          },
+          {
+            "name": "gold",
+            "type": "array"
+          },
+          {
+            "name": "gtype",
+            "type": "array"
+          },
+          {
+            "name": "ioratio",
+            "type": "array"
+          },
+          {
+            "name": "league",
+            "type": "array"
+          },
+          {
+            "name": "ptype",
+            "type": "string"
+          },
+          {
+            "name": "ratio",
+            "type": "string"
+          },
+          {
+            "name": "result",
+            "type": "array"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "strong",
+            "type": "array"
+          },
+          {
+            "name": "team_id_c",
+            "type": "string"
+          },
+          {
+            "name": "team_id_h",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "type",
+            "type": "string"
+          },
+          {
+            "name": "wtype",
+            "type": "array"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 46,
+        "fullFieldSetBinding": "hmac-sha256:019694dcf1fa06a944fa7486681404d98e2ee2183f5270fbaa2e941b214074e6"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:e8ebd78e6e8dde3cfa15ab760fe87a1a95f7b08cf95b65a3e61d10d6fb30c455"
+    },
+    {
+      "endpointPath": "/transform_nl.php",
+      "functionName": "memSet",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "action",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:61d2f1c9fa88e4d938a64408365173cc06f1262457e022794092f582a9ecd34b"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 4,
+        "fullFieldSetBinding": "hmac-sha256:d604cbb479cd0b97f9af2c06735c50a511ca8aa3b2fa04c5e02ba36718496537"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:e2ac7e419062796cb10ad0b026baf46b2ede2259fc11bfefeccb2302dc4930cb"
+    },
+    {
+      "endpointPath": "/transform_nl.php",
+      "functionName": "service_mainget",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 1,
+        "fullFieldSetBinding": "hmac-sha256:1df871c6204e6349888af723f4f08c77aa324d7a4e3e5f8a55b14656d80424d6"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 14,
+        "fullFieldSetBinding": "hmac-sha256:d14be9b4b5843622044e238f7266cb81e337259ebb1aa110058d6236cad6e1a4"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:5b5d14adc267981d34e9a3ec8d129656b5f27764853a2dc165e6c7cbb4140356"
+    },
+    {
+      "endpointPath": "/transform_nl.php",
+      "functionName": "system_msg",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 3,
+        "fullFieldSetBinding": "hmac-sha256:5329388a86ae168a10d6e019c0f34f76357614f1529b0a2c0b5c1e43540b30d4"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:327c20cf7ac05bc76662af101231a1a58a7f14bc6a3bcc2db2c0ad44d8db93b6"
+    },
+    {
+      "endpointPath": "/transform_nl.php",
+      "functionName": null,
+      "method": "GET",
+      "transport": "document",
+      "request": {
+        "fields": [],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:7f8d2d5d88b06a8ee004f0b64ba7e3e8c1df2cc6a847db755bd97f508347a32a"
+      },
+      "response": {
+        "fields": [],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:0a03b4dd9925c7df9606fc24ee22934bafb478f031efc622c46225e7fd32639f"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:c75b1f5c0aa80f747c56c96afc0c611ba00fa3425b7765126c95aeb508707a59"
+    },
+    {
+      "endpointPath": "/transform_nl.php",
+      "functionName": null,
+      "method": "GET",
+      "transport": "document",
+      "request": {
+        "fields": [],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:7f8d2d5d88b06a8ee004f0b64ba7e3e8c1df2cc6a847db755bd97f508347a32a"
+      },
+      "response": {
+        "fields": [],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:0a03b4dd9925c7df9606fc24ee22934bafb478f031efc622c46225e7fd32639f"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:8555234d9031f833f6a4f047e13225b54e0144535ea213117bc8cbebcd69d0bf"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "alert_msg",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 6,
+        "fullFieldSetBinding": "hmac-sha256:90bfb991b4dae9461511fbd308af284de3893a77a3c32eec6a83b9ef04c5726d"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:7b32aca59d0210b931d2e51a1140d0af10c27861a24b907f4aeb5325631b6d77"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "announcement",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "array"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 8,
+        "fullFieldSetBinding": "hmac-sha256:d70e1353ee54356015eed559df9d572f22bb03346934647e04ce2d358a144de0"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:3527e59d65ed7596e5e48b2b98ea521840e78d8a467545a0743194a987a9b0bb"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "bottom",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "concede",
+            "type": "string"
+          },
+          {
+            "name": "count",
+            "type": "string"
+          },
+          {
+            "name": "date",
+            "type": "string"
+          },
+          {
+            "name": "dg",
+            "type": "string"
+          },
+          {
+            "name": "gid",
+            "type": "array"
+          },
+          {
+            "name": "gold",
+            "type": "array"
+          },
+          {
+            "name": "gtype",
+            "type": "array"
+          },
+          {
+            "name": "ioratio",
+            "type": "array"
+          },
+          {
+            "name": "league",
+            "type": "array"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ptype",
+            "type": "string"
+          },
+          {
+            "name": "ratio",
+            "type": "string"
+          },
+          {
+            "name": "result",
+            "type": "array"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "strong",
+            "type": "array"
+          },
+          {
+            "name": "team_id_c",
+            "type": "string"
+          },
+          {
+            "name": "team_id_h",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "type",
+            "type": "string"
+          },
+          {
+            "name": "wtype",
+            "type": "array"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 42,
+        "fullFieldSetBinding": "hmac-sha256:44221795a2fda8e1d61461cf782fc98b376ead9e634c314e9eb8e4fe200b8971"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:e8ede09363275992c4a2da4be00a7b9d80a758fb4dd94f63ebfb8d5c67aa938b"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "footer",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 8,
+        "fullFieldSetBinding": "hmac-sha256:ebe029aea932652221f60c5a433b686136d84a71d91a4a853e9ec42baba1ac0b"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:fa13cc7b0f25825613fb655cd614d311831c98e758874084277ab75642f51b98"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "FT_order_view",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "chose_team",
+            "type": "string"
+          },
+          {
+            "name": "gid",
+            "type": "string"
+          },
+          {
+            "name": "gtype",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "odd_f_type",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          },
+          {
+            "name": "wtype",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:a656a5f67f473123dd84d0ec274f2e260e697b35c9d6ccdf208995ee7c634e9a"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "aid",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "con",
+            "type": "string"
+          },
+          {
+            "name": "currency",
+            "type": "string"
+          },
+          {
+            "name": "currency_value",
+            "type": "string"
+          },
+          {
+            "name": "dates",
+            "type": "string"
+          },
+          {
+            "name": "dg",
+            "type": "string"
+          },
+          {
+            "name": "fast_check",
+            "type": "string"
+          },
+          {
+            "name": "game_sc",
+            "type": "string"
+          },
+          {
+            "name": "game_so",
+            "type": "string"
+          },
+          {
+            "name": "gold_gmax",
+            "type": "string"
+          },
+          {
+            "name": "gold_gmin",
+            "type": "string"
+          },
+          {
+            "name": "important",
+            "type": "string"
+          },
+          {
+            "name": "ioratio",
+            "type": "string"
+          },
+          {
+            "name": "league_id",
+            "type": "string"
+          },
+          {
+            "name": "league_name",
+            "type": "string"
+          },
+          {
+            "name": "ltype",
+            "type": "string"
+          },
+          {
+            "name": "max_gold",
+            "type": "string"
+          },
+          {
+            "name": "maxcredit",
+            "type": "string"
+          },
+          {
+            "name": "mem_sc",
+            "type": "string"
+          },
+          {
+            "name": "mem_so",
+            "type": "string"
+          },
+          {
+            "name": "ms",
+            "type": "string"
+          },
+          {
+            "name": "num_c",
+            "type": "string"
+          },
+          {
+            "name": "num_h",
+            "type": "string"
+          },
+          {
+            "name": "pay_type",
+            "type": "string"
+          },
+          {
+            "name": "ptype",
+            "type": "string"
+          },
+          {
+            "name": "ratio",
+            "type": "string"
+          },
+          {
+            "name": "restsinglecredit",
+            "type": "string"
+          },
+          {
+            "name": "spread",
+            "type": "string"
+          },
+          {
+            "name": "strong",
+            "type": "string"
+          },
+          {
+            "name": "systime",
+            "type": "string"
+          },
+          {
+            "name": "team_id_c",
+            "type": "string"
+          },
+          {
+            "name": "team_id_h",
+            "type": "string"
+          },
+          {
+            "name": "team_name_c",
+            "type": "string"
+          },
+          {
+            "name": "team_name_h",
+            "type": "string"
+          },
+          {
+            "name": "times",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:c55b80a7ed13a5ddf5fa0d5b8d55829a611c00dca3f236e97d7dbece8fd80717"
+      },
+      "staticValues": [
+        {
+          "field": "p",
+          "value": "FT_order_view"
+        }
+      ],
+      "sourceBinding": "hmac-sha256:88141cb7a8f175940342e3bed415a078cc862297b803b8bfe2469333e70ff040"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "FT_order_view",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "chose_team",
+            "type": "string"
+          },
+          {
+            "name": "gid",
+            "type": "string"
+          },
+          {
+            "name": "gtype",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "odd_f_type",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          },
+          {
+            "name": "wtype",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:a656a5f67f473123dd84d0ec274f2e260e697b35c9d6ccdf208995ee7c634e9a"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "aid",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "con",
+            "type": "string"
+          },
+          {
+            "name": "currency",
+            "type": "string"
+          },
+          {
+            "name": "currency_value",
+            "type": "string"
+          },
+          {
+            "name": "dates",
+            "type": "string"
+          },
+          {
+            "name": "dg",
+            "type": "string"
+          },
+          {
+            "name": "fast_check",
+            "type": "string"
+          },
+          {
+            "name": "game_sc",
+            "type": "string"
+          },
+          {
+            "name": "game_so",
+            "type": "string"
+          },
+          {
+            "name": "gold_gmax",
+            "type": "string"
+          },
+          {
+            "name": "gold_gmin",
+            "type": "string"
+          },
+          {
+            "name": "important",
+            "type": "string"
+          },
+          {
+            "name": "ioratio",
+            "type": "string"
+          },
+          {
+            "name": "league_id",
+            "type": "string"
+          },
+          {
+            "name": "league_name",
+            "type": "string"
+          },
+          {
+            "name": "ltype",
+            "type": "string"
+          },
+          {
+            "name": "max_gold",
+            "type": "string"
+          },
+          {
+            "name": "maxcredit",
+            "type": "string"
+          },
+          {
+            "name": "mem_sc",
+            "type": "string"
+          },
+          {
+            "name": "mem_so",
+            "type": "string"
+          },
+          {
+            "name": "ms",
+            "type": "string"
+          },
+          {
+            "name": "num_c",
+            "type": "string"
+          },
+          {
+            "name": "num_h",
+            "type": "string"
+          },
+          {
+            "name": "pay_type",
+            "type": "string"
+          },
+          {
+            "name": "ptype",
+            "type": "string"
+          },
+          {
+            "name": "ratio",
+            "type": "string"
+          },
+          {
+            "name": "restsinglecredit",
+            "type": "string"
+          },
+          {
+            "name": "spread",
+            "type": "string"
+          },
+          {
+            "name": "strong",
+            "type": "string"
+          },
+          {
+            "name": "systime",
+            "type": "string"
+          },
+          {
+            "name": "team_id_c",
+            "type": "string"
+          },
+          {
+            "name": "team_id_h",
+            "type": "string"
+          },
+          {
+            "name": "team_name_c",
+            "type": "string"
+          },
+          {
+            "name": "team_name_h",
+            "type": "string"
+          },
+          {
+            "name": "times",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 1,
+        "fullFieldSetBinding": "hmac-sha256:35ceb2abc56f01fc79433faef259cfb6db269c16fdfed129919d176475bd773c"
+      },
+      "staticValues": [
+        {
+          "field": "p",
+          "value": "FT_order_view"
+        }
+      ],
+      "sourceBinding": "hmac-sha256:a2ca36ea1815942b98cbebd357b42cae884dbac9d47f37e0a0db4075e6e396e4"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "game_list_FT",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "gtype",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:9fd74e38262b1888af0f8b25e727855ad46d6b1d8a99b25331c8036a97297528"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "concede",
+            "type": "string"
+          },
+          {
+            "name": "count",
+            "type": "string"
+          },
+          {
+            "name": "date",
+            "type": "string"
+          },
+          {
+            "name": "dg",
+            "type": "string"
+          },
+          {
+            "name": "gid",
+            "type": "array"
+          },
+          {
+            "name": "gold",
+            "type": "array"
+          },
+          {
+            "name": "gtype",
+            "type": "array"
+          },
+          {
+            "name": "ioratio",
+            "type": "array"
+          },
+          {
+            "name": "league",
+            "type": "array"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ptype",
+            "type": "string"
+          },
+          {
+            "name": "ratio",
+            "type": "string"
+          },
+          {
+            "name": "result",
+            "type": "array"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "strong",
+            "type": "array"
+          },
+          {
+            "name": "team_id_c",
+            "type": "string"
+          },
+          {
+            "name": "team_id_h",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "type",
+            "type": "string"
+          },
+          {
+            "name": "wtype",
+            "type": "array"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 46,
+        "fullFieldSetBinding": "hmac-sha256:fe55baae5daa12c0e9a90bf8ad9a010cd8e2c01cabec9b9d538273dcb0f86922"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:cba1a32a38bddde1189c31e98d78dd1ac20e20ceb96510d42e8cda2371afad9b"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "gameModel",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "gtype",
+            "type": "string"
+          },
+          {
+            "name": "isFantasy",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 1,
+        "fullFieldSetBinding": "hmac-sha256:98be3ae29c968a47ad6b6f8b865033cf3c68721e1287218484b9ba255fe9d32f"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "array"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 7,
+        "fullFieldSetBinding": "hmac-sha256:6e1f7547e8aaf37b35c09963702cff40af3f532ecb8c928cd66fcb2fe6dccc72"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:307fe1bfa4a901db85d6cfeeadf90d783d8e4fa8eb8977ebb24c94dc480e0927"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "get_game_list",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "cupFantasy",
+            "type": "string"
+          },
+          {
+            "name": "date",
+            "type": "string"
+          },
+          {
+            "name": "filter",
+            "type": "string"
+          },
+          {
+            "name": "gtype",
+            "type": "string"
+          },
+          {
+            "name": "isFantasy",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "ltype",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "p3type",
+            "type": "string"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "sorttype",
+            "type": "string"
+          },
+          {
+            "name": "specialClick",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 1,
+        "fullFieldSetBinding": "hmac-sha256:478d0f0f118b62f336f622b108cfe26d474ad3cae220cca7cd72c890cb6e9fbe"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 122,
+        "fullFieldSetBinding": "hmac-sha256:cd13ccb952518c18ed399ad00b038f652a024833a85ba36754f6984352721ee0"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:b4b33b4e8309ba31b10f55c07a5f9497e90c38611311e55519bef8d8c66bcf28"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "get_game_list",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "cupFantasy",
+            "type": "string"
+          },
+          {
+            "name": "date",
+            "type": "string"
+          },
+          {
+            "name": "filter",
+            "type": "string"
+          },
+          {
+            "name": "gtype",
+            "type": "string"
+          },
+          {
+            "name": "isFantasy",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "ltype",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "p3type",
+            "type": "string"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "sorttype",
+            "type": "string"
+          },
+          {
+            "name": "specialClick",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 1,
+        "fullFieldSetBinding": "hmac-sha256:478d0f0f118b62f336f622b108cfe26d474ad3cae220cca7cd72c890cb6e9fbe"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 134,
+        "fullFieldSetBinding": "hmac-sha256:e2a1f0fbb10eabb5fafbd35c3f3c7ecad78839f63d122b55cb038f839508fea7"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:9aab742becfce59992abe1740e3b940ddc5b374436d8bc42745de074e50ba596"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "get_league_count",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "date",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "ltype",
+            "type": "string"
+          },
+          {
+            "name": "mode",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "sorttype",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:d8a4028f2a6885761b3465d78c95dc3bb82ad495c2f7fc59edaec8e50b482049"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "gtype",
+            "type": "array"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 16,
+        "fullFieldSetBinding": "hmac-sha256:25dbba531f4639ef2226a54f3b910ff3567d5fbfc6ddddcff04f19267798d07e"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:c4b717f34f065c0ae15adc2d5a77a5607f10b535083359c46243457c5ca3771a"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "get_member_data",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "change",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:64d51f4067dce8825abc0166fe999e276b67ace160482686bded5a3646b7191a"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "currency",
+            "type": "string"
+          },
+          {
+            "name": "maxcredit",
+            "type": "string"
+          },
+          {
+            "name": "pay_type",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 2,
+        "fullFieldSetBinding": "hmac-sha256:53451b60fa6ea8473ae007edba2c3218017736131de1a6957bbb29ab04d0eb07"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:6868ac7d629167e6594f419dcf6d9442069aa449d6555504ee7e6e81babde240"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "get_specialGame_count",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "mode",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:8a579894c207c546cdf6c9d0d2b1d8e825ebae859ae56e55f264e15a38f8c046"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "gtype",
+            "type": "string"
+          },
+          {
+            "name": "mode",
+            "type": "string"
+          },
+          {
+            "name": "period",
+            "type": "string"
+          },
+          {
+            "name": "systime",
+            "type": "string"
+          },
+          {
+            "name": "team",
+            "type": "array"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 29,
+        "fullFieldSetBinding": "hmac-sha256:06cea03011805ca0ab260fdf79e0f21294f140d372c9d3171490e5589df4e7e0"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:23af582a067d5effd6fd4216a3499755f90cceaed25db9703a25bfb821aa4b2d"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "get_today_wagers",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 5,
+        "fullFieldSetBinding": "hmac-sha256:522ec288fa13d2a6bb9d34704d14b931f4ac831d44d0c0aff2fa85238f0da4ae"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "object"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "[*].[*]",
+            "type": "array"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "count",
+            "type": "number"
+          },
+          {
+            "name": "pay_type",
+            "type": "number"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 4,
+        "fullFieldSetBinding": "hmac-sha256:3817972e8bebf3f6a7778de75233f4c0e640ece23c60cd9a98dbf96510b32496"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:f548e537169be0564207eb0491fdfe7cbf42de0daa779ee3fc0555ffe3abde07"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "header",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "concede",
+            "type": "string"
+          },
+          {
+            "name": "count",
+            "type": "string"
+          },
+          {
+            "name": "date",
+            "type": "string"
+          },
+          {
+            "name": "dg",
+            "type": "string"
+          },
+          {
+            "name": "gid",
+            "type": "array"
+          },
+          {
+            "name": "gold",
+            "type": "array"
+          },
+          {
+            "name": "gtype",
+            "type": "array"
+          },
+          {
+            "name": "ioratio",
+            "type": "array"
+          },
+          {
+            "name": "league",
+            "type": "array"
+          },
+          {
+            "name": "ptype",
+            "type": "string"
+          },
+          {
+            "name": "ratio",
+            "type": "string"
+          },
+          {
+            "name": "result",
+            "type": "array"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "strong",
+            "type": "array"
+          },
+          {
+            "name": "team_id_c",
+            "type": "string"
+          },
+          {
+            "name": "team_id_h",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "type",
+            "type": "string"
+          },
+          {
+            "name": "wtype",
+            "type": "array"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 42,
+        "fullFieldSetBinding": "hmac-sha256:9319831e2581f251d8b4d8aaf41c0db957c11e364931875dddcdb1b3d8caec2a"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:03735f062e2b57a36c33c8575f614595c8481d3a6e798d92402f4fbb7fcdb966"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "home",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "concede",
+            "type": "string"
+          },
+          {
+            "name": "count",
+            "type": "string"
+          },
+          {
+            "name": "date",
+            "type": "string"
+          },
+          {
+            "name": "dg",
+            "type": "string"
+          },
+          {
+            "name": "gid",
+            "type": "array"
+          },
+          {
+            "name": "gold",
+            "type": "array"
+          },
+          {
+            "name": "gtype",
+            "type": "array"
+          },
+          {
+            "name": "ioratio",
+            "type": "array"
+          },
+          {
+            "name": "league",
+            "type": "array"
+          },
+          {
+            "name": "ptype",
+            "type": "string"
+          },
+          {
+            "name": "ratio",
+            "type": "string"
+          },
+          {
+            "name": "result",
+            "type": "array"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "strong",
+            "type": "array"
+          },
+          {
+            "name": "team_id_c",
+            "type": "string"
+          },
+          {
+            "name": "team_id_h",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "type",
+            "type": "string"
+          },
+          {
+            "name": "wtype",
+            "type": "array"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 44,
+        "fullFieldSetBinding": "hmac-sha256:8d35b57137becf68af3e8ab2905938e9aa6596bc0393245eeb027cd19dd7e051"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:263c51a4843cba25883cf2b4fe8477d815abd1127aca91f28edfafa5a9b69863"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "icon_all",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 2,
+        "fullFieldSetBinding": "hmac-sha256:37403cd1bda1e86ea0cd24a8e64c124b6aff5445f3e33d95e9beef2d23e07849"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:f37eb95d2c8e024052556bc086fac3fe22e07d0bc61153c110fcca059cf6f842"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "login",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "concede",
+            "type": "string"
+          },
+          {
+            "name": "count",
+            "type": "string"
+          },
+          {
+            "name": "date",
+            "type": "string"
+          },
+          {
+            "name": "dg",
+            "type": "string"
+          },
+          {
+            "name": "gid",
+            "type": "array"
+          },
+          {
+            "name": "gold",
+            "type": "array"
+          },
+          {
+            "name": "gtype",
+            "type": "array"
+          },
+          {
+            "name": "ioratio",
+            "type": "array"
+          },
+          {
+            "name": "league",
+            "type": "array"
+          },
+          {
+            "name": "ptype",
+            "type": "string"
+          },
+          {
+            "name": "ratio",
+            "type": "string"
+          },
+          {
+            "name": "result",
+            "type": "array"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "strong",
+            "type": "array"
+          },
+          {
+            "name": "team_id_c",
+            "type": "string"
+          },
+          {
+            "name": "team_id_h",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "type",
+            "type": "string"
+          },
+          {
+            "name": "wtype",
+            "type": "array"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 46,
+        "fullFieldSetBinding": "hmac-sha256:019694dcf1fa06a944fa7486681404d98e2ee2183f5270fbaa2e941b214074e6"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:11ff571bf6a77dbc5a34d6d595ad2dc3b141258f0104a70687448ba2de66c70f"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "mem_online",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 3,
+        "fullFieldSetBinding": "hmac-sha256:cca6b6c0cf56df9b99f9358d6e58dac233aee2c82b20a4f4db74f9d5918915ab"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:7323e6093667ae8de749b511d1f3474c57b8449134c201ef626ac5d92d6fd766"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "memSet",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "action",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:61d2f1c9fa88e4d938a64408365173cc06f1262457e022794092f582a9ecd34b"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 4,
+        "fullFieldSetBinding": "hmac-sha256:d604cbb479cd0b97f9af2c06735c50a511ca8aa3b2fa04c5e02ba36718496537"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:69260d7f6a75dbb2d9458ee2076a118a5f470716222568d5dd8e49199744b5d4"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "messageget",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 2,
+        "dynamicFieldNameCount": 2,
+        "fullFieldSetBinding": "hmac-sha256:01b376ec50811be500c2ba60e802ee65617858e5e54edaf514fa22237b6e08d0"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "id",
+            "type": "string"
+          },
+          {
+            "name": "systime",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 1,
+        "fullFieldSetBinding": "hmac-sha256:da19279d437270e21ab2a1ce5d1a47395fa4f53bbb1fa15134e1a967bafab9b3"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:e34065d06142ec8cf670f6155bc58e5958a1cad636b0614a3a77fee8b606c97d"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "messageget",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 2,
+        "dynamicFieldNameCount": 2,
+        "fullFieldSetBinding": "hmac-sha256:01b376ec50811be500c2ba60e802ee65617858e5e54edaf514fa22237b6e08d0"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "systime",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 2,
+        "fullFieldSetBinding": "hmac-sha256:97f3e5272f6112949aca650564af6f6c51d1b458db69cb53e623601dab6e56e8"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:b02470cba4c06d9485ee4786187cffd6b49012cdb414a4e6e367f0a50046ded2"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "order",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "array"
+          },
+          {
+            "name": "concede",
+            "type": "string"
+          },
+          {
+            "name": "count",
+            "type": "string"
+          },
+          {
+            "name": "date",
+            "type": "string"
+          },
+          {
+            "name": "dg",
+            "type": "string"
+          },
+          {
+            "name": "gid",
+            "type": "array"
+          },
+          {
+            "name": "gold",
+            "type": "array"
+          },
+          {
+            "name": "gtype",
+            "type": "array"
+          },
+          {
+            "name": "ioratio",
+            "type": "array"
+          },
+          {
+            "name": "league",
+            "type": "array"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ptype",
+            "type": "string"
+          },
+          {
+            "name": "ratio",
+            "type": "string"
+          },
+          {
+            "name": "result",
+            "type": "array"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "strong",
+            "type": "array"
+          },
+          {
+            "name": "team_id_c",
+            "type": "string"
+          },
+          {
+            "name": "team_id_h",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "type",
+            "type": "string"
+          },
+          {
+            "name": "wtype",
+            "type": "array"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 47,
+        "fullFieldSetBinding": "hmac-sha256:c44213eef6354e8b2a2f5c9493a22cb6563019396dce6c77efa5e85ca6f280cc"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:73dfa6a55af3194605b776863557aa713283a83a66d7311a0a0a67d1f905cece"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "right_menu",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "concede",
+            "type": "string"
+          },
+          {
+            "name": "count",
+            "type": "string"
+          },
+          {
+            "name": "date",
+            "type": "string"
+          },
+          {
+            "name": "dg",
+            "type": "string"
+          },
+          {
+            "name": "gid",
+            "type": "array"
+          },
+          {
+            "name": "gold",
+            "type": "array"
+          },
+          {
+            "name": "gtype",
+            "type": "array"
+          },
+          {
+            "name": "ioratio",
+            "type": "array"
+          },
+          {
+            "name": "league",
+            "type": "array"
+          },
+          {
+            "name": "ptype",
+            "type": "string"
+          },
+          {
+            "name": "ratio",
+            "type": "string"
+          },
+          {
+            "name": "result",
+            "type": "array"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "strong",
+            "type": "array"
+          },
+          {
+            "name": "team_id_c",
+            "type": "string"
+          },
+          {
+            "name": "team_id_h",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "type",
+            "type": "string"
+          },
+          {
+            "name": "wtype",
+            "type": "array"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 46,
+        "fullFieldSetBinding": "hmac-sha256:5244cd229182c91248a8ce0a728727117db8d5eeb6527a60aa8d4b476e5feeab"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:a3be377c516403ef8261c5e89a88a3ad579c509ae5fa4d721d0e43b2f28de9e5"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "right_panel",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "concede",
+            "type": "string"
+          },
+          {
+            "name": "count",
+            "type": "string"
+          },
+          {
+            "name": "date",
+            "type": "string"
+          },
+          {
+            "name": "dg",
+            "type": "string"
+          },
+          {
+            "name": "gid",
+            "type": "array"
+          },
+          {
+            "name": "gold",
+            "type": "array"
+          },
+          {
+            "name": "gtype",
+            "type": "array"
+          },
+          {
+            "name": "ioratio",
+            "type": "array"
+          },
+          {
+            "name": "league",
+            "type": "array"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ptype",
+            "type": "string"
+          },
+          {
+            "name": "ratio",
+            "type": "string"
+          },
+          {
+            "name": "result",
+            "type": "array"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "strong",
+            "type": "array"
+          },
+          {
+            "name": "team_id_c",
+            "type": "string"
+          },
+          {
+            "name": "team_id_h",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "type",
+            "type": "string"
+          },
+          {
+            "name": "wtype",
+            "type": "array"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 39,
+        "fullFieldSetBinding": "hmac-sha256:3be6d8574f9009f7d51faf3fc0e7cc3a7e9219f3ee9ef3e4c17b4a8a17777f10"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:63cdeeee4aa968fb5e69fa50f3b5073e06dd11d0e3ce28ab2966677d13621d3f"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "right_score",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "gtype",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:d534ee01349d47b2b99b5490b35f3b25add5bbae174e493b2af91df337f2b0cd"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "concede",
+            "type": "string"
+          },
+          {
+            "name": "count",
+            "type": "string"
+          },
+          {
+            "name": "date",
+            "type": "string"
+          },
+          {
+            "name": "dg",
+            "type": "string"
+          },
+          {
+            "name": "gid",
+            "type": "array"
+          },
+          {
+            "name": "gold",
+            "type": "array"
+          },
+          {
+            "name": "gtype",
+            "type": "array"
+          },
+          {
+            "name": "ioratio",
+            "type": "array"
+          },
+          {
+            "name": "league",
+            "type": "array"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ptype",
+            "type": "string"
+          },
+          {
+            "name": "ratio",
+            "type": "string"
+          },
+          {
+            "name": "result",
+            "type": "array"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "strong",
+            "type": "array"
+          },
+          {
+            "name": "team_id_c",
+            "type": "string"
+          },
+          {
+            "name": "team_id_h",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "type",
+            "type": "string"
+          },
+          {
+            "name": "wtype",
+            "type": "array"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 43,
+        "fullFieldSetBinding": "hmac-sha256:a3b73097c4375a9db9146d5e844e437f91c70464685be8209bccc340b712f01a"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:11f9d937d467ab28bd71f01b8aaf00f8c4c75e8a5deeab8057901370d8af62cb"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "service_mainget",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 1,
+        "fullFieldSetBinding": "hmac-sha256:792423269d9d9fc6cc6977d5ae0966b5e4dd74e6e77c85a84e3c3f57d2d2a27c"
+      },
+      "response": {
+        "fields": [],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:0a03b4dd9925c7df9606fc24ee22934bafb478f031efc622c46225e7fd32639f"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:5a5b944ef8b17509ab3c51e783dbc6f7c8d1eb8746e06466c6e0d17b71238c4b"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "service_mainget",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 1,
+        "fullFieldSetBinding": "hmac-sha256:792423269d9d9fc6cc6977d5ae0966b5e4dd74e6e77c85a84e3c3f57d2d2a27c"
+      },
+      "response": {
+        "fields": [],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:0a03b4dd9925c7df9606fc24ee22934bafb478f031efc622c46225e7fd32639f"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:74c5dd13c96674966e4110b56c100c002325d36e500903759f0fed40bd79c0ed"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "service_mainget",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 1,
+        "fullFieldSetBinding": "hmac-sha256:792423269d9d9fc6cc6977d5ae0966b5e4dd74e6e77c85a84e3c3f57d2d2a27c"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 14,
+        "fullFieldSetBinding": "hmac-sha256:d14be9b4b5843622044e238f7266cb81e337259ebb1aa110058d6236cad6e1a4"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:c33b4f310d6b05939bd5331bfdacb873f943a3e7ada05c088a8e36e06150f73f"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "service_mainget",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 1,
+        "fullFieldSetBinding": "hmac-sha256:1df871c6204e6349888af723f4f08c77aa324d7a4e3e5f8a55b14656d80424d6"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 14,
+        "fullFieldSetBinding": "hmac-sha256:d14be9b4b5843622044e238f7266cb81e337259ebb1aa110058d6236cad6e1a4"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:3a05d3b268c04bd1a91dbdd5700b2d015d264067a42bbfa12173f961be693485"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "sport_menu",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "gtype",
+            "type": "string"
+          },
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:9fd74e38262b1888af0f8b25e727855ad46d6b1d8a99b25331c8036a97297528"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "name": "concede",
+            "type": "string"
+          },
+          {
+            "name": "count",
+            "type": "string"
+          },
+          {
+            "name": "date",
+            "type": "string"
+          },
+          {
+            "name": "dg",
+            "type": "string"
+          },
+          {
+            "name": "gid",
+            "type": "array"
+          },
+          {
+            "name": "gold",
+            "type": "array"
+          },
+          {
+            "name": "gtype",
+            "type": "array"
+          },
+          {
+            "name": "ioratio",
+            "type": "array"
+          },
+          {
+            "name": "league",
+            "type": "array"
+          },
+          {
+            "name": "p",
+            "type": "array"
+          },
+          {
+            "name": "ptype",
+            "type": "string"
+          },
+          {
+            "name": "ratio",
+            "type": "string"
+          },
+          {
+            "name": "result",
+            "type": "array"
+          },
+          {
+            "name": "rtype",
+            "type": "string"
+          },
+          {
+            "name": "showtype",
+            "type": "string"
+          },
+          {
+            "name": "strong",
+            "type": "array"
+          },
+          {
+            "name": "team_id_c",
+            "type": "string"
+          },
+          {
+            "name": "team_id_h",
+            "type": "string"
+          },
+          {
+            "name": "ts",
+            "type": "string"
+          },
+          {
+            "name": "type",
+            "type": "string"
+          },
+          {
+            "name": "wtype",
+            "type": "array"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 44,
+        "fullFieldSetBinding": "hmac-sha256:fd237dd80516a6a6516ed37ff50629e81a93974db97c1abc59844c5ad1a4ccd6"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:42ba9c3097123a2c8c7546d47c74101f62971b2c4be6bb0168dfee983a6520cb"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": "system_msg",
+      "method": "POST",
+      "transport": "xhr",
+      "request": {
+        "fields": [
+          {
+            "name": "langx",
+            "type": "string"
+          },
+          {
+            "name": "p",
+            "type": "string"
+          },
+          {
+            "name": "ver",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 1,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:16460b5e24d9498573524d2919c171a6454fac3c1e64c5f2a57cbe41e4e246f2"
+      },
+      "response": {
+        "fields": [
+          {
+            "name": "[*]",
+            "type": "array"
+          },
+          {
+            "name": "[*]",
+            "type": "string"
+          }
+        ],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 3,
+        "fullFieldSetBinding": "hmac-sha256:5329388a86ae168a10d6e019c0f34f76357614f1529b0a2c0b5c1e43540b30d4"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:d195bdf91249384eb141e53f5830f4de671a97c4442411b1bde3ee629e417787"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": null,
+      "method": "GET",
+      "transport": "document",
+      "request": {
+        "fields": [],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:7f8d2d5d88b06a8ee004f0b64ba7e3e8c1df2cc6a847db755bd97f508347a32a"
+      },
+      "response": {
+        "fields": [],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:0a03b4dd9925c7df9606fc24ee22934bafb478f031efc622c46225e7fd32639f"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:1bdc48108aa798db6c034eb7d5de64b3b9294d2ec8c9441346798866524765ff"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": null,
+      "method": "GET",
+      "transport": "document",
+      "request": {
+        "fields": [],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:7f8d2d5d88b06a8ee004f0b64ba7e3e8c1df2cc6a847db755bd97f508347a32a"
+      },
+      "response": {
+        "fields": [],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:0a03b4dd9925c7df9606fc24ee22934bafb478f031efc622c46225e7fd32639f"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:a214d3e7b0b3a01a2f2830563a737064ebac7805e649d8caf3740fdcb893f193"
+    },
+    {
+      "endpointPath": "/transform.php",
+      "functionName": null,
+      "method": "GET",
+      "transport": "script",
+      "request": {
+        "fields": [],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:7f8d2d5d88b06a8ee004f0b64ba7e3e8c1df2cc6a847db755bd97f508347a32a"
+      },
+      "response": {
+        "fields": [],
+        "excludedSensitiveFieldCount": 0,
+        "dynamicFieldNameCount": 0,
+        "fullFieldSetBinding": "hmac-sha256:0a03b4dd9925c7df9606fc24ee22934bafb478f031efc622c46225e7fd32639f"
+      },
+      "staticValues": [],
+      "sourceBinding": "hmac-sha256:f8160e97ea1431311a1a540900520b1adea49a9fb30c9db5f922dde5d4e7a7ab"
+    }
+  ],
+  "directionTemplates": [
+    {
+      "ordinal": 1,
+      "direction": {
+        "id": "prematch-full-time-asian-handicap-home",
+        "mode": "prematch",
+        "period": "full_time",
+        "marketType": "asian_handicap",
+        "lineVariant": "main",
+        "side": "home"
+      },
+      "previewStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_order_view"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "R"
+        },
+        {
+          "field": "chose_team",
+          "value": "H"
+        }
+      ],
+      "submitStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_bet"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "R"
+        },
+        {
+          "field": "rtype",
+          "value": "RH"
+        },
+        {
+          "field": "isRB",
+          "value": "N"
+        },
+        {
+          "field": "chose_team",
+          "value": "H"
+        },
+        {
+          "field": "f",
+          "value": "1R"
+        }
+      ],
+      "sourceBinding": "hmac-sha256:eb6d9eff2551932aa82593f5a0ef928008afc6b365de3256ea3f97e5cd51ec7a"
+    },
+    {
+      "ordinal": 2,
+      "direction": {
+        "id": "prematch-full-time-asian-handicap-away",
+        "mode": "prematch",
+        "period": "full_time",
+        "marketType": "asian_handicap",
+        "lineVariant": "main",
+        "side": "away"
+      },
+      "previewStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_order_view"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "R"
+        },
+        {
+          "field": "chose_team",
+          "value": "C"
+        }
+      ],
+      "submitStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_bet"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "R"
+        },
+        {
+          "field": "rtype",
+          "value": "RC"
+        },
+        {
+          "field": "isRB",
+          "value": "N"
+        },
+        {
+          "field": "chose_team",
+          "value": "C"
+        },
+        {
+          "field": "f",
+          "value": "1R"
+        }
+      ],
+      "sourceBinding": "hmac-sha256:33755a5d8e1c8f55c1db48daaa8c43a9b5892ce7d25a50bcaee06e74b22726a4"
+    },
+    {
+      "ordinal": 3,
+      "direction": {
+        "id": "prematch-full-time-total-over",
+        "mode": "prematch",
+        "period": "full_time",
+        "marketType": "total",
+        "lineVariant": "main",
+        "side": "over"
+      },
+      "previewStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_order_view"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "OU"
+        },
+        {
+          "field": "chose_team",
+          "value": "C"
+        }
+      ],
+      "submitStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_bet"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "OU"
+        },
+        {
+          "field": "rtype",
+          "value": "OUC"
+        },
+        {
+          "field": "isRB",
+          "value": "N"
+        },
+        {
+          "field": "chose_team",
+          "value": "C"
+        },
+        {
+          "field": "f",
+          "value": "1R"
+        }
+      ],
+      "sourceBinding": "hmac-sha256:6f56f4f8f675b6808675c40512d0e4bc3aadb65594969acb9ec601288052f117"
+    },
+    {
+      "ordinal": 4,
+      "direction": {
+        "id": "prematch-full-time-total-under",
+        "mode": "prematch",
+        "period": "full_time",
+        "marketType": "total",
+        "lineVariant": "main",
+        "side": "under"
+      },
+      "previewStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_order_view"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "OU"
+        },
+        {
+          "field": "chose_team",
+          "value": "H"
+        }
+      ],
+      "submitStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_bet"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "OU"
+        },
+        {
+          "field": "rtype",
+          "value": "OUH"
+        },
+        {
+          "field": "isRB",
+          "value": "N"
+        },
+        {
+          "field": "chose_team",
+          "value": "H"
+        },
+        {
+          "field": "f",
+          "value": "1R"
+        }
+      ],
+      "sourceBinding": "hmac-sha256:72a7762d3c7edb0decded6d269b395fb15f7fed561070a23daed2e91e6ef805e"
+    },
+    {
+      "ordinal": 5,
+      "direction": {
+        "id": "live-full-time-asian-handicap-home",
+        "mode": "live",
+        "period": "full_time",
+        "marketType": "asian_handicap",
+        "lineVariant": "main",
+        "side": "home"
+      },
+      "previewStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_order_view"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "RE"
+        },
+        {
+          "field": "chose_team",
+          "value": "H"
+        }
+      ],
+      "submitStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_bet"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "RE"
+        },
+        {
+          "field": "rtype",
+          "value": "REH"
+        },
+        {
+          "field": "isRB",
+          "value": "Y"
+        },
+        {
+          "field": "chose_team",
+          "value": "H"
+        },
+        {
+          "field": "f",
+          "value": "1R"
+        }
+      ],
+      "sourceBinding": "hmac-sha256:32379e0c94101043c5c8221647f950c086c68ed8958d056b83c3193a11ce1467"
+    },
+    {
+      "ordinal": 6,
+      "direction": {
+        "id": "live-full-time-asian-handicap-away",
+        "mode": "live",
+        "period": "full_time",
+        "marketType": "asian_handicap",
+        "lineVariant": "main",
+        "side": "away"
+      },
+      "previewStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_order_view"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "RE"
+        },
+        {
+          "field": "chose_team",
+          "value": "C"
+        }
+      ],
+      "submitStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_bet"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "RE"
+        },
+        {
+          "field": "rtype",
+          "value": "REC"
+        },
+        {
+          "field": "isRB",
+          "value": "Y"
+        },
+        {
+          "field": "chose_team",
+          "value": "C"
+        },
+        {
+          "field": "f",
+          "value": "1R"
+        }
+      ],
+      "sourceBinding": "hmac-sha256:515324e818e07de01993fb1e29566df4758f28a34dc5c29a632b871ace054f01"
+    },
+    {
+      "ordinal": 7,
+      "direction": {
+        "id": "live-full-time-total-over",
+        "mode": "live",
+        "period": "full_time",
+        "marketType": "total",
+        "lineVariant": "main",
+        "side": "over"
+      },
+      "previewStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_order_view"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "ROU"
+        },
+        {
+          "field": "chose_team",
+          "value": "C"
+        }
+      ],
+      "submitStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_bet"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "ROU"
+        },
+        {
+          "field": "rtype",
+          "value": "ROUC"
+        },
+        {
+          "field": "isRB",
+          "value": "Y"
+        },
+        {
+          "field": "chose_team",
+          "value": "C"
+        },
+        {
+          "field": "f",
+          "value": "1R"
+        }
+      ],
+      "sourceBinding": "hmac-sha256:e0069f938137d47cfc34862d1aa75d8c62160c9475fb5669aa656bd1cba37f78"
+    },
+    {
+      "ordinal": 8,
+      "direction": {
+        "id": "live-full-time-total-under",
+        "mode": "live",
+        "period": "full_time",
+        "marketType": "total",
+        "lineVariant": "main",
+        "side": "under"
+      },
+      "previewStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_order_view"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "ROU"
+        },
+        {
+          "field": "chose_team",
+          "value": "H"
+        }
+      ],
+      "submitStaticValues": [
+        {
+          "field": "p",
+          "value": "FT_bet"
+        },
+        {
+          "field": "gtype",
+          "value": "FT"
+        },
+        {
+          "field": "wtype",
+          "value": "ROU"
+        },
+        {
+          "field": "rtype",
+          "value": "ROUH"
+        },
+        {
+          "field": "isRB",
+          "value": "Y"
+        },
+        {
+          "field": "chose_team",
+          "value": "H"
+        },
+        {
+          "field": "f",
+          "value": "1R"
+        }
+      ],
+      "sourceBinding": "hmac-sha256:e93323217fbb6e612d7d790b4f6d8d56d0bcc1fea7db04d35188363c3cd0ea35"
+    }
+  ],
+  "evidenceDigest": "sha256:94ef6d685b2efe80b831b9e98969e50bcfd8f3504b524d31123c7b78c592b6a5"
+}

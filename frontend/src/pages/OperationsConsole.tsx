@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { api } from '../services/api'
 import type { OperationsSummary, RuntimeCleanupPreview } from '../types'
+import BrowserBettingPanel from '../components/BrowserBettingPanel'
 
 const runtimeLabels: Record<string, string> = {
   off: '已关闭', armed_waiting: '等待安全预检', running: '运行中', blocked: '已阻断', stopping: '停止中',
@@ -44,6 +45,27 @@ function sizeText(bytes: number) {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
+function cleanupErrorText(error: unknown, action: 'preview' | 'run') {
+  const code = error instanceof Error ? error.message : ''
+  const messages: Record<string, string> = {
+    'watcher-active-unmanaged': '监控由其他程序启动。请先运行“停止程序”，再从运行控制台启动监控后重试。',
+    'runtime-cleanup-watcher-unmanaged': '监控由其他程序启动。请先运行“停止程序”，再从运行控制台启动监控后重试。',
+    'watcher-stop-unsafe': '监控进程未能安全停止。请运行“停止程序”，确认 Watcher 已停止后重试。',
+    'runtime-cleanup-watcher-stop-unsafe': '监控进程未能安全停止。请运行“停止程序”，确认 Watcher 已停止后重试。',
+    'betting-worker-active': '投注 Worker 仍在运行。请先关闭真实投注并停止 Worker 后重试。',
+    'runtime-cleanup-betting-stop-unsafe': '投注 Worker 未能安全停止。真实投注保持关闭，请重启程序后重试。',
+    'browser-profile-active': '登录浏览器仍在使用中。请先关闭登录窗口并结束登录操作后重试。',
+    'watcher-restart-unhealthy': '运行数据已重置，但监控未恢复。请点击“启动监控”，确认 Watcher 在线后再开始测试。',
+    'runtime-cleanup-watcher-restart-unhealthy': '运行数据已重置，但监控未恢复。请点击“启动监控”，确认 Watcher 在线后再开始测试。',
+    'runtime-cleanup-files-busy': '缓存文件仍被旧程序占用。请先运行“停止程序”，再重新启动后重试。',
+    'runtime-cleanup-partial': '清理过程中发生错误，部分数据可能已经删除。请刷新预览并检查运行控制台。',
+  }
+  if (messages[code]) return messages[code]
+  return action === 'preview'
+    ? '无法读取重置预览，请刷新页面后重试。'
+    : '重置未完整确认；部分文件或记录可能已清理，请刷新状态后再重试。'
+}
+
 function readinessText(item: OperationsSummary['readiness'][keyof OperationsSummary['readiness']] | undefined) {
   if (!item) return '正在读取状态'
   if (item.ready) return '已就绪'
@@ -68,6 +90,7 @@ export default function OperationsConsole() {
   const [receivedAt, setReceivedAt] = useState(0)
   const [cleanup, setCleanup] = useState<RuntimeCleanupPreview | null>(null)
   const [cleanupPending, setCleanupPending] = useState(false)
+  const [cleanupError, setCleanupError] = useState('')
   const [clock, setClock] = useState(() => Date.now())
   const refreshRef = useRef<(force?: boolean) => Promise<void>>(async () => undefined)
 
@@ -77,7 +100,10 @@ export default function OperationsConsole() {
   }, [])
 
   useEffect(() => {
-    void api.getRuntimeCleanupPreview().then((response) => setCleanup(response.item)).catch(() => undefined)
+    void api.getRuntimeCleanupPreview().then((response) => {
+      setCleanup(response.item)
+      setCleanupError('')
+    }).catch((error: unknown) => setCleanupError(cleanupErrorText(error, 'preview')))
   }, [])
 
   useEffect(() => {
@@ -131,8 +157,13 @@ export default function OperationsConsole() {
     if (!data || data.freshness.state !== 'fresh' || data.freshness.ageMs === null) return true
     return data.freshness.ageMs + Math.max(0, clock - receivedAt) > data.freshness.staleAfterMs
   }, [clock, data, receivedAt])
+  const browserCampaign = data?.browserBetting?.campaign
+  const browserCampaignUnknownCount = browserCampaign?.unknownCount ?? 0
+  const hasBrowserCampaignRisk = Boolean(browserCampaign
+    && (browserCampaign.state === 'failed' || browserCampaignUnknownCount > 0))
   const hasRisk = Boolean(data && (
-    data.batches.unknownAmountMinor > 0 || data.accounts.unknown > 0 || data.reconciliation.open > 0 || data.notifications.backlog > 0
+    data.batches.unknownAmountMinor > 0 || data.accounts.unknown > 0 || data.reconciliation.open > 0
+    || data.notifications.backlog > 0 || hasBrowserCampaignRisk
   ))
   const verifiedRuleCards = safeRuleCards(data?.ruleCards)
   const ruleCards = verifiedRuleCards || emptyRuleCards
@@ -172,13 +203,16 @@ export default function OperationsConsole() {
   async function cleanupRuntimeData() {
     if (cleanupPending) return
     setCleanupPending(true)
+    setCleanupError('')
     try {
       const response = await api.runRuntimeCleanup()
       setCleanup({ ...response.item, bytes: 0, files: 0, records: 0, categories: {} })
       message.success(response.item.restartedWatcher ? '每日数据已重置，监控已自动启动' : '每日运行数据已完全重置')
       await refreshRef.current(true)
-    } catch {
-      message.error('缓存清理失败，程序数据未被强制删除')
+    } catch (error: unknown) {
+      const detail = cleanupErrorText(error, 'run')
+      setCleanupError(detail)
+      message.error(detail)
     } finally {
       setCleanupPending(false)
     }
@@ -243,15 +277,16 @@ export default function OperationsConsole() {
             <strong>{realRequested ? '真实投注已请求运行' : '真实投注总开关已关闭'}</strong>
             <p>{startSafe || realRequested ? '账号启用只代表可分配，最终下单仍受规则、总开关和安全预检控制。' : '请按上方提示完成缺失条件。'}</p>
           </div>
-          {realRequested ? (
-            <Popconfirm title="停止真实投注？" description="新订单会停止，已发出的订单仍会继续对账。" okText="确认停止" cancelText="取消" onConfirm={() => runtimeAction('stop')}>
-              <Button danger loading={pending === 'real-stop'}>停止真实投注</Button>
-            </Popconfirm>
-          ) : (
+          <div className="real-control-actions">
+          {!realRequested ? (
             <Popconfirm title="开启真实投注？" description="只有实时安全条件全部满足后才会执行。" okText="确认开启" cancelText="取消" onConfirm={() => runtimeAction('start')}>
               <Button type="primary" disabled={!startSafe} loading={pending === 'real-start'}>开启真实投注</Button>
             </Popconfirm>
-          )}
+          ) : null}
+          <Popconfirm title="停止真实投注？" description="新订单会停止，已发出的订单仍会继续对账。" okText="确认停止" cancelText="取消" onConfirm={() => runtimeAction('stop')}>
+            <Button danger loading={pending === 'real-stop'}>停止真实投注</Button>
+          </Popconfirm>
+          </div>
         </div>
       </section>
 
@@ -270,9 +305,15 @@ export default function OperationsConsole() {
       </section> : null}
 
       {hasRisk ? <section className="risk-ledger compact-risk" aria-label="优先风险">
-        <div className="risk-lead" data-testid="unknown-risk"><p>最高优先级</p><h2>待确认投注</h2><strong>{data?.batches.unknownAmountMinor ?? 0} CNY</strong><span>{data?.accounts.unknown ?? 0} 个账户仍被 unknown 锁定，不会自动重投。</span></div>
+        <div className="risk-lead" data-testid="unknown-risk">
+          <p>最高优先级</p><h2>待确认投注</h2><strong>{data?.batches.unknownAmountMinor ?? 0} CNY</strong>
+          <span>{data?.accounts.unknown ?? 0} 个账户仍被 unknown 锁定，不会自动重投。</span>
+          {hasBrowserCampaignRisk ? <span>验收 unknown {browserCampaignUnknownCount} · terminal unknown，等待人工恢复。</span> : null}
+        </div>
         <div className="risk-queue" data-testid="reconciliation-risk"><div><span>对账队列</span><strong>待处理 {data?.reconciliation.due ?? 0}</strong></div><dl><div><dt>人工复核</dt><dd>{data?.reconciliation.manualReview ?? 0}</dd></div><div><dt>死信</dt><dd>{data?.reconciliation.deadLetter ?? 0}</dd></div><div><dt>全部未关闭</dt><dd>{data?.reconciliation.open ?? 0}</dd></div><div><dt>通知积压</dt><dd>{data?.notifications.backlog ?? 0}</dd></div></dl></div>
       </section> : <section className="risk-clear" aria-label="风险状态"><span className="freshness-dot safe" /><div><strong>当前无待处理风险</strong><p>没有 unknown 锁、对账任务或通知积压。</p></div></section>}
+
+      {data?.browserBetting ? <BrowserBettingPanel summary={data.browserBetting} /> : null}
 
       <section className="operations-ledger clean-ledger" aria-label="运行摘要">
         <div className="ledger-section"><h2>规则</h2><dl><div><dt>规则总数</dt><dd>{data?.rules.total ?? 0}</dd></div><div><dt>监控开启</dt><dd>{data?.rules.monitorEnabled ?? 0}</dd></div><div><dt>真实允许</dt><dd>{data?.rules.realEnabled ?? 0}</dd></div><div><dt>24h 命中</dt><dd>{data?.rules.recentHitCount ?? 0}</dd></div></dl></div>
@@ -281,12 +322,13 @@ export default function OperationsConsole() {
       </section>
 
       <section className="recent-operations" aria-label="最近投注批次">
-        <div className="section-header"><div><h2>最近投注批次</h2><p>显示最近 8 条安全运行上下文。</p></div><Tag>{data ? `服务时间 ${timeText(data.serverTime)}` : '读取中'}</Tag></div>
-        <Spin spinning={loading && !data}><div className="operations-table" role="table" aria-label="最近投注批次"><div className="operations-row operations-table-head" role="row"><span role="columnheader">批次 / 时间</span><span role="columnheader">状态</span><span role="columnheader">已接受</span><span role="columnheader">待确认</span></div>{data?.recentBatches.length ? data.recentBatches.map((batch) => <div className="operations-row" role="row" key={batch.batchId}><span role="cell"><b>{batch.batchId}</b><small>{timeText(batch.createdAt)}</small></span><span role="cell">{batchLabels[batch.status] || batch.status}</span><span role="cell">已接受 {batch.acceptedAmountMinor} CNY</span><span role="cell" className={batch.unknownAmountMinor ? 'unknown-value' : ''}>待确认 {batch.unknownAmountMinor} CNY</span></div>) : <div className="operations-empty" role="row"><span role="cell">暂无投注批次</span></div>}</div></Spin>
+        <div className="section-header"><div><h2>最近投注批次</h2><p>显示最近 8 条安全运行上下文。</p></div><div><a href="/betting-history">查看全部投注历史</a><Tag>{data ? `服务时间 ${timeText(data.serverTime)}` : '读取中'}</Tag></div></div>
+        <Spin spinning={loading && !data}><div className="operations-table" role="table" aria-label="最近投注批次"><div className="operations-row operations-table-head" role="row"><span role="columnheader">目标 / 时间</span><span role="columnheader">状态</span><span role="columnheader">已接受</span><span role="columnheader">待确认</span></div>{data?.recentBatches.length ? data.recentBatches.map((batch) => <div className="operations-row" role="row" key={batch.batchId}><span role="cell"><b>真实投注目标</b><small>{timeText(batch.createdAt)}</small></span><span role="cell">{batchLabels[batch.status] || batch.status}</span><span role="cell">已接受 {batch.acceptedAmountMinor} CNY</span><span role="cell" className={batch.unknownAmountMinor ? 'unknown-value' : ''}>待确认 {batch.unknownAmountMinor} CNY</span></div>) : <div className="operations-empty" role="row"><span role="cell">暂无投注批次</span></div>}</div></Spin>
       </section>
 
       <section className="maintenance-panel" aria-label="每日开工重置">
         <div className="section-header"><div><p className="eyebrow">维护工具</p><h2>每日开工完全重置</h2><p>清除点击前生成的赔率、监控、候选、投注账本、幂等锁、pending/unknown、对账、日志、索引和普通缓存。完成后自动启动监控，投注账号保持暂停，真实投注保持关闭。</p></div><Popconfirm title="完全重置点击前运行数据？" description="此操作不能撤销；账号凭据、登录会话、规则和协议证据会保留。" okText="确认完全重置" cancelText="取消" onConfirm={cleanupRuntimeData}><Button danger loading={cleanupPending} disabled={!cleanup || (cleanup.bytes === 0 && cleanup.records === 0)}>每日开工完全重置</Button></Popconfirm></div>
+        {cleanupError ? <Alert type="error" showIcon message={cleanupError} /> : null}
         <Alert type={cleanup?.bytes ? 'info' : 'success'} showIcon message={cleanup && (cleanup.bytes || cleanup.records) ? `可清理 ${sizeText(cleanup.bytes)} / ${cleanup.files} 个文件${cleanup.records ? ` / ${cleanup.records} 条历史记录` : ''}` : '当前没有可清理缓存'} />
       </section>
     </div>

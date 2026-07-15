@@ -1,5 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 import * as captureModule from '../scripts/crown-betting-protocol-capture.mjs'
 
@@ -12,9 +15,11 @@ import {
   EIGHT_DIRECTION_CAPTURE_MANIFEST,
   assertCaptureSafety,
   captureContextOptions,
+  createFreshCapturePage,
   installContextCapture,
   installRecorder,
   parseCaptureArgs,
+  prepareCapturePage,
   resolveMarketAvailability,
   runSequentialCaptureContexts,
 } from '../scripts/crown-betting-protocol-capture.mjs'
@@ -311,8 +316,75 @@ test('default context capture blocks exact FT_bet even when monitor text conflic
   assert.equal(records.at(-1).blockReason, 'real-submit-disabled')
 })
 
-test('capture browser context disables service workers', () => {
-  assert.equal(captureContextOptions({ channel: 'msedge', headless: false }).serviceWorkers, 'block')
+test('eight-direction capture starts abort and page close together, then records only after both succeed', async () => {
+  const records = []
+  const calls = []
+  let routeHandler
+  let releaseAbort
+  const abortReleased = new Promise((resolve) => { releaseAbort = resolve })
+  const page = {
+    async close(options) { calls.push({ type: 'close', options }) },
+  }
+  const context = {
+    on() {},
+    async routeWebSocket() {},
+    async route(_pattern, handler) { routeHandler = handler },
+  }
+  await installContextCapture(context, { append(record) { records.push(record) } }, {
+    scenario: 'eight-direction',
+    allowRealSubmit: false,
+    maxStake: 0,
+  })
+  const handling = routeHandler({
+    request: () => ({
+      method: () => 'POST', url: () => '/transform.php', resourceType: () => 'xhr', headers: () => ({}),
+      postData: () => 'p=FT_bet&golds=50&gid=8878933&gtype=FT',
+      frame: () => ({ page: () => page }),
+    }),
+    async continue() { calls.push({ type: 'continue' }) },
+    async abort(reason) {
+      calls.push({ type: 'abort-start', reason })
+      await abortReleased
+      calls.push({ type: 'abort-done', reason })
+    },
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(calls, [
+    { type: 'abort-start', reason: 'blockedbyclient' },
+    { type: 'close', options: { runBeforeUnload: false } },
+  ])
+  assert.equal(records.some((record) => record.type === 'route-decision'), false)
+  releaseAbort()
+  await handling
+  assert.deepEqual(calls.at(-1), { type: 'abort-done', reason: 'blockedbyclient' })
+  assert.equal(records.at(-1).dispatchCount, 0)
+})
+
+test('capture browser context starts offline and disables service workers', () => {
+  const options = captureContextOptions({ channel: 'msedge', headless: false })
+  assert.equal(options.offline, true)
+  assert.equal(options.serviceWorkers, 'block')
+})
+
+test('capture CDP control is local-only, opt-in, and unavailable for real submit', () => {
+  const defaults = parseCaptureArgs([])
+  assert.equal(defaults.cdpPort, 0)
+  assert.equal(captureContextOptions(defaults).args, undefined)
+
+  const assisted = parseCaptureArgs(['--cdp-port', '9223'])
+  assert.equal(assisted.cdpPort, 9223)
+  assert.deepEqual(captureContextOptions(assisted).args, [
+    '--remote-debugging-address=127.0.0.1',
+    '--remote-debugging-port=9223',
+  ])
+  assert.doesNotThrow(() => assertCaptureSafety(assisted))
+
+  for (const value of ['0', '1023', '65536', '12.5', 'not-a-port']) {
+    assert.throws(() => parseCaptureArgs(['--cdp-port', value]), /cdp-port/i)
+  }
+  assert.throws(() => assertCaptureSafety(parseCaptureArgs([
+    '--cdp-port', '9223', '--allow-real-submit', '--confirm', 'REAL_BET', '--max-stake', '1',
+  ])), /cdp-port.*real submit/i)
 })
 
 test('classifies likely submit request', () => {
@@ -584,6 +656,145 @@ test('recorder covers WebSocket lifecycle on existing and newly-created pages', 
   assert.notEqual(records[0].seq, records[5].seq)
   assert.equal(records[1].payload, 'outbound')
   assert.equal(Buffer.isBuffer(records[2].payload), true)
+})
+
+test('capture page normalization waits for late restored tabs and keeps one fresh page', async () => {
+  const events = []
+  let restoredPages = []
+  const restoredPage = (id) => ({
+    async close(options) {
+      events.push({ type: 'close', id, options })
+      restoredPages = restoredPages.filter((page) => page !== this)
+    },
+  })
+  const stalePages = [restoredPage(1), restoredPage(2)]
+  const lateRestoredPage = restoredPage(3)
+  restoredPages = stalePages
+  const freshPage = { id: 'fresh' }
+  const context = {
+    pages() { return restoredPages },
+    async newPage() {
+      events.push({ type: 'new-page' })
+      return freshPage
+    },
+  }
+
+  const page = await createFreshCapturePage(context, {
+    async waitForStartup() {
+      events.push({ type: 'wait-for-startup' })
+      restoredPages = [...stalePages, lateRestoredPage]
+    },
+  })
+
+  assert.equal(page, freshPage)
+  assert.deepEqual(events, [
+    { type: 'new-page' },
+    { type: 'wait-for-startup' },
+    { type: 'close', id: 1, options: { runBeforeUnload: false } },
+    { type: 'close', id: 2, options: { runBeforeUnload: false } },
+    { type: 'close', id: 3, options: { runBeforeUnload: false } },
+  ])
+})
+
+test('capture blockers are installed before the normalized capture page is created', async () => {
+  const events = []
+  const freshPage = { id: 'fresh' }
+  const context = {
+    pages: () => [],
+    on() {},
+    async routeWebSocket() { events.push('websocket-blocker') },
+    async route() { events.push('http-blocker') },
+    async setOffline(value) { events.push(`offline:${value}`) },
+    async newPage() { events.push('new-page'); return freshPage },
+  }
+
+  const prepared = await prepareCapturePage(context, { append() {} }, {
+    allowRealSubmit: false,
+    blockSubmit: true,
+  }, {}, {
+    async waitForStartup() { events.push('startup-settle') },
+  })
+
+  assert.equal(prepared.page, freshPage)
+  assert.deepEqual(events, [
+    'websocket-blocker', 'http-blocker', 'offline:false', 'new-page', 'startup-settle',
+  ])
+})
+
+test('capture profile snapshot removes every startup session without changing reusable profile data', () => {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-capture-profile-source-'))
+  const snapshotTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-capture-profile-temp-'))
+  const profile = path.join(source, 'Default')
+  fs.mkdirSync(path.join(profile, 'Sessions'), { recursive: true })
+  fs.mkdirSync(path.join(profile, 'Service Worker'), { recursive: true })
+  fs.writeFileSync(path.join(profile, 'Sessions', 'Tabs_test'), 'restored-tab')
+  fs.writeFileSync(path.join(profile, 'Service Worker', 'Database'), 'reusable-source-service-worker')
+  fs.writeFileSync(path.join(profile, 'Login Data'), 'reusable-profile-data')
+  fs.writeFileSync(path.join(profile, 'Preferences'), JSON.stringify({
+    session: { restore_on_startup: 1, startup_urls: ['https://unsafe.invalid'] },
+    profile: { exit_type: 'Crashed', exited_cleanly: false },
+  }))
+
+  const snapshot = captureModule.createCaptureProfileSnapshot(source, { tempDir: snapshotTemp })
+  try {
+    assert.equal(fs.readFileSync(path.join(snapshot.profileDir, 'Default', 'Login Data'), 'utf8'), 'reusable-profile-data')
+    assert.equal(fs.existsSync(path.join(snapshot.profileDir, 'Default', 'Sessions')), false)
+    assert.equal(fs.existsSync(path.join(snapshot.profileDir, 'Default', 'Service Worker')), false)
+    assert.equal(fs.readFileSync(path.join(profile, 'Service Worker', 'Database'), 'utf8'), 'reusable-source-service-worker')
+    const preferences = JSON.parse(fs.readFileSync(path.join(snapshot.profileDir, 'Default', 'Preferences'), 'utf8'))
+    assert.equal(preferences.session.restore_on_startup, 5)
+    assert.equal(Object.hasOwn(preferences.session, 'startup_urls'), false)
+    assert.equal(preferences.profile.exit_type, 'Normal')
+    assert.equal(preferences.profile.exited_cleanly, true)
+
+    fs.mkdirSync(path.join(snapshot.profileDir, 'Default', 'Sessions'), { recursive: true })
+    snapshot.prepare()
+    assert.equal(fs.existsSync(path.join(snapshot.profileDir, 'Default', 'Sessions')), false)
+  } finally {
+    snapshot.dispose()
+    fs.rmSync(source, { recursive: true, force: true })
+    fs.rmSync(snapshotTemp, { recursive: true, force: true })
+  }
+  assert.equal(fs.existsSync(snapshot.profileDir), false)
+})
+
+test('capture profile cleanup removes only marked snapshots whose owner process is gone', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crown-capture-profile-cleanup-'))
+  const markerName = '.crown-capture-profile-owner.json'
+  const createCandidate = (name, pid, { marked = true } = {}) => {
+    const root = path.join(tempDir, `crown-capture-profile-${name}`)
+    fs.mkdirSync(path.join(root, 'profile'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'profile', 'Cookies'), 'private-session-data')
+    if (marked) fs.writeFileSync(path.join(root, markerName), JSON.stringify({
+      schemaVersion: 'crown-capture-profile-owner-v1', pid, createdAt: '2026-07-14T00:00:00.000Z',
+    }))
+    return root
+  }
+  const stale = createCandidate('stale', 111)
+  const active = createCandidate('active', 222)
+  const unmarked = createCandidate('unmarked', 333, { marked: false })
+
+  try {
+    const result = captureModule.cleanupStaleCaptureProfileSnapshots({
+      tempDir,
+      isProcessAlive: (pid) => pid === 222,
+    })
+    assert.deepEqual(result, { removed: 1 })
+    assert.equal(fs.existsSync(stale), false)
+    assert.equal(fs.existsSync(active), true)
+    assert.equal(fs.existsSync(unmarked), true)
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('capture rejects any restored startup page before navigation', () => {
+  assert.doesNotThrow(() => captureModule.assertCaptureStartupSafe({
+    pages: () => [{ url: () => 'about:blank' }],
+  }))
+  assert.throws(() => captureModule.assertCaptureStartupSafe({
+    pages: () => [{ url: () => 'https://unsafe.invalid/restored' }],
+  }), /capture-profile-startup-page-unsafe/)
 })
 
 test('eight-direction runner creates, flushes, and closes independent contexts sequentially', async () => {

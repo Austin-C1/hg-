@@ -15,6 +15,8 @@ import {
 test('protocol evidence rejects credentials, raw bodies, tickets, and absolute paths', () => {
   const forbidden = [
     { uid: 'secret' }, { cookie: 'secret' }, { password: 'secret' },
+    { username: 'private-user' }, { user: 'private-user' },
+    { account: 'private-account' }, { member: 'private-member' }, { mid: 'private-member-id' },
     { ticket: 'raw-ticket' }, { rawBody: '<secret />' },
     { requestBody: 'uid=secret' }, { responseBody: '<ticket>raw</ticket>' },
     { sessionToken: 'secret' }, { cookieHeader: 'secret' }, { userUid: 'secret' },
@@ -71,15 +73,51 @@ test('redactBody masks nested secret keys but preserves request shape', () => {
   })
 })
 
+test('captured login identity, passcode, and browser fingerprint fields are always masked', () => {
+  const form = redactCapturedBody(
+    'username=PrivateUsername&user=PrivateUser&account=PrivateAccount&member=PrivateMember&mid=PrivateMid&passcode=PrivatePasscode&userAgent=PrivateUserAgent&p=chk_login',
+    { 'content-type': 'application/x-www-form-urlencoded' },
+  )
+  const xml = redactCapturedBody(
+    '<serverresponse><username>PrivateXmlUsername</username><user>PrivateXmlUser</user><account>PrivateXmlAccount</account><member>PrivateXmlMember</member><mid>PrivateXmlMid</mid><passcode>PrivateXmlPasscode</passcode></serverresponse>',
+    { 'content-type': 'application/xml' },
+  )
+
+  for (const secret of [
+    'PrivateUsername', 'PrivateUser', 'PrivateAccount', 'PrivateMember', 'PrivateMid',
+    'PrivatePasscode', 'PrivateUserAgent',
+  ]) assert.equal(JSON.stringify(form).includes(secret), false)
+  for (const secret of [
+    'PrivateXmlUsername', 'PrivateXmlUser', 'PrivateXmlAccount', 'PrivateXmlMember',
+    'PrivateXmlMid', 'PrivateXmlPasscode',
+  ]) assert.equal(String(xml).includes(secret), false)
+})
+
 test('redactUrl masks secret query values', () => {
-  const result = redactUrl('https://example.test/order?uid=abc&gid=123&token=secret')
-  assert.equal(result, 'https://example.test/order?uid=%5Bmasked%3A3%5D&gid=123&token=%5Bmasked%3A6%5D')
+  const result = redactUrl('https://example.test/order?uid=abc&gid=123&token=secret&username=PrivateUsername&account=PrivateAccount&member=PrivateMember&mid=PrivateMid')
+  const parsed = new URL(result)
+  assert.equal(parsed.searchParams.get('gid'), '123')
+  for (const key of ['uid', 'token', 'username', 'account', 'member', 'mid']) {
+    assert.match(parsed.searchParams.get(key), /^\[masked:\d+\]$/)
+  }
+  for (const secret of ['abc', 'secret', 'PrivateUsername', 'PrivateAccount', 'PrivateMember', 'PrivateMid']) {
+    assert.equal(result.includes(secret), false)
+  }
   assert.equal(redactUrl('not a url?uid=secret'), '[invalid-url]')
 })
 
 test('parseBody preserves existing objects and XML response text', () => {
   assert.deepEqual(parseBody({ p: 'FT_bet', gid: '123' }), { p: 'FT_bet', gid: '123' })
   assert.equal(parseBody('<serverresponse><code>560</code></serverresponse>'), '<serverresponse><code>560</code></serverresponse>')
+})
+
+test('captured CSS and JavaScript stay opaque instead of being parsed as form fields', () => {
+  const css = 'body{background:url("/asset?uid=PrivateAssetUser&theme=dark")}'
+  const redacted = redactCapturedBody(css, { 'content-type': 'text/css; charset=utf-8' })
+
+  assert.equal(typeof redacted, 'string')
+  assert.equal(redacted.includes('PrivateAssetUser'), false)
+  assert.match(redacted, /masked/i)
 })
 
 test('redactBody masks ticket ids inside XML response text', () => {

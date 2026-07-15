@@ -3,7 +3,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 
 import { APP_CONTRACT_VERSION, CONTRACT_COMPATIBILITY_EVENT, api, isContractCompatible,
   isDashboardAuthenticationError } from '../services/api'
-import type { AutoBettingRuleCard, RuleCardMutation, TodayBettingLeague } from '../types'
+import type { AutoBettingRuleCard, BrowserBettingSummary, RuleCardMutation, TodayBettingLeague } from '../types'
+import { DirectionSupport, directionLabel } from '../components/BrowserBettingPanel'
 
 const decimalPattern = /^\d+(?:\.\d+)?$/
 const maxSafe = 9007199254740991n
@@ -323,17 +324,19 @@ export default function AutoBetRules() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<AutoBettingRuleCard | null>(null)
   const [contractCompatible, setContractCompatible] = useState<boolean | null>(null)
+  const [browserBetting, setBrowserBetting] = useState<BrowserBettingSummary | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true); setLoadError('')
-    const [cards, security] = await Promise.allSettled([
-      api.getAutoBettingRuleCards(), api.sessionBootstrap(),
+    const [cards, security, operations] = await Promise.allSettled([
+      api.getAutoBettingRuleCards(), api.sessionBootstrap(), api.getOperationsSummary(),
     ])
     if (cards.status === 'fulfilled') setItems(cards.value.items)
     else setLoadError(errorText(cards.reason))
     setContractCompatible(security.status === 'fulfilled'
       && security.value.appContractVersion === APP_CONTRACT_VERSION
       && security.value.schemaVersion === APP_CONTRACT_VERSION)
+    setBrowserBetting(operations.status === 'fulfilled' ? operations.value.item.browserBetting : null)
     setLoading(false)
   }, [])
   useEffect(() => { void load() }, [load])
@@ -385,6 +388,15 @@ export default function AutoBetRules() {
     {contractCompatible === false ? <Alert type="error" showIcon message="Dashboard 已升级，请重启" description="前后端或数据库契约版本不一致，所有新增、编辑和删除操作已阻止。" /> : null}
     {loadError ? <Alert type="error" showIcon message={loadError} action={<Button size="small" onClick={() => void load()}>重新加载</Button>} /> : null}
     {actionError ? <Alert type="error" showIcon closable message={actionError} onClose={() => setActionError('')} /> : null}
+    {browserBetting ? <section className="rule-browser-support" aria-label="浏览器方向支持">
+      <div className="browser-layer-heading"><div><h2>浏览器方向支持</h2><p>能力由后端协议证据计算，只读展示。</p></div><span>{browserBetting.directions.length} / 8</span></div>
+      <ul className="rule-browser-direction-list">
+        {browserBetting.directions.map((direction) => <li key={direction.key}>
+          <strong>{directionLabel(direction.key)}</strong>
+          <DirectionSupport direction={direction} />
+        </li>)}
+      </ul>
+    </section> : null}
     {loading ? <div className="rule-loading" aria-label="正在加载投注规则"><Spin /></div> : null}
     {!loading && !loadError && !items.length ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无投注规则"><Button disabled={contractCompatible !== true} type="primary" onClick={openCreate}>新增投注规则</Button></Empty> : null}
     {!loading && items.length ? <div className="rule-card-grid">{items.map((card) => <RuleSummaryCard key={card.cardId} card={card} onEdit={openEdit} onDelete={remove} readOnly={contractCompatible !== true} />)}</div> : null}

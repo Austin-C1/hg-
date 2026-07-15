@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
@@ -59,6 +60,8 @@ export function parseCaptureArgs(argv) {
     scenario: 'discover',
     maxStake: 0,
     confirm: '',
+    cdpPort: 0,
+    cdpPortExplicit: false,
   }
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -79,10 +82,19 @@ export function parseCaptureArgs(argv) {
     }
     else if (arg === '--max-stake') args.maxStake = Number(next() || 0)
     else if (arg === '--confirm') args.confirm = next()
+    else if (arg === '--cdp-port') {
+      args.cdpPort = Number(next())
+      args.cdpPortExplicit = true
+    }
     else throw captureError('unknown-argument', `Unknown argument: ${arg}`)
   }
   if (!CAPTURE_SCENARIOS.has(args.scenario)) {
     throw captureError('invalid-scenario', `invalid --scenario: ${args.scenario}`)
+  }
+  if (args.cdpPortExplicit && (
+    !Number.isSafeInteger(args.cdpPort) || args.cdpPort < 1024 || args.cdpPort > 65_535
+  )) {
+    throw captureError('invalid-cdp-port', '--cdp-port must be an integer from 1024 through 65535')
   }
   return args
 }
@@ -98,6 +110,7 @@ export function assertCaptureSafety(args) {
     throw new Error('eight-direction requires --block-submit')
   }
   if (args.allowRealSubmit) {
+    if (args.cdpPort > 0) throw new Error('--cdp-port cannot be combined with real Submit')
     if (args.confirm !== 'REAL_BET') throw new Error('--allow-real-submit requires --confirm REAL_BET')
     if (!Number.isSafeInteger(args.maxStake) || args.maxStake <= 0) throw new Error('--allow-real-submit requires an integer --max-stake > 0')
     if (args.maxStake > 50) throw new Error('First protocol submit max stake must be <= 50')
@@ -370,14 +383,31 @@ async function installSubmitBlocker(target, controller, args) {
 
     const blocked = Boolean(blockReason) || (args.blockSubmit !== false && classification.stage === 'submit' && !args.allowRealSubmit)
     if (!blockReason && blocked) blockReason = 'real-submit-disabled'
-    controller.recordRouteDecision(request, {
+    const routeDecision = {
       decision: blocked ? 'blocked' : 'continued',
       ...(blockReason ? { blockReason } : {}),
       dispatchCount: blocked ? 0 : 1,
       classification,
-    })
-    if (blocked) await route.abort('blockedbyclient')
-    else await route.continue()
+    }
+    if (blocked) {
+      let page = null
+      if (exactFtBet && !args.allowRealSubmit && args.scenario === 'eight-direction') {
+        page = typeof request.frame === 'function' ? request.frame()?.page?.() : null
+        if (!page || typeof page.close !== 'function') throw new Error('blocked-submit-page-unavailable')
+      }
+      if (page) {
+        await Promise.all([
+          route.abort('blockedbyclient'),
+          page.close({ runBeforeUnload: false }),
+        ])
+      } else {
+        await route.abort('blockedbyclient')
+      }
+      controller.recordRouteDecision(request, routeDecision)
+    } else {
+      await route.continue()
+      controller.recordRouteDecision(request, routeDecision)
+    }
   })
 }
 
@@ -395,6 +425,7 @@ export async function installWebSocketSubmitBlocker(target, controller, args) {
     const urlDecision = shouldBlockProtocolRequest(urlRecord)
     const urlClassification = urlDecision.classification
     if (urlDecision.block) {
+      await socketRoute.close({ code: 1008, reason: 'blocked-submit' })
       controller.recordWebSocketRouteDecision(socketRoute, {
         url,
         source: 'url',
@@ -403,7 +434,6 @@ export async function installWebSocketSubmitBlocker(target, controller, args) {
         dispatchCount: 0,
         classification: urlClassification,
       })
-      await socketRoute.close({ code: 1008, reason: 'blocked-submit' })
       return
     }
 
@@ -443,7 +473,196 @@ export function captureContextOptions(args) {
     channel: args.channel,
     headless: args.headless,
     viewport: { width: 1440, height: 950 },
+    offline: true,
     serviceWorkers: 'block',
+    ...(args.cdpPort > 0 ? {
+      args: [
+        '--remote-debugging-address=127.0.0.1',
+        `--remote-debugging-port=${args.cdpPort}`,
+      ],
+    } : {}),
+  }
+}
+
+const CAPTURE_PROFILE_SNAPSHOT_PREFIX = 'crown-capture-profile-'
+const CAPTURE_PROFILE_OWNER_MARKER = '.crown-capture-profile-owner.json'
+const CAPTURE_PROFILE_OWNER_SCHEMA = 'crown-capture-profile-owner-v1'
+const LEGACY_SESSION_FILES = new Set(['Current Session', 'Current Tabs', 'Last Session', 'Last Tabs'])
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return error?.code === 'EPERM'
+  }
+}
+
+function captureProfileOwner(root) {
+  try {
+    const owner = JSON.parse(fs.readFileSync(path.join(root, CAPTURE_PROFILE_OWNER_MARKER), 'utf8'))
+    if (owner?.schemaVersion !== CAPTURE_PROFILE_OWNER_SCHEMA
+      || !Number.isSafeInteger(owner.pid)
+      || owner.pid <= 0
+      || typeof owner.createdAt !== 'string'
+      || !Number.isFinite(Date.parse(owner.createdAt))) return null
+    return owner
+  } catch {
+    return null
+  }
+}
+
+export function cleanupStaleCaptureProfileSnapshots({
+  tempDir = os.tmpdir(),
+  isProcessAlive = processIsAlive,
+} = {}) {
+  const root = path.resolve(tempDir)
+  let removed = 0
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()
+      || !entry.name.startsWith(CAPTURE_PROFILE_SNAPSHOT_PREFIX)) continue
+    const candidate = path.resolve(root, entry.name)
+    if (path.dirname(candidate) !== root) continue
+    const owner = captureProfileOwner(candidate)
+    if (!owner) continue
+    let alive = true
+    try { alive = isProcessAlive(owner.pid) } catch { alive = true }
+    if (alive) continue
+    fs.rmSync(candidate, { recursive: true, force: true })
+    removed += 1
+  }
+  return { removed }
+}
+
+function sanitizeCaptureProfileStartup(profileDir) {
+  for (const entry of fs.readdirSync(profileDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const browserProfileDir = path.join(profileDir, entry.name)
+    const preferencesPath = path.join(browserProfileDir, 'Preferences')
+    if (!fs.existsSync(preferencesPath)) continue
+    fs.rmSync(path.join(browserProfileDir, 'Sessions'), { recursive: true, force: true })
+    fs.rmSync(path.join(browserProfileDir, 'Service Worker'), { recursive: true, force: true })
+    for (const name of LEGACY_SESSION_FILES) fs.rmSync(path.join(browserProfileDir, name), { force: true })
+    let preferences
+    try {
+      preferences = JSON.parse(fs.readFileSync(preferencesPath, 'utf8'))
+    } catch {
+      throw new Error('capture-profile-preferences-invalid')
+    }
+    if (!preferences.session || typeof preferences.session !== 'object' || Array.isArray(preferences.session)) {
+      preferences.session = {}
+    }
+    preferences.session.restore_on_startup = 5
+    delete preferences.session.startup_urls
+    if (!preferences.profile || typeof preferences.profile !== 'object' || Array.isArray(preferences.profile)) {
+      preferences.profile = {}
+    }
+    preferences.profile.exit_type = 'Normal'
+    preferences.profile.exited_cleanly = true
+    fs.writeFileSync(preferencesPath, JSON.stringify(preferences))
+  }
+}
+
+export function createCaptureProfileSnapshot(sourceProfile, {
+  tempDir = os.tmpdir(),
+  isProcessAlive = processIsAlive,
+} = {}) {
+  const source = path.resolve(String(sourceProfile || ''))
+  if (!fs.statSync(source, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error('capture-profile-directory-required')
+  }
+  const tempRoot = path.resolve(tempDir)
+  if (!fs.statSync(tempRoot, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error('capture-profile-temp-directory-required')
+  }
+  cleanupStaleCaptureProfileSnapshots({ tempDir: tempRoot, isProcessAlive })
+  const snapshotRoot = fs.mkdtempSync(path.join(tempRoot, CAPTURE_PROFILE_SNAPSHOT_PREFIX))
+  fs.writeFileSync(path.join(snapshotRoot, CAPTURE_PROFILE_OWNER_MARKER), JSON.stringify({
+    schemaVersion: CAPTURE_PROFILE_OWNER_SCHEMA,
+    pid: process.pid,
+    createdAt: new Date().toISOString(),
+  }), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+  const profileDir = path.join(snapshotRoot, 'profile')
+  let disposed = false
+  const dispose = () => {
+    if (disposed) return
+    const resolvedRoot = path.resolve(snapshotRoot)
+    const owner = captureProfileOwner(resolvedRoot)
+    if (path.dirname(resolvedRoot) !== tempRoot
+      || !path.basename(resolvedRoot).startsWith(CAPTURE_PROFILE_SNAPSHOT_PREFIX)
+      || owner?.pid !== process.pid) {
+      throw new Error('capture-profile-cleanup-refused')
+    }
+    fs.rmSync(resolvedRoot, { recursive: true, force: true })
+    disposed = true
+  }
+  const prepare = () => {
+    if (disposed) throw new Error('capture-profile-snapshot-disposed')
+    sanitizeCaptureProfileStartup(profileDir)
+  }
+  try {
+    fs.cpSync(source, profileDir, {
+      recursive: true,
+      filter(current) {
+        const relative = path.relative(source, current)
+        const parts = relative.split(path.sep).filter(Boolean)
+        const name = path.basename(current)
+        return !parts.some((part) => part.toLowerCase() === 'sessions')
+          && !parts.some((part) => part.toLowerCase() === 'service worker')
+          && !LEGACY_SESSION_FILES.has(name)
+          && !name.startsWith('Singleton')
+          && name !== 'DevToolsActivePort'
+      },
+    })
+    prepare()
+    return Object.freeze({ profileDir, prepare, dispose })
+  } catch (error) {
+    dispose()
+    throw error
+  }
+}
+
+export function assertCaptureStartupSafe(context) {
+  if (!context || typeof context.pages !== 'function') throw new Error('capture-context-page-api-required')
+  if (context.pages().some((page) => page?.url?.() !== 'about:blank')) {
+    throw new Error('capture-profile-startup-page-unsafe')
+  }
+}
+
+export async function createFreshCapturePage(context, { waitForStartup } = {}) {
+  if (!context || typeof context.pages !== 'function' || typeof context.newPage !== 'function') {
+    throw new Error('capture-context-page-api-required')
+  }
+  const initialPages = [...context.pages()]
+  const page = await context.newPage()
+  if (!page) throw new Error('fresh-capture-page-required')
+  const settle = typeof waitForStartup === 'function'
+    ? waitForStartup
+    : () => new Promise((resolve) => setTimeout(resolve, 3_000))
+  await settle()
+  const stalePages = new Set([...initialPages, ...context.pages()])
+  stalePages.delete(page)
+  for (const stalePage of stalePages) {
+    if (!stalePage || stalePage === page) continue
+    await stalePage.close({ runBeforeUnload: false })
+  }
+  if (context.pages().some((candidate) => candidate !== page)) {
+    throw new Error('capture-page-normalization-failed')
+  }
+  return page
+}
+
+export async function prepareCapturePage(context, store, args, metadata = {}, pageOptions = {}) {
+  const controller = await installContextCapture(context, store, args, metadata)
+  try {
+    assertCaptureStartupSafe(context)
+    if (typeof context.setOffline !== 'function') throw new Error('capture-context-offline-api-required')
+    await context.setOffline(false)
+    const page = await createFreshCapturePage(context, pageOptions)
+    return { page, controller }
+  } catch (error) {
+    await controller.flush()
+    throw error
   }
 }
 
@@ -498,13 +717,18 @@ async function manualDiscoverFlow(page, rl, args) {
 async function runDiscover(args, rl, hmacKey) {
   const captureRunId = uniqueRunId('discover')
   const store = createProtocolStore({ rootDir: args.out, runId: captureRunId })
-  const context = await chromium.launchPersistentContext(args.profile, captureContextOptions(args))
+  const profileSnapshot = createCaptureProfileSnapshot(args.profile)
+  let context
   const sessionGeneration = randomUUID()
-  const controller = await installContextCapture(context, store, args, {
-    captureRunId, direction: 'discover', sessionGeneration,
-  })
+  let controller
   try {
-    const page = context.pages()[0] || await context.newPage()
+    profileSnapshot.prepare()
+    context = await chromium.launchPersistentContext(profileSnapshot.profileDir, captureContextOptions(args))
+    const prepared = await prepareCapturePage(context, store, args, {
+      captureRunId, direction: 'discover', sessionGeneration,
+    })
+    const { page } = prepared
+    controller = prepared.controller
     await manualDiscoverFlow(page, rl, args)
     await controller.flush()
     store.writePrivateManifest({
@@ -515,9 +739,10 @@ async function runDiscover(args, rl, hmacKey) {
       scenario: 'discover', submitPolicy: args.allowRealSubmit ? 'bounded-explicit' : 'block-at-route',
     })
   } finally {
-    await controller.flush()
-    await context.close()
-    await controller.flush()
+    if (controller) await controller.flush()
+    if (context) await context.close()
+    if (controller) await controller.flush()
+    profileSnapshot.dispose()
   }
   analyzeCrownProtocolCapture(store.runDir, { hmacKey })
   return store.runDir
@@ -581,46 +806,53 @@ async function runEightDirection(args, rl, hmacKey) {
   const scenarioId = uniqueRunId('eight-direction')
   const scenarioDir = path.resolve(args.out, scenarioId)
   fs.mkdirSync(path.join(scenarioDir, 'public'), { recursive: true })
-  const runs = await runSequentialCaptureContexts({
-    manifest: EIGHT_DIRECTION_CAPTURE_MANIFEST,
-    createContext: async () => chromium.launchPersistentContext(args.profile, captureContextOptions(args)),
-    captureDirection: async ({ context, item }) => {
-      const captureRunId = uniqueRunId(`${String(item.ordinal).padStart(2, '0')}-${item.direction.id}`)
-      const sessionGeneration = randomUUID()
-      const store = createProtocolStore({ rootDir: scenarioDir, runId: captureRunId })
-      const controller = await installContextCapture(context, store, args, {
-        captureRunId, direction: item.direction.id, sessionGeneration,
-      })
-      const page = context.pages()[0] || await context.newPage()
-      await page.goto(args.url, { waitUntil: 'domcontentloaded', timeout: 60_000 })
-      console.log(`[${item.ordinal}/8] ${item.direction.id}`)
-      console.log('Select this exact open market, complete Preview, then attempt Submit so the route blocker records it.')
-      console.log('If unavailable, recheck with WAIT, switch event with SWITCH_MATCH, then explicitly confirm.')
-      const availability = await resolveMarketAvailability({
-        question: (prompt) => rl.question(prompt),
-        async waitForMarket() {
-          console.log('Recheck current events; this tool does not infer availability from elapsed time or silence.')
-        },
-        async switchMatch() {
-          console.log('Switch to a different matching event, then recheck this direction.')
-        },
-      })
-      recordMarketAvailability(controller, availability)
-      await controller.flush()
-      store.writePrivateManifest({
-        scenario: 'eight-direction', captureRunId, sessionGeneration,
-        direction: item.direction.id, url: args.url, profile: args.profile,
-      })
-      store.writeManifest({
-        schemaVersion: 'crown-protocol-capture-manifest-v2',
-        scenario: 'eight-direction', ordinal: item.ordinal,
-        direction: item.direction, submitPolicy: item.submitPolicy,
-      })
-      return { captureRunId, runDir: store.runDir, controller }
-    },
-  })
-  analyzeCrownProtocolCaptureSet(scenarioDir, runs.map(({ runDir }) => runDir), { hmacKey })
-  return scenarioDir
+  const profileSnapshot = createCaptureProfileSnapshot(args.profile)
+  try {
+    const runs = await runSequentialCaptureContexts({
+      manifest: EIGHT_DIRECTION_CAPTURE_MANIFEST,
+      createContext: async () => {
+        profileSnapshot.prepare()
+        return chromium.launchPersistentContext(profileSnapshot.profileDir, captureContextOptions(args))
+      },
+      captureDirection: async ({ context, item }) => {
+        const captureRunId = uniqueRunId(`${String(item.ordinal).padStart(2, '0')}-${item.direction.id}`)
+        const sessionGeneration = randomUUID()
+        const store = createProtocolStore({ rootDir: scenarioDir, runId: captureRunId })
+        const { page, controller } = await prepareCapturePage(context, store, args, {
+          captureRunId, direction: item.direction.id, sessionGeneration,
+        })
+        await page.goto(args.url, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+        console.log(`[${item.ordinal}/8] ${item.direction.id}`)
+        console.log('Select this exact open market, complete Preview, then attempt Submit so the route blocker records it.')
+        console.log('If unavailable, recheck with WAIT, switch event with SWITCH_MATCH, then explicitly confirm.')
+        const availability = await resolveMarketAvailability({
+          question: (prompt) => rl.question(prompt),
+          async waitForMarket() {
+            console.log('Recheck current events; this tool does not infer availability from elapsed time or silence.')
+          },
+          async switchMatch() {
+            console.log('Switch to a different matching event, then recheck this direction.')
+          },
+        })
+        recordMarketAvailability(controller, availability)
+        await controller.flush()
+        store.writePrivateManifest({
+          scenario: 'eight-direction', captureRunId, sessionGeneration,
+          direction: item.direction.id, url: args.url, profile: args.profile,
+        })
+        store.writeManifest({
+          schemaVersion: 'crown-protocol-capture-manifest-v2',
+          scenario: 'eight-direction', ordinal: item.ordinal,
+          direction: item.direction, submitPolicy: item.submitPolicy,
+        })
+        return { captureRunId, runDir: store.runDir, controller }
+      },
+    })
+    analyzeCrownProtocolCaptureSet(scenarioDir, runs.map(({ runDir }) => runDir), { hmacKey })
+    return scenarioDir
+  } finally {
+    profileSnapshot.dispose()
+  }
 }
 
 async function main() {

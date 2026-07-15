@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import {
+import * as executionIdentityModule from '../src/crown/betting/execution-identity.mjs'
+
+const {
   assertExecutionIdentity,
+  executionCandidateFromSnapshot,
   executionIdentityFromEnvelope,
-} from '../src/crown/betting/execution-identity.mjs'
+} = executionIdentityModule
 
 function envelope(overrides = {}) {
   const market = {
@@ -26,10 +29,13 @@ function envelope(overrides = {}) {
     snapshot: {
       provider: 'crown',
       mode: 'live',
-      event: { eventKey: 'crown|football|gid=8878933', ids: { gid: '8878933' } },
+      capturedAt: '2026-07-11T02:01:00.000Z',
+      event: { eventKey: 'crown|football|gid=8878933', mode: 'live', ids: { gid: '8878933' } },
       market,
       selection: {
         side: 'home',
+        oddsField: 'IOR_REH',
+        oddsRaw: '0.770',
         selectionIdentity: 'crown|football|gid=8878933|full_time|asian_handicap|ah:ft:-0.25|home',
       },
     },
@@ -50,6 +56,47 @@ test('canonical execution identity carries market and explicit line variant thro
     side: 'home',
   })
   assert.deepEqual(assertExecutionIdentity(identity), identity)
+})
+
+test('monitor snapshot becomes the exact ten-field execution candidate DTO', () => {
+  assert.equal(typeof executionCandidateFromSnapshot, 'function')
+  const candidate = executionCandidateFromSnapshot(envelope().snapshot)
+
+  assert.deepEqual(candidate, {
+    gid: '8878933',
+    mode: 'live',
+    period: 'full_time',
+    marketType: 'asian_handicap',
+    lineVariant: 'main',
+    selectionSide: 'home',
+    handicapRaw: '-0 / 0.5',
+    oddsField: 'IOR_REH',
+    oddsRaw: '0.770',
+    observedAt: '2026-07-11T02:01:00.000Z',
+  })
+})
+
+test('execution candidate conversion fails closed for unknown or incomplete snapshots', () => {
+  assert.equal(typeof executionCandidateFromSnapshot, 'function')
+  const invalid = [
+    { event: { eventKey: '', ids: { gid: '' } } },
+    { mode: 'unknown', event: { mode: 'unknown' } },
+    { market: { lineVariant: 'unknown' } },
+    { selection: { oddsField: '' } },
+    { selection: { oddsRaw: '' } },
+    { capturedAt: '' },
+  ]
+  for (const override of invalid) {
+    const base = envelope().snapshot
+    const value = {
+      ...base,
+      ...override,
+      event: { ...base.event, ...(override.event || {}) },
+      market: { ...base.market, ...(override.market || {}) },
+      selection: { ...base.selection, ...(override.selection || {}) },
+    }
+    assert.throws(() => executionCandidateFromSnapshot(value), TypeError)
+  }
 })
 
 test('canonical execution identity distinguishes two handicap values that share one Crown lineKey', () => {

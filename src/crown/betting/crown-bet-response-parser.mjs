@@ -30,11 +30,45 @@ export function fingerprintCrownResponseFieldSet(fields = []) {
 }
 
 function strictEnvelope(xml) {
-  const text = String(xml || '').trim().replace(/^<\?xml\b[^>]*>\s*/i, '')
-  const match = /^<serverresponse\b[^>]*>([\s\S]*)<\/serverresponse>$/.exec(text)
+  const text = String(xml || '').trim().replace(
+    /^<\?xml version="1\.0"(?: encoding="UTF-8")?\?>\s*/,
+    '',
+  )
+  const match = /^<serverresponse>([\s\S]*)<\/serverresponse>$/.exec(text)
   if (!match) return null
   const body = match[1]
-  const openingFields = [...body.matchAll(/<([A-Za-z_][\w.-]*)\b[^>]*>/g)].map((item) => item[1])
+  const counts = new Map()
+  const stack = []
+  const openingFields = []
+  let cursor = 0
+  for (const token of body.matchAll(/<(\/?)([A-Za-z_][\w.-]*)(\/?)>/g)) {
+    const rawToken = token[0]
+    if (body.slice(cursor, token.index).includes('<') || rawToken.slice(1).includes('<')) return null
+    cursor = token.index + rawToken.length
+    const closing = Boolean(token[1])
+    const name = token[2]
+    const selfClosing = Boolean(token[3])
+    const count = counts.get(name) || { openings: 0, closings: 0, pairs: 0 }
+    counts.set(name, count)
+    if (closing && selfClosing) return null
+    if (!closing) {
+      count.openings += 1
+      openingFields.push(name)
+      if (selfClosing) {
+        count.closings += 1
+        count.pairs += 1
+        continue
+      }
+      stack.push(name)
+      continue
+    }
+    count.closings += 1
+    if (stack.pop() !== name) return null
+    count.pairs += 1
+  }
+  if (body.slice(cursor).includes('<') || stack.length || [...counts.values()].some((count) => (
+    count.openings !== count.closings || count.openings !== count.pairs
+  ))) return null
   const fields = normalizedFieldSet(openingFields)
   return { body, fields, duplicateField: openingFields.length !== fields.length }
 }
@@ -112,7 +146,8 @@ function strictLine(raw, fields) {
 export function parseCrownPreviewResponseStrict(xml, { expectedFieldSet } = {}) {
   const envelope = strictEnvelope(xml)
   if (!envelope) throw strictError('malformed-preview-response')
-  const { body, fields: responseFieldSet } = envelope
+  const { body } = envelope
+  const responseFieldSet = normalizedFieldSet(envelope.fields.filter((field) => field !== 'username'))
   if (expectedFieldSet) {
     const expected = normalizedFieldSet(expectedFieldSet)
     if (
@@ -229,7 +264,14 @@ export function parseCrownSubmitResponseStrict(xml, { expected = {}, expectedFie
       gold: expected.amount,
       ioratio: expected.odds,
     })) {
-      if (!String(expectedValue || '') || strictTag(body, fields, field) !== String(expectedValue)) {
+      const actualValue = strictTag(body, fields, field)
+      const matches = field === 'ioratio'
+        ? compareExact(
+          strictPositiveDecimal(actualValue, field, fields),
+          strictPositiveDecimal(String(expectedValue || ''), field, fields),
+        ) === 0
+        : actualValue === String(expectedValue)
+      if (!String(expectedValue || '') || !matches) {
         return { kind: 'unknown' }
       }
     }

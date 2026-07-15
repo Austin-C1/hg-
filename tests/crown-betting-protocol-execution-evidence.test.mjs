@@ -433,7 +433,7 @@ test('builds a public-safe accepted candidate from one exact offline attempt', (
     verifyCrownCapabilityMatrix().allowedPreviewCount,
     verifyCrownCapabilityMatrix().allowedSubmitCount,
     verifyCrownCapabilityMatrix().allowedReconciliationCount,
-  ], [1, 1, 0])
+  ], [8, 1, 0])
 })
 
 test('derives capability only from content-bound same-capture watcher evidence', () => {
@@ -602,7 +602,7 @@ test('stores raw and redacted rows privately while preserving the legacy accepte
     verifyCrownCapabilityMatrix().allowedPreviewCount,
     verifyCrownCapabilityMatrix().allowedSubmitCount,
     verifyCrownCapabilityMatrix().allowedReconciliationCount,
-  ], [1, 1, 0])
+  ], [8, 1, 0])
 })
 
 test('fails closed when response pairing or request/response order drifts', async (t) => {

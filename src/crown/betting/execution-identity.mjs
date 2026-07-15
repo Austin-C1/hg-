@@ -1,4 +1,9 @@
 const IDENTITY_KEYS = Object.freeze(['provider', 'gid', 'mode', 'period', 'market', 'lineVariant', 'line', 'side'])
+const EXECUTION_MODES = new Set(['prematch', 'live'])
+const EXECUTION_MARKET_SIDES = new Map([
+  ['asian_handicap', new Set(['home', 'away'])],
+  ['total', new Set(['over', 'under'])],
+])
 
 function text(value, code) {
   const result = String(value ?? '').trim()
@@ -9,6 +14,44 @@ function text(value, code) {
 function gidFromEventKey(value) {
   const match = /^crown\|football\|gid=([^|\s]+)$/.exec(String(value || ''))
   return match?.[1] || ''
+}
+
+function candidateText(value, code) {
+  try {
+    return text(value, code)
+  } catch {
+    throw new TypeError(code)
+  }
+}
+
+export function executionCandidateFromSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    throw new TypeError('execution-candidate-snapshot-required')
+  }
+  const gid = candidateText(snapshot.event?.ids?.gid, 'execution-candidate-gid')
+  const mode = candidateText(snapshot.mode, 'execution-candidate-mode')
+  const eventMode = candidateText(snapshot.event?.mode, 'execution-candidate-event-mode')
+  const period = candidateText(snapshot.market?.period, 'execution-candidate-period')
+  const marketType = candidateText(snapshot.market?.marketType, 'execution-candidate-market')
+  const lineVariant = candidateText(snapshot.market?.lineVariant, 'execution-candidate-line-variant')
+  const selectionSide = candidateText(snapshot.selection?.side, 'execution-candidate-side')
+  if (!EXECUTION_MODES.has(mode) || eventMode !== mode
+    || period !== 'full_time' || lineVariant !== 'main'
+    || !EXECUTION_MARKET_SIDES.get(marketType)?.has(selectionSide)) {
+    throw new TypeError('execution-candidate-unsupported')
+  }
+  return Object.freeze({
+    gid,
+    mode,
+    period,
+    marketType,
+    lineVariant,
+    selectionSide,
+    handicapRaw: candidateText(snapshot.market?.handicapRaw, 'execution-candidate-line'),
+    oddsField: candidateText(snapshot.selection?.oddsField, 'execution-candidate-odds-field'),
+    oddsRaw: candidateText(snapshot.selection?.oddsRaw, 'execution-candidate-odds'),
+    observedAt: candidateText(snapshot.capturedAt, 'execution-candidate-observed-at'),
+  })
 }
 
 export function assertLockedSelectionEnvelope(value) {

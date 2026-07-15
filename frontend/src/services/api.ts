@@ -8,6 +8,9 @@ import type {
   AutoBettingSettingUpdate,
   BettingAccount,
   BettingHistory,
+  BetTargetHistoryMode,
+  BetTargetHistoryPage,
+  BetTargetHistoryStatus,
   BetBatch,
   BetChildOrder,
   BettingRule,
@@ -208,6 +211,33 @@ export const api = {
       { signal },
     )).data.item
   },
+  async openBettingManualLogin(accountId: string, signal?: AbortSignal) {
+    return (await apiClient.post<{ item: ManualLoginStatus }>(
+      `/app/betting-accounts/${encodeURIComponent(accountId)}/manual-login/open`,
+      {},
+      { signal },
+    )).data.item
+  },
+  async getBettingManualLoginStatus(accountId: string, challengeId: string, signal?: AbortSignal) {
+    return (await apiClient.get<{ item: ManualLoginStatus }>(
+      `/app/betting-accounts/${encodeURIComponent(accountId)}/manual-login/${encodeURIComponent(challengeId)}`,
+      { signal },
+    )).data.item
+  },
+  async confirmBettingManualLogin(accountId: string, challengeId: string, signal?: AbortSignal) {
+    return (await apiClient.post<{ item: ManualLoginStatus }>(
+      `/app/betting-accounts/${encodeURIComponent(accountId)}/manual-login/${encodeURIComponent(challengeId)}/confirm`,
+      {},
+      { signal },
+    )).data.item
+  },
+  async cancelBettingManualLogin(accountId: string, challengeId: string, signal?: AbortSignal) {
+    return (await apiClient.post<{ item: ManualLoginStatus }>(
+      `/app/betting-accounts/${encodeURIComponent(accountId)}/manual-login/${encodeURIComponent(challengeId)}/cancel`,
+      {},
+      { signal },
+    )).data.item
+  },
   async getMonitorSettings() {
     return (await apiClient.get<MonitorSettingsPayload>('/monitor-settings')).data
   },
@@ -321,6 +351,14 @@ export const api = {
   },
   async getBetBatches(limit = 50) {
     return (await apiClient.get<{ items: BetBatch[] }>('/app/bet-batches', { params: { limit } })).data
+  },
+  async getBetTargetHistory(params: {
+    limit?: number
+    cursor?: string
+    status?: BetTargetHistoryStatus
+    mode?: BetTargetHistoryMode
+  } = {}) {
+    return (await apiClient.get<BetTargetHistoryPage>('/app/bet-target-history', { params })).data
   },
   async getBetBatchChildren(batchId: string) {
     return (await apiClient.get<{ items: BetChildOrder[] }>(`/app/bet-batches/${encodeURIComponent(batchId)}/children`)).data

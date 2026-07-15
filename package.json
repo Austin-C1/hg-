@@ -21,6 +21,7 @@
     "crown:betting:capture": "node scripts/crown-betting-protocol-capture.mjs",
     "crown:betting:analyze": "node scripts/crown-betting-protocol-analyze.mjs",
     "crown:betting:worker": "node scripts/crown-betting-worker.mjs",
+    "crown:betting:acceptance": "node scripts/crown-browser-api-acceptance.mjs",
     "crown:login-diagnostics:cleanup": "node scripts/crown-login-diagnostics-cleanup.mjs",
     "crown:b2:notifications": "node scripts/crown-b2-notifications.mjs",
     "crown:dashboard:docker": "docker compose -p crown-dashboard up --build",

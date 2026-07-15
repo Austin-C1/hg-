@@ -6,6 +6,7 @@ import {
   parseCrownPreviewResponse,
   parseCrownPreviewResponseStrict,
   parseCrownSubmitResponse,
+  parseCrownSubmitResponseStrict,
   parseCrownDangerousStatus,
 } from '../src/crown/betting/crown-bet-response-parser.mjs'
 import { fingerprintCrownFieldSet } from '../src/crown/betting/crown-capability-matrix.mjs'
@@ -136,6 +137,87 @@ test('strict preview fails closed for a syntactically valid but unevidenced resp
   const xml = '<serverresponse><code>999</code><gold_gmin>10</gold_gmin><gold_gmax>500</gold_gmax><ioratio>0.75</ioratio><spread>0 / 0.5</spread><strong>H</strong></serverresponse>'
   const error = strictError(xml)
   assert.equal(error.code, 'unknown-preview-code')
+})
+
+test('strict preview excludes username from the safe contract and preserves live score', () => {
+  const fields = [
+    '<code>501</code>', '<gold_gmin>50</gold_gmin>', '<gold_gmax>20000</gold_gmax>',
+    '<ioratio>0.96</ioratio>', '<spread>0.5 / 1</spread>', '<username>private-user</username>',
+  ]
+  const expectedPrematch = ['code', 'gold_gmin', 'gold_gmax', 'ioratio', 'spread'].sort()
+  const prematch = parseCrownPreviewResponseStrict(
+    `<serverresponse>${fields.join('')}</serverresponse>`,
+    { expectedFieldSet: expectedPrematch },
+  )
+  assert.deepEqual(prematch.responseFieldSet, expectedPrematch)
+  assert.equal(JSON.stringify(prematch).includes('username'), false)
+  assert.equal(JSON.stringify(prematch).includes('private-user'), false)
+
+  const emptyUsername = parseCrownPreviewResponseStrict(
+    `<serverresponse>${fields.filter((field) => !field.startsWith('<username>')).join('')}<username/></serverresponse>`,
+    { expectedFieldSet: expectedPrematch },
+  )
+  assert.deepEqual(emptyUsername.responseFieldSet, expectedPrematch)
+
+  const expectedLive = [...expectedPrematch, 'score'].sort()
+  const live = parseCrownPreviewResponseStrict(
+    `<serverresponse>${fields.join('')}<score>1:0</score></serverresponse>`,
+    { expectedFieldSet: expectedLive },
+  )
+  assert.deepEqual(live.responseFieldSet, expectedLive)
+})
+
+test('strict preview rejects unclosed observed fields even when their values are ignored', () => {
+  const required = [
+    '<code>501</code>', '<gold_gmin>50</gold_gmin>', '<gold_gmax>20000</gold_gmax>',
+    '<ioratio>0.96</ioratio>', '<spread>0.5 / 1</spread>',
+  ].join('')
+
+  for (const ignoredField of ['<username>private-user', '<username broken', '<score>1:0', '< broken']) {
+    const error = strictError(`<serverresponse>${required}${ignoredField}</serverresponse>`)
+    assert.equal(error.code, 'malformed-preview-response')
+    assert.equal(JSON.stringify(error.diagnostics).includes('private-user'), false)
+  }
+})
+
+test('strict preview rejects root or field attributes outside the evidenced XML shape', () => {
+  const required = [
+    '<code>501</code>', '<gold_gmin>50</gold_gmin>', '<gold_gmax>20000</gold_gmax>',
+    '<ioratio>0.96</ioratio>', '<spread>0.5 / 1</spread>',
+  ].join('')
+  for (const xml of [
+    `<serverresponse attr="broken>${required}</serverresponse>`,
+    `<serverresponse>${required.replace('<code>', '<code attr="broken>')}</serverresponse>`,
+  ]) {
+    assert.equal(strictError(xml).code, 'malformed-preview-response')
+  }
+})
+
+test('strict submit rejects unclosed observed fields even when excluded from its safe contract', () => {
+  const expected = {
+    gid: 'event-safe', gtype: 'FT', wtype: 'R', rtype: 'RH', amount: '50', odds: '0.96',
+  }
+  const required = [
+    '<code>560</code>', '<w_id>order-safe</w_id>', '<gid>event-safe</gid>',
+    '<gtype>FT</gtype>', '<wtype>R</wtype>', '<rtype>RH</rtype>',
+    '<gold>50</gold>', '<ioratio>0.96</ioratio>',
+  ].join('')
+  const expectedFieldSet = ['code', 'gid', 'gtype', 'wtype', 'rtype', 'gold', 'ioratio']
+
+  for (const [ignoredField, fieldSet] of [
+    ['<username>private-user', expectedFieldSet],
+    ['<mid>member-private', expectedFieldSet],
+    ['<mid broken', expectedFieldSet],
+    ['<score>1:0', undefined],
+    ['< broken', expectedFieldSet],
+  ]) {
+    const result = parseCrownSubmitResponseStrict(
+      `<serverresponse>${required}${ignoredField}</serverresponse>`,
+      { expected, expectedFieldSet: fieldSet, sealReference: () => 'v2:safe:cipher:text' },
+    )
+    assert.deepEqual(result, { kind: 'unknown' })
+    assert.equal(JSON.stringify(result).includes('private'), false)
+  }
 })
 
 test('parses submit response without exposing ticket id', () => {

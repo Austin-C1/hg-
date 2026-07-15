@@ -19,7 +19,7 @@ export function waitFor(milliseconds, signal) {
 }
 
 export class BettingWorker {
-  constructor({ mode = 'off', db = null, coordinator = null, inboxStore = null, consumer = null, lease = null, processLease = null, realExecutionGate = assertRealBettingRequested, accountPauseFinalizer = null, claimLimit = 10, claimLeaseSeconds = 30 } = {}) {
+  constructor({ mode = 'off', db = null, coordinator = null, inboxStore = null, consumer = null, acceptanceConsumer = null, lease = null, processLease = null, realExecutionGate = assertRealBettingRequested, accountPauseFinalizer = null, claimLimit = 10, claimLeaseSeconds = 30 } = {}) {
     if (!MODES.has(mode)) throw new TypeError('betting-worker-mode')
     if (!Number.isSafeInteger(claimLimit) || claimLimit < 1) throw new TypeError('claimLimit')
     if (!Number.isSafeInteger(claimLeaseSeconds) || claimLeaseSeconds < 1) throw new TypeError('claimLeaseSeconds')
@@ -28,6 +28,10 @@ export class BettingWorker {
     this.coordinator = coordinator
     this.inboxStore = inboxStore || { claimDue: () => [] }
     this.consumer = consumer || { process: async () => { throw new Error('betting-worker-consumer-unavailable') } }
+    if (acceptanceConsumer !== null && typeof acceptanceConsumer?.runOnce !== 'function') {
+      throw new TypeError('betting-worker-acceptance-consumer')
+    }
+    this.acceptanceConsumer = acceptanceConsumer
     this.lease = lease
     this.realExecutionGate = realExecutionGate
     this.processLease = processLease
@@ -58,6 +62,17 @@ export class BettingWorker {
     this.lease.assertFence(this.lease.fencingToken)
     if (this.mode === 'real') this._finalizeAccountPauses()
     if (this.mode === 'real') this.realExecutionGate(this.db)
+    if (this.mode === 'real' && this.acceptanceConsumer) {
+      const acceptance = await this.acceptanceConsumer.runOnce()
+      this.processLease?.heartbeat?.()
+      this._finalizeAccountPauses()
+      return {
+        mode: this.mode,
+        processed: Number(acceptance?.processed) || 0,
+        results: [acceptance],
+        acceptance: true,
+      }
+    }
     const results = []
     const recoverableBatches = ['simulated', 'real'].includes(this.mode) ? this.db.prepare(`
       SELECT batch_id

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 import AutoBetRules, { RuleCardModal } from './AutoBetRules'
 import { CONTRACT_COMPATIBILITY_EVENT, api, isContractCompatible } from '../services/api'
 import type { AutoBettingRuleCard, TodayBettingLeague } from '../types'
+import { browserBettingSummary } from '../test/browserBettingFixture'
 
 const card: AutoBettingRuleCard = {
   cardId: 'card-premier', name: '英超主规则', enabled: true, leagueNames: ['英超'],
@@ -32,6 +33,7 @@ vi.mock('../services/api', () => ({
     createAutoBettingRuleCard: vi.fn(async (payload) => ({ ...card, ...payload, cardId: 'card-new', version: 1 })),
     updateAutoBettingRuleCard: vi.fn(async (_id, payload) => ({ ...card, ...payload, version: payload.expectedVersion + 1 })),
     deleteAutoBettingRuleCard: vi.fn(async () => ({ ok: true as const })),
+    getOperationsSummary: vi.fn(async () => ({ item: { browserBetting: browserBettingSummary } })),
   },
 }))
 
@@ -108,6 +110,15 @@ describe('AutoBetRules', () => {
     for (const text of ['英超', '0.80 — 1.05', '100 CNY', '真实执行资格：未具备', '迁移已复核', 'Signal：已命中', '批次：已完成', '结果：已接受']) {
       expect(screen.getByText(text)).toBeInTheDocument()
     }
+  })
+
+  test('shows only backend-computed direction support badges and no editable wire fields', async () => {
+    render(<AutoBetRules />)
+    const support = await screen.findByRole('region', { name: '浏览器方向支持' })
+    expect(within(support).getAllByText(/Preview/)).toHaveLength(8)
+    expect(within(support).getAllByText(/Submit/)).toHaveLength(8)
+    expect(within(support).getByText('赛前 · 让球 · 客')).toBeInTheDocument()
+    expect(screen.queryByLabelText(/wire|rtype|wtype|uid|ver/i)).not.toBeInTheDocument()
   })
 
   test('create modal requires a league and marks another card ownership', async () => {

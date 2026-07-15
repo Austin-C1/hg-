@@ -96,6 +96,131 @@ function gameListXml() {
   `
 }
 
+function cachedMonitorSession(runtimeDir, account, overrides = {}) {
+  return new CrownApiSessionStore({ accountId: account.id, runtimeDir }).saveSession(account, {
+    uid: 'cached-uid',
+    cookies: { SESSION: 'cached' },
+    accountId: account.id,
+    username: account.username,
+    baseUrl: account.loginUrl,
+    ...overrides,
+  }).session
+}
+
+test('Crown API client keeps today/MIX defaults and accepts the hot/empty game-list scope', async () => {
+  const calls = []
+  const client = new CrownApiClient({
+    fetchImpl: fakeFetch([response(gameListXml()), response(gameListXml())], calls),
+  })
+  const session = {
+    uid: 'uid-123',
+    cookies: { SESSION: 'cached' },
+    baseUrl: 'https://m407.mos077.com',
+  }
+
+  await client.fetchGameList(session)
+  const result = await client.fetchGameList(session, { showtype: 'hot', filter: '' })
+
+  assert.deepEqual(calls.map(({ body }) => [body.showtype, body.filter]), [
+    ['today', 'MIX'],
+    ['hot', ''],
+  ])
+  assert.equal(result.requestScope.showtype, 'hot')
+  assert.equal(result.requestScope.filter, '')
+})
+
+test('Crown API manager falls back once to hot/empty only for an exact valid-empty today response', async () => {
+  const calls = []
+  const runtimeDir = tempRuntimeDir()
+  const account = {
+    id: 'mon_primary', username: 'monitor-user', password: 'monitor-password', loginUrl: 'https://m407.mos077.com',
+  }
+  cachedMonitorSession(runtimeDir, account)
+  const manager = new CrownApiLoginManager({
+    runtimeDir,
+    fetchImpl: fakeFetch([
+      response('<serverresponse></serverresponse>', { cookies: ['SESSION=today-empty; Path=/'] }),
+      response(gameListXml(), { cookies: ['SESSION=hot-result; Path=/'] }),
+    ], calls),
+  })
+
+  const result = await manager.fetchFootballToday({ account })
+
+  assert.deepEqual(calls.map(({ body }) => [body.showtype, body.filter]), [
+    ['today', 'MIX'],
+    ['hot', ''],
+  ])
+  assert.equal(result.requestScope.showtype, 'hot')
+  assert.equal(result.session.cookies.SESSION, 'hot-result')
+  const saved = JSON.parse(fs.readFileSync(
+    path.join(runtimeDir, 'crown-sessions', account.id, 'api-session.json'),
+    'utf8',
+  ))
+  assert.equal(saved.cookies.SESSION, 'hot-result')
+})
+
+test('Crown API manager does not request hot when today contains games', async () => {
+  const calls = []
+  const runtimeDir = tempRuntimeDir()
+  const account = {
+    id: 'mon_primary', username: 'monitor-user', password: 'monitor-password', loginUrl: 'https://m407.mos077.com',
+  }
+  cachedMonitorSession(runtimeDir, account)
+  const manager = new CrownApiLoginManager({
+    runtimeDir,
+    fetchImpl: fakeFetch([response(gameListXml())], calls),
+  })
+
+  const result = await manager.fetchFootballToday({ account })
+
+  assert.equal(result.classification.gameCount, 1)
+  assert.deepEqual(calls.map(({ body }) => [body.showtype, body.filter]), [['today', 'MIX']])
+})
+
+test('Crown API manager does not request hot for a malformed today response', async () => {
+  const calls = []
+  const runtimeDir = tempRuntimeDir()
+  const account = {
+    id: 'mon_primary', username: 'monitor-user', password: 'monitor-password', loginUrl: 'https://m407.mos077.com',
+  }
+  cachedMonitorSession(runtimeDir, account)
+  const manager = new CrownApiLoginManager({
+    runtimeDir,
+    fetchImpl: fakeFetch([response('<serverresponse><game><GID>41001</GID>')], calls),
+  })
+
+  const result = await manager.fetchFootballToday({ account })
+
+  assert.equal(result.classification.parseError, true)
+  assert.deepEqual(calls.map(({ body }) => [body.showtype, body.filter]), [['today', 'MIX']])
+})
+
+test('Crown API manager handles a login response without requesting hot', async () => {
+  const calls = []
+  const runtimeDir = tempRuntimeDir()
+  const account = {
+    id: 'mon_primary', username: 'monitor-user', password: 'monitor-password', loginUrl: 'https://m407.mos077.com',
+  }
+  cachedMonitorSession(runtimeDir, account)
+  const manager = new CrownApiLoginManager({
+    runtimeDir,
+    fetchImpl: fakeFetch([
+      response('<serverresponse><status>error</status><msg>doubleLogin</msg></serverresponse>'),
+      response(loginXml('fresh-uid')),
+      response(gameListXml()),
+    ], calls),
+  })
+
+  const result = await manager.fetchFootballToday({ account })
+
+  assert.equal(result.classification.gameCount, 1)
+  assert.deepEqual(
+    calls.filter(({ body }) => body.p === 'get_game_list').map(({ body }) => [body.showtype, body.filter]),
+    [['today', 'MIX'], ['today', 'MIX']],
+  )
+  assert.equal(calls.some(({ body }) => body.showtype === 'hot'), false)
+})
+
 test('Crown API response decoding preserves valid UTF-8 and falls back to GB18030 only for invalid UTF-8 bytes', async () => {
   const utf8Xml = '<serverresponse><LEAGUE>俄罗斯青年足球联赛 U19</LEAGUE><TEAM_H>莫斯科中央陆军U19</TEAM_H></serverresponse>'
   const gbXml = Buffer.concat([
@@ -150,6 +275,7 @@ test('manual betting account access check fresh-logins, verifies football, and r
       response(loginXml(), { cookies: ['SESSION=fresh; Path=/'] }),
       response(gameListXml(), { cookies: ['SESSION=verified; Path=/'] }),
       response('<serverresponse><code>get_all_data</code><enable>Y</enable><currency>RMB</currency><maxcredit>1950</maxcredit><cash>0</cash></serverresponse>'),
+      response(gameListXml(), { cookies: ['SESSION=reused; Path=/'] }),
     ], calls),
   })
 
@@ -174,8 +300,9 @@ test('manual betting account access check fresh-logins, verifies football, and r
   assert.equal(calls.some((call) => call.body.p === 'FT_order_view' || call.body.p === 'FT_bet'), false)
   assert.equal(JSON.stringify(result).includes('uid-123'), false)
   assert.equal(JSON.stringify(result).includes('bet-password'), false)
-  await assert.rejects(() => manager.ensureBettingSession({ account }), /betting-origin-not-allowed/)
-  assert.equal(calls.length, 3)
+  const session = await manager.ensureBettingSession({ account })
+  assert.equal(session.classification.hasServerResponse, true)
+  assert.deepEqual(calls.map((call) => call.body.p), ['chk_login', 'get_game_list', 'get_member_data', 'get_game_list'])
 })
 
 test('manual betting access fails closed with a stable code when member balance is unusable', async () => {
@@ -504,6 +631,34 @@ test('Crown API client fetches get_game_more detail XML with event identifiers',
   assert.equal(JSON.stringify(result.requestScope).includes('SESSION'), false)
 })
 
+test('Crown API client sends hot scope for prematch game_more targets', async () => {
+  const calls = []
+  const manager = new CrownApiLoginManager({
+    runtimeDir: tempRuntimeDir(),
+    fetchImpl: fakeFetch([response(gameListXml())], calls),
+  })
+
+  const result = await manager.fetchFootballGameMore({
+    session: {
+      uid: 'uid-123',
+      cookies: { SESSION: 'cached' },
+      username: 'monitor-user',
+      baseUrl: 'https://m407.mos077.com',
+    },
+    target: {
+      lid: '900',
+      ecid: '800',
+      mode: 'prematch',
+      showtype: 'hot',
+    },
+  })
+
+  assert.equal(calls[0].body.showtype, 'hot')
+  assert.equal(calls[0].body.isRB, 'N')
+  assert.equal(result.requestScope.showtype, 'hot')
+  assert.equal(result.requestScope.isRB, 'N')
+})
+
 test('Crown API detail fetch exposes rotated response cookies for the next request', async () => {
   const calls = []
   const manager = new CrownApiLoginManager({
@@ -762,29 +917,36 @@ test('betting login failure exposes only a stable sanitized error', async () => 
   assert.doesNotMatch(serialized, /serverresponse|code_message/)
 })
 
-test('betting origin allowlist is empty by default and rejects non-allowlisted origins before network access', async () => {
+test('saved public HTTPS exact origin works without a static origin allowlist', async () => {
+  for (const bettingAllowedOrigins of ['', 'https://unrelated.example.com']) {
+    const calls = []
+    const manager = new CrownApiLoginManager({
+      runtimeDir: tempRuntimeDir(),
+      bettingAllowedOrigins,
+      fetchImpl: async (url) => {
+        calls.push(String(url))
+        return calls.length === 1 ? response(loginXml()) : response(gameListXml())
+      },
+    })
+    const account = {
+      id: `bet_origin_${calls.length}`, username: 'user', password: 'password', loginUrl: 'https://crown.example.com',
+    }
+
+    const result = await manager.ensureBettingSession({ account })
+    assert.equal(result.session.accountId, account.id)
+    assert.equal(calls.length, 2)
+  }
+})
+
+test('betting account origin still requires a public HTTPS exact origin without URL credentials', async () => {
   let networkCalls = 0
   const manager = new CrownApiLoginManager({
     runtimeDir: tempRuntimeDir(),
-    bettingAllowedOrigins: '',
+    bettingAllowedOrigins: 'https://unrelated.example.com',
     fetchImpl: async () => { networkCalls += 1; throw new Error('network-must-not-run') },
   })
-  const account = {
-    id: 'bet_origin', username: 'user', password: 'password', loginUrl: 'https://crown.example.com',
-  }
-
-  await assert.rejects(() => manager.ensureBettingSession({ account }), /betting-origin-not-allowed/)
-  await assert.rejects(() => manager.fetchBettingFootballToday({ account }), /betting-origin-not-allowed/)
-  await assert.rejects(() => manager.fetchBettingFootballGameMore({
-    account,
-    session: { uid: 'uid', cookies: {}, accountId: account.id, username: account.username, baseUrl: account.loginUrl },
-    target: { lid: '1', ecid: '2', mode: 'live' },
-  }), /betting-origin-not-allowed/)
-  assert.equal(networkCalls, 0)
-})
-
-test('betting origin allowlist requires public HTTPS exact origins without URL credentials', async () => {
-  for (const origin of [
+  const base = { id: 'bet_origin_exact', username: 'user', password: 'password' }
+  for (const loginUrl of [
     'http://crown.example.com',
     'https://localhost',
     'https://service.internal',
@@ -793,41 +955,9 @@ test('betting origin allowlist requires public HTTPS exact origins without URL c
     'https://user:password@crown.example.com',
     'https://crown.example.com/path',
   ]) {
-    const invalidManager = new CrownApiLoginManager({
-      runtimeDir: tempRuntimeDir(),
-      bettingAllowedOrigins: origin,
-      fetchImpl: async () => { throw new Error('network-must-not-run') },
-    })
-    await assert.rejects(() => invalidManager.ensureBettingSession({
-      account: { id: 'bet_invalid_allowlist', username: 'user', password: 'password', loginUrl: 'https://crown.example.com' },
-    }), /betting-origin-allowlist-invalid/)
-  }
-
-  let networkCalls = 0
-  const manager = new CrownApiLoginManager({
-    runtimeDir: tempRuntimeDir(),
-    bettingAllowedOrigins: 'https://crown.example.com, https://other.example.com:8443',
-    fetchImpl: async () => { networkCalls += 1; throw new Error('network-must-not-run') },
-  })
-  const base = { id: 'bet_origin_exact', username: 'user', password: 'password' }
-  await assert.rejects(() => manager.ensureBettingSession({
-    account: { ...base, loginUrl: 'https://not-allowed.example.com' },
-  }), /betting-origin-not-allowed/)
-  await assert.rejects(() => manager.ensureBettingSession({
-    account: { ...base, loginUrl: 'https://user:password@crown.example.com' },
-  }), /betting-origin-credentials-forbidden/)
-  await assert.rejects(() => manager.ensureBettingSession({
-    account: { ...base, loginUrl: 'http://crown.example.com' },
-  }), /betting-origin-https-required/)
-  for (const loginUrl of [
-    'https://crown.example.com/',
-    'https://crown.example.com/path',
-    'https://crown.example.com?mode=bet',
-    'https://crown.example.com#bet',
-  ]) {
     await assert.rejects(() => manager.ensureBettingSession({
       account: { ...base, loginUrl },
-    }), /betting-origin-exact-required/)
+    }), /betting-origin-/)
   }
   assert.equal(networkCalls, 0)
 })

@@ -1,5 +1,5 @@
 import { filterByLeague } from './filters/league-filter.mjs'
-import { normalizeCrownTransformXml } from './crown-transform-xml.mjs'
+import { isNormalFootballMatch, normalizeCrownTransformXml } from './crown-transform-xml.mjs'
 import { detectEndpoint } from './endpoint-detector.mjs'
 
 const MAPPER_VERSION = 'crown-football-v1'
@@ -171,29 +171,24 @@ function addMoneyline(records, event, metadata, text, period, marketSuffix = 'mo
   return true
 }
 
-function firstHalfSection(text) {
-  const marker = text.indexOf('上半场')
-  return marker === -1 ? '' : text.slice(marker)
-}
-
 function fullTimeSection(text) {
-  const marker = text.indexOf('上半场')
+  const marker = text.search(/上半场\s*(?=让球|大\/小|独赢)/)
   return marker === -1 ? text : text.slice(0, marker)
 }
 
 function normalizeEvent(event, metadata) {
+  if (!isNormalFootballMatch({
+    league: event.league,
+    homeTeam: event.teams?.[0],
+    awayTeam: event.teams?.[1],
+  })) return []
+
   const records = []
   const text = String(event.text || '')
 
   const fullTimeText = fullTimeSection(text)
   addAsianHandicap(records, event, metadata, fullTimeText, 'full_time')
   addTotal(records, event, metadata, fullTimeText, 'full_time')
-
-  const firstHalfText = firstHalfSection(text)
-  if (firstHalfText) {
-    addAsianHandicap(records, event, metadata, firstHalfText, 'first_half', 'first_half_asian_handicap')
-    addTotal(records, event, metadata, firstHalfText, 'first_half', 'first_half_total')
-  }
 
   return records
 }

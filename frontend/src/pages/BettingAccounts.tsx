@@ -3,7 +3,9 @@ import { Button, Empty, Form, Input, InputNumber, Modal, Popconfirm, Space, Spin
 import { useEffect, useMemo, useState } from 'react'
 
 import { api, isDashboardAuthenticationError } from '../services/api'
-import type { BetBatch, BetChildOrder, BettingAccount, BettingHistory } from '../types'
+import type {
+  BetBatch, BetChildOrder, BettingAccount, BettingHistory, BrowserBettingSummary, ManualLoginStatus,
+} from '../types'
 import { formatDateTime } from '../utils/formatDateTime'
 
 interface AccountFormValues {
@@ -151,6 +153,23 @@ function accountOrderText(account: BettingAccount) {
   return Number.isFinite(order) && order > 0 ? String(order) : '未设置'
 }
 
+function browserSessionText(state: BrowserBettingSummary['sessions'][number]['state']) {
+  return ({
+    stopped: '已停止', starting: '启动中', login_required: '需要人工登录', ready: '就绪',
+    stale: '已过期', blocked: '已阻断', error: '错误',
+  } as const)[state]
+}
+
+function manualLoginErrorText(code: string) {
+  return ({
+    'manual-login-betting-worker-active': '投注 Worker 尚未完全停止',
+    'manual-login-busy': '浏览器会话或账号配置仍被占用',
+    'manual-login-challenge-expired': '本次人工登录已过期，请重新打开',
+    'manual-login-verification-failed': '尚未检测到有效登录，请在浏览器中完成登录',
+    'manual-login-session-evidence-missing': '未检测到完整登录结果',
+  } as Record<string, string>)[code] || code || '人工登录操作失败'
+}
+
 export default function BettingAccounts() {
   const [data, setData] = useState<Awaited<ReturnType<typeof api.getBettingAccountOverview>> | null>(null)
   const [batches, setBatches] = useState<BetBatch[]>([])
@@ -163,14 +182,23 @@ export default function BettingAccounts() {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set())
   const [checkingId, setCheckingId] = useState('')
   const [allocationActionId, setAllocationActionId] = useState('')
+  const [browserBetting, setBrowserBetting] = useState<BrowserBettingSummary | null>(null)
+  const [manualAccount, setManualAccount] = useState<BettingAccount | null>(null)
+  const [manualStatus, setManualStatus] = useState<ManualLoginStatus | null>(null)
+  const [manualPending, setManualPending] = useState(false)
   const [form] = Form.useForm<AccountFormValues>()
 
   async function load() {
     setLoading(true)
     try {
-      const [overview, recent] = await Promise.all([api.getBettingAccountOverview(), api.getBetBatches()])
+      const [overview, recent, operations] = await Promise.all([
+        api.getBettingAccountOverview(),
+        api.getBetBatches(),
+        api.getOperationsSummary().catch(() => null),
+      ])
       setData(overview)
       setBatches(recent.items)
+      setBrowserBetting(operations?.item.browserBetting || null)
       setChildrenLoading(true)
       try {
         const rows = await Promise.all(recent.items.map(async (batch) => [batch.batchId, (await api.getBetBatchChildren(batch.batchId)).items] as const))
@@ -337,7 +365,43 @@ export default function BettingAccounts() {
     }
   }
 
+  async function openManualLogin(account: BettingAccount) {
+    if (manualPending) return
+    setManualPending(true)
+    try {
+      const status = await api.openBettingManualLogin(account.id)
+      setManualAccount(account)
+      setManualStatus(status)
+    } catch (error) {
+      if (!isDashboardAuthenticationError(error)) {
+        message.error(manualLoginErrorText(error instanceof Error ? error.message : ''))
+      }
+    } finally {
+      setManualPending(false)
+    }
+  }
+
+  async function finishManualLogin(action: 'confirm' | 'cancel') {
+    if (!manualAccount || !manualStatus || manualPending) return
+    setManualPending(true)
+    try {
+      const status = action === 'confirm'
+        ? await api.confirmBettingManualLogin(manualAccount.id, manualStatus.challengeId)
+        : await api.cancelBettingManualLogin(manualAccount.id, manualStatus.challengeId)
+      setManualStatus(status)
+      if (status.status === 'verified') message.success('人工登录已验证')
+      if (action === 'cancel' || status.status === 'verified') setManualAccount(null)
+    } catch (error) {
+      if (!isDashboardAuthenticationError(error)) {
+        message.error(manualLoginErrorText(error instanceof Error ? error.message : ''))
+      }
+    } finally {
+      setManualPending(false)
+    }
+  }
+
   const accounts = sortAccountsByBetOrder(data?.bettingAccounts || [])
+  const sessionByAccount = new Map((browserBetting?.sessions || []).map((session) => [session.accountId, session]))
 
   return (
     <div className="page-stack">
@@ -360,6 +424,7 @@ export default function BettingAccounts() {
               const expanded = expandedIds.has(account.id)
               const limitValue = Number(account.perBetLimit)
               const limitReady = Number.isSafeInteger(limitValue) && limitValue > 0
+              const browserSession = sessionByAccount.get(account.id)
               return <div className="account-card-shell" key={account.id}>
                 <div className={`horizontal-config-card account-card${expanded ? ' expanded' : ''}`} role="button" tabIndex={0} aria-label={`账号卡片 ${account.username}`} onClick={() => toggleAccount(account.id)} onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggleAccount(account.id) }
@@ -374,6 +439,7 @@ export default function BettingAccounts() {
                       <div className="config-card-subtitle">登录访问：{accessStatusText(account.accessStatus)}{account.accessErrorCode ? `（${accessErrorText(account.accessErrorCode)}）` : ''}</div>
                       <div className="config-card-subtitle">Crown 返回余额：{account.reportedBalance == null ? '未获取' : `${account.reportedBalance} ${account.reportedCurrency || account.currency}`}</div>
                       <div className="config-card-subtitle">分配状态：{allocationStatusText(allocationStatus)} · 执行锁：{executionStatusText(account.executionStatus)}</div>
+                      <div className="config-card-subtitle">浏览器会话：{browserSession ? browserSessionText(browserSession.state) : '暂不可用'}</div>
                     </div>
                     <div className="config-card-metrics">
                       <div className="config-metric"><span>今日 accepted 次数</span><strong>{acceptedTodayCount}</strong></div>
@@ -381,6 +447,12 @@ export default function BettingAccounts() {
                     </div>
                   </div>
                   <Space className="config-card-actions" onClick={(event) => event.stopPropagation()}>
+                    <Button
+                      aria-label={`打开登录窗口 ${account.username}`}
+                      disabled={browserSession?.state !== 'stopped'}
+                      loading={manualPending && manualAccount?.id === account.id}
+                      onClick={() => void openManualLogin(account)}
+                    >人工登录</Button>
                     <Button
                       type={allocationStatus === 'enabled' ? 'default' : 'primary'}
                       aria-label={`${allocationStatus === 'enabled' ? '暂停账号' : !limitReady ? '先设置单笔上限' : '启用账号'} ${account.username}`}
@@ -442,6 +514,20 @@ export default function BettingAccounts() {
           <Form.Item name="betOrder" label="投注顺序" extra="模拟执行只选择已启用且序号大于 0 的账号。"><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="perBetLimit" label="单笔上限（CNY 整数）" rules={[{ required: true, pattern: /^[1-9]\d*$/, message: '请输入正整数金额' }]}><Input inputMode="numeric" /></Form.Item>
         </Form>
+      </Modal>
+      <Modal
+        title={manualAccount ? `人工登录 ${manualAccount.username}` : '人工登录'}
+        open={Boolean(manualAccount)}
+        onCancel={() => void finishManualLogin('cancel')}
+        destroyOnHidden
+        footer={[
+          <Button key="cancel" disabled={manualPending} onClick={() => void finishManualLogin('cancel')}>取消</Button>,
+          <Button key="confirm" type="primary" loading={manualPending} onClick={() => void finishManualLogin('confirm')}>完成登录并验证</Button>,
+        ]}
+      >
+        <p>请在已打开的 Chromium 窗口中完成登录。投注 Worker 不会由此页面自动启动或停止。</p>
+        <p>状态：{manualStatus?.status === 'awaiting-user' ? '等待完成登录' : manualStatus?.status || '正在打开'}</p>
+        {manualStatus?.errorCode ? <p>{manualLoginErrorText(manualStatus.errorCode)}</p> : null}
       </Modal>
     </div>
   )

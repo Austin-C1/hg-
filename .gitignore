@@ -25,6 +25,7 @@ data/runtime/betting-protocol-captures/
 data/betting-protocol-captures/
 data/runtime/crown-sessions/
 data/runtime/login-diagnostics/
+data/runtime/crown-browser-api-acceptance*.json
 
 frontend/dist/
 output/

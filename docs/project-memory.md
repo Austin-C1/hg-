@@ -1,5 +1,58 @@
 # 项目记忆
 
+## 2026-07-15 正常足球全场盘口过滤
+
+- 用户确认只保留正常球队比赛的全场让球和全场大小球。Crown XML/DOM 标准化入口现在排除角球、罚牌、特定球员、加时赛、点球、球队/球员进球、波胆和晋级等衍生赛事，并停止生成半场盘口。
+- 根因是旧 `EXCLUDED_FOOTBALL_RE` 只过滤电竞/虚拟赛事，皇冠把“英格兰 -罚牌数”等衍生盘作为独立 game 返回后被误当成普通足球 event。
+- 修复后 Watcher 已重启且租约唯一、赔率 fresh；重启后 SQLite 新增/更新的 836 条 selection 全为 `full_time`，半场 0、衍生赛事 0，active 衍生 event 0，`PRAGMA integrity_check=ok`。真实投注仍 off，campaign/batch/unknown/reconciliation 均为 0。
+
+## 2026-07-15 投注账号静态网站白名单移除
+
+- 账号保存的 public HTTPS exact origin 现在是登录、只读检测、game-more、Preview 与 Submit 的唯一授权地址，不再依赖静态 membership whitelist 或环境变量成员列表。
+- URL 安全边界未放宽：拒绝 HTTP、credentials、path/query/hash、localhost、private hostname 和 IP literal；请求采用 manual redirect，跨 origin redirect 在使用响应或 cookie 前 fail-closed。
+- fence、capability、authorization、账号 owner 与 execution identity 门禁保持不变；移除静态成员列表不会扩大协议或真实投注能力。
+
+## 2026-07-15 Dashboard 用户配置路径统一
+
+- 非 Portable Dashboard 现在先解析 `CROWN_DATA_ROOT`，未单独设置路径时，Telegram 等配置、SQLite、local secret、runtime 与日志都从该 data root 派生；`frontend/dist` 和源码仍从 `CROWN_APP_DIR` 读取。
+- 程序换目录时继续读取原 data root 中的 `config/telegram-settings.json`，不复制、不迁移、不改写 token；显式 `CROWN_CONFIG_DIR`、`CROWN_DB_PATH` 等单项覆盖仍优先。
+- Portable 的 canonical path graph 未修改，账号、投注账本、delivery 与 Telegram 配置仍只保存在用户 data root。
+
+## 2026-07-15 Task 6 Browser Preview/Submit/B2/Reconciliation
+
+- 生产 Preview、单次 Submit 与只读 Reconciliation 已统一使用同一账号的 BrowserRuntime/page `fetch`；生产投注路径不再使用 Node `postForm`，也不持久化 Cookie、UID 或 session。
+- Submit 前重新取得 fresh session、余额与 Preview；没有可验证 stake step 时只允许当次 `gold_gmin` 的 exact minimum。CNY 使用 `amountScale=0`，截图所示盘口会使用当次返回的 50，而不是固定常量。
+- B2 在 browser dispatch 前只执行一次 durable `beforeDispatch`；dispatch 前失败不创建 attempt，dispatch 后不能明确 accepted/rejected 的结果统一记为 `unknown`，不自动重投。
+- prepared/dispatched crash work 会先 recovery-only，再由独立 fenced reconciliation process 接管；worker crash、强制退出、ownership TTL、并发 start/stop 与 Dashboard final shutdown 均有 generation/singleflight 边界。
+- Browser shutdown 固定 20 秒、父进程停止宽限 25 秒；所有内部与 OS stop source 都会立即关闭 active context 以中断在途页面请求。最终应用退出会禁止重新启动 standalone reconciler。
+- 最终离线验证：全项目 `1644/1644`；最终变更对应 `37/37`、`22/22`、`19/19`；两次独立复审 Critical/Important/Minor 均为 `0/0/0`。未访问 Crown，未执行 Preview、Submit 或下注，未提交 Git。
+- 用户要求 Task 6 完成后暂停，Task 7 尚未开始。
+
+## 2026-07-15 Task 5 浏览器账号会话与 transport
+
+- 每个投注账号使用独立 persistent Chromium context、独立 profile lease 和进程内 session generation；Cookie、UID、`storageState` 与 Profile 路径不写入投注 DTO 或磁盘 session 文件。
+- Crown API client 只在当前 exact HTTPS origin 的页面上下文调用固定 login、game list、余额、Preview 与 Submit operation；禁用下载和 Service Worker，redirect、popup、跨 origin navigation、crash 与未确认 context close 均 fail-closed。
+- Submit 的 `beforeDispatch` 前后同时校验 executor fence、profile fence 与 context generation；context 未确认关闭时保留 lease，并阻止 replacement context、Betting Worker 与 runtime cleanup。
+- 人工登录和 Betting Worker 共享 profile ownership 门禁；cleanup 在停止进程后重新检查 watcher/worker/profile lease，并在数据库事务内完成最后检查和清理。
+- Task 5 生产 Browser kernel 已完成，但现有 Preview/Submit Provider 的正式切换属于 Task 6；Task 6 完成前不能宣称 production transport 已改为 browser-page-fetch。
+- 相关回归 `201/201`、Windows launcher `18/18`、独立复审 Critical/Important/Minor `0/0/0`。验证均离线，未访问 Crown、未执行 Preview、Submit 或下注。
+
+## 2026-07-15 Task 3 程序内八方向协议库
+
+- 当前权威 capability 为 Preview/Submit/Reconciliation `8/1/0`。八个方向均可 strict Preview；唯一 Submit-enabled 行是 `prematch/full_time/asian_handicap/main/away`；所有 Reconciliation 仍关闭。
+- capability key 已升级为 `mode|period|marketType|lineVariant|selectionSide`，运行查找使用进程启动时构建的深冻结 Map。fixture 只用于显式审计，不参与生产查找。
+- 当前 matrix version 为 `crown-protocol-capabilities-v2:c9139fcb53c51012`，稳定协议 digest 为 `sha256:94ef6d685b2efe80b831b9e98969e50bcfd8f3504b524d31123c7b78c592b6a5`。Task 2 的 capture-specific candidate digest 不进入 matrix version。
+- B2 新 attempt 必须保存独立 runtime `executionCandidateDigest`，绑定账号、executor fence context、capability、locked/current identity、完整 fresh Preview 与金额；该摘要不能替代协议 digest。
+- strict parser 对所有 observed XML tag 校验开闭和嵌套；敏感字段不输出，但 malformed `username`、`mid`、`score` 等同样 fail-closed。
+- 本阶段开发、复审和测试均离线完成，没有访问 Crown、没有 Preview、Submit 或下注。
+
+## 2026-07-15 Task 4 八方向监控候选
+
+- XML normalizer 复用 Task 3 的 exact mapper evidence，将八个 full-time 方向标为 `lineVariant=main`，并在 event 中保存 mode；cross-mode、first-half、alternate 均保持 `unknown`。
+- 标准执行候选固定为十字段：`gid/mode/period/marketType/lineVariant/selectionSide/handicapRaw/oddsField/oddsRaw/observedAt`。
+- 反向 selection 锁定会核对 mode、side、同一盘口和新鲜时间；盘口 raw 与 numeric 必须各自一致，`-0.5` 与 `-0.50` 仍视为等价。
+- Watcher、Strategy、Signal、Telegram 与 monitor state schema 未重构；本阶段验证离线完成，未访问 Crown 或发送投注请求。
+
 ## 2026-07-14 浏览器内 API 投注重构计划已确认
 
 - 浏览器内 API 是新的唯一正式下注方向：单个 canonical betting worker 按投注账号维护独立 persistent Chromium context，Preview、Submit 和结果查询在页面上下文调用真实接口；现有 Node 直接 HTTP 只继续服务监控或只读检测，不再承担生产下注。
@@ -8,6 +61,13 @@
 - 最终能力验收固定为八个方向各一笔当次平台最小金额 direct accepted，并取得 exact result-query evidence；不再使用旧 5-batch/500-CNY 累计 Gate。完成后执行全程序、前端、Portable 和敏感信息检测，并替换现有 GitHub 仓库的旧版本。
 - 当前权威实施计划：docs/superpowers/plans/2026-07-14-crown-browser-api-betting-refactor.md。计划完成前当前实际 production capability 和传输方式仍以代码与下方最新已验证状态为准。
 
+## 2026-07-15 Task 2 八方向零 Submit 协议证据完成
+
+- 同一 scenario root 内完成赛前/滚球 × 全场让球/大小球 × 两侧共 8 个独立 capture；每个方向恰好一次成功 Preview 和一次被本地拦截的 `FT_bet`，实际 Submit dispatch 为 0。
+- analyzer 从 8 组 private raw/redacted 一一配对重算出 8 个 candidate、8 个 direction template；三份 public safe artifact 与项目 fixture 逐字节一致，未包含凭据、session、原始 body 或绝对路径。
+- capture context 初始 offline，安装 HTTP/WebSocket blocker 并确认仅有 `about:blank` 后才联网；快照删除 Sessions 与 Service Worker。multipart 和 loose JSON fragment 只接受可完整检查的结构，异常结构统一 fail-closed。
+- Task 2 聚焦测试 `211/211`、syntax `235`、最终独立复审 Critical/Important/Minor `0/0/0`。本次重放与修复均离线，未再次访问 Crown、未发送 Submit、未执行 Git 提交。
+
 ## 2026-07-14 真实投注 runtime 两阶段启动
 
 - `POST /real-betting/start` 先 arm 并停止旧 worker；规则卡、可用账号、exact capability 与 schema 四项静态前置条件通过后即可 spawn worker，不再要求尚不存在的 readyTicket/fence。
@@ -15,7 +75,7 @@
 - 缺 readyTicket、worker 启动异常、post-ready fence/executor 检查失败或 GO 失败都会停止 worker，并保持 `armed_waiting`/`blocked`；Submit gate、单次请求和执行 fence 没有放宽。
 - TDD RED 为两阶段启动 `0/2`、缺 readyTicket `0/1`；修复后启动相关聚焦 `4/4`、runtime/API/process/operations 回归 `71/71`、syntax `232/232` 通过。验证未访问真实网络、Submit 或正式数据库。
 
-## 2026-07-14 Task 10 accepted-only 自动 Submit
+## 历史：2026-07-14 Task 10 accepted-only 自动 Submit（已被顶部 Task 3 取代）
 
 - canonical capability 仅开放 `prematch/full_time/asian_handicap/main`：Preview/Submit/Reconciliation 为 `1/1/0`。该行由同一 capture 的 watcher 证据独立绑定 `RATIO_R + gid/side/line/odds`，analyzer 不读取 asserted capability；证据缺失或任一字段漂移时保持关闭。滚球 `RATIO_RE` 等其他行保持关闭。
 - Preview 固定为 `FT_order_view`、`FT/R/H|C`；Submit 固定为 `FT_bet`、`FT/R/RH|RC/H|C/isRB=N/f=1R`。这里 `f=1R` 是该已验证请求的 opaque wire 值，不代表上半场。
@@ -38,14 +98,14 @@
 - 已在离线 capture/analyzer 边界实现 exact Preview/Submit 证据候选构建；private/raw 只在内存中参与校验，public candidate 只保留摘要、HMAC 绑定、字段集合指纹和稳定原因码。
 - 该历史 capture 的生成结果：candidate digest `sha256:93a640b1d3d7660553cd053e73cd73b4de2a14266e0321d0a298f1370e1afe1`；candidate raw-capture digest `sha256:6bc473a26020015ae3376168005197465d559079f6f2f3f1fa3841b51059827a` 是对 `private/raw-network.jsonl` 原始字节直接计算的 SHA-256。候选包含 4 条有序 evidence record、6 个排除字段、8 个 HMAC binding。
 - independent review 后补齐 direct Submit response identity：response `gid/gtype/wtype/rtype` 必须与 Submit request 逐一 canonical exact 相等，缺失或不等统一 fail-closed 为 `submit-response-identity-drift`。
-- 该历史 schema-v1 candidate 保留生成时的 incomplete reasons：`rejected-attempt-required`、`integer-cny-step-unproven`、`exact-capability-unproven`。用户现已取消 rejected/step probe，这些原因不再表示待执行计划；它生成时的 canonical Preview/Submit/Reconciliation capability 为 `0/0/0`，现已被顶部 Task 10 的 `1/1/0` 取代。
+- 该历史 schema-v1 candidate 保留生成时的 incomplete reasons：`rejected-attempt-required`、`integer-cny-step-unproven`、`exact-capability-unproven`。用户现已取消 rejected/step probe，这些原因不再表示待执行计划；它生成时的 canonical Preview/Submit/Reconciliation capability 为 `0/0/0`，现已被顶部 Task 3 的 `8/1/0` 取代。
 - 验证：相关测试 `82/82` 通过，analyzer/capture 两个入口 syntax check 通过；本任务没有访问 Crown/network、没有发送 Submit、没有执行 Git 操作。
 
-## 2026-07-14 受控真实 Submit 验证（历史采集结论；当前 capability 以上方 Task 10 为准）
+## 2026-07-14 受控真实 Submit 验证（历史采集结论；当前 capability 以上方 Task 3 为准）
 
 - 用户在提交当刻确认后，使用当前皇冠虚拟余额账号手工完成 1 笔受控投注：加拿大锦标赛“骑兵 vs 温哥华白帽”，温哥华白帽 `-0.5/1 @ 0.96`，金额 `50 CNY`。页面显示“已确认 / 您已成功投注”，投注记录由 0 变 1，展示余额由 1000 变 950。
 - 抓包 `20260714-085221` 只放行 1 次 exact `FT_bet`。脱敏证据记录 Submit request `seq=838`、`golds=50`、未被阻断；直接响应 HTTP 200、`code=560`、`gold=50`、`ioratio=0.96`、`nowcredit=950`，并包含已脱敏的持久注单标识字段。历史 public artifact 的 `captureId` 为 `sha256:75ec1ecb80c832ebd65f29196fac8f3409bc1a4ee9c99d747d2943968eb47f32`；它是对 JSON 序列化后的 capture 目录 basename 计算的 SHA-256，不是 raw capture 内容摘要，也不等同于上方 candidate raw-capture digest。
-- 该历史 public artifact 当时尚未携带安全 binding；后续 exact evidence candidate 补齐了 account/session/execution/result HMAC bindings，但当时仍未证明 exact capability/`lineVariant`、服务端 integer CNY stake step，也没有明确“未创建注单”的 rejected 直接响应。因此该历史阶段的 canonical Preview/Submit/Reconciliation capability 为 `0/0/0`；当前 capability 以上方 Task 10 的 `1/1/0` 为准。
+- 该历史 public artifact 当时尚未携带安全 binding；后续 exact evidence candidate 补齐了 account/session/execution/result HMAC bindings，但当时仍未证明 exact capability/`lineVariant`、服务端 integer CNY stake step，也没有明确“未创建注单”的 rejected 直接响应。因此该历史阶段的 canonical Preview/Submit/Reconciliation capability 为 `0/0/0`；当前 capability 以上方 Task 3 的 `8/1/0` 为准。
 - 抓包器已改为 BrowserContext 级记录与拦截，覆盖列表页和比赛详情页；真实模式只允许一笔 exact `FT_bet`、正整数金额且不超过当次 `--max-stake`，第二笔和非 exact Submit 均在网络层阻断。聚焦测试 18/18、独立安全复核无 finding。
 
 ## 2026-07-14 账号现场可执行性
@@ -62,7 +122,7 @@
 - Submit 网络请求开始后，一个 child 最多发送一次；所有无法明确证明未发送或未创建注单的异常与恢复结果统一为 `unknown`。
 - 执行前必须取得 fresh Preview，且 Preview 赔率仍在规则卡冻结快照的区间内；盘口执行身份使用真实 `handicapRaw`，不能用 `lineKey` 代替。
 - 该历史阶段的生产 Preview/Submit capability 为 `0/0`。随后在 2026-07-14 完成一笔受控 accepted `FT_bet`，并生成带 account/session/execution/result HMAC bindings 的 exact evidence candidate；本段只记录当时的 fail-closed 边界。
-- 本节仅保留历史口径，不再是当前权威；当前 capability 统一以顶部 Task 10 的 exact row `1/1/0` 为准。
+- 本节仅保留历史口径，不再是当前权威；当前 capability 统一以顶部 Task 3 的 side-aware `8/1/0` 为准。
 
 ## 2026-07-13 投注规则今日联赛口径修复
 
@@ -78,7 +138,7 @@
 - APP_ROOT 与用户 data root 分离；账号密文、SQLite、session、浏览器 Profile、日志、运行身份和业务备份位于 `%LOCALAPPDATA%\CrownMonitor`，不进入发行包。手工换版继续复用该目录，不覆盖用户数据。
 - launcher 不依赖调用者 cwd，并以 installation id/PID/start time/nonce/probe 精确管理进程，禁止按进程名 kill。新启动或复用进程通过完整 health identity 后，幂等维护当前用户桌面的 `皇冠抓水投注.lnk`。
 - 快捷方式 Target 固定为当前包根目录 `启动程序.cmd`，WorkingDirectory 为当前包根目录，Icon 为 `皇冠抓水投注.ico`；程序移动或换版后从新目录成功启动一次即可校正。创建失败只记录稳定脱敏错误码，不能阻止 Dashboard 启动。
-- 启动只打开 loopback Dashboard；Watcher 必须由用户在 Dashboard 手工启动，程序重启和手工换版后都保持停止。当前 exact row `prematch/full_time/asian_handicap/main` 的 Preview/Submit/Reconciliation capability 为 `1/1/0`；Portable 与登录本身不得打开真实投注。
+- 启动只打开 loopback Dashboard；Watcher 必须由用户在 Dashboard 手工启动，程序重启和手工换版后都保持停止。当前 side-aware Preview/Submit/Reconciliation capability 为 `8/1/0`，只有赛前全场让球 away 行允许 Submit；Portable 与登录本身不得打开真实投注。
 - 下载包包含 118 项默认联赛 seed，只在用户目标文件不存在时首次复制；重启和手工换版不得覆盖用户修改。
 - 人工登录只启动包内 Chromium；账号网址复用 exact public HTTPS origin 校验，验证码、滑块和 OTP 只由用户本人处理。session bridge 不导出完整 storage state，只在 exact-origin session 通过只读 `get_game_list` 后原子保存；成功不自动启动 Watcher。
 - 每个投注账号的 `perBetLimit` 由用户手工设置和修改，启用要求大于 0 的整数 CNY；fixture、测试或示例中的 `50 CNY` 只是测试配置，不是生产默认值、统一硬上限或自动填充值。
@@ -90,7 +150,7 @@
 
 - 用户明确授权后，已对 `storage/crown.sqlite` 创建 SQLite 在线一致预备份和停写后的最终一致备份；最终回滚源为 `storage/backups/crown-dynamic-cards-final-20260712-234229.sqlite`，SHA-256 `055C3557589D97488005F087632849247D513D7D273DCEBDA6B70110BA5DCF41`，integrity `ok`、FK `0`。
 - 当前代码已对正式库执行幂等 migration；app/schema contract 均为 `dynamic-betting-cards-v1`。新 Dashboard 正监听 `127.0.0.1:8787`，watcher 已恢复且 lease active/unique。
-- 该次历史迁移完成时，真实投注为 `requested=0/runtime_state=off`、betting worker 为 0，canonical capability 当时为 `0/0/0`；当前 capability 以顶部 Task 10 的 `1/1/0` 为准。
+- 该次历史迁移完成时，真实投注为 `requested=0/runtime_state=off`、betting worker 为 0，canonical capability 当时为 `0/0/0`；当前 capability 以顶部 Task 3 的 `8/1/0` 为准。
 - loopback browser smoke 已完成动态卡片创建/删除/联赛释放，console 0 error/warning。验收临时卡已删除，当前卡片和联赛占用均为 0。
 - 旧监控报警配置缺少明确盘口证据；滚球还缺少完整数值/阶段证据。因此赛前和滚球均保持 disabled、migration review required，必须由用户补全并保存，程序不猜值。
 - 操作证据：`.superpowers/sdd/evidence/live-rollout-20260712.md`。
@@ -102,7 +162,7 @@
 - 卡片普通保存必须包含至少一个今日联赛；今日目录合并启用默认联赛命中与 exact 手动追踪事件。手动联赛只进入目录，必须显式选择。同一联赛由数据库 UNIQUE 保证只能属于一张现存卡片，停用仍占用，物理删除后释放。
 - Signal、Telegram delivery、card inbox 与 cooldown 原子写入；inbox/batch 保存不可变 card snapshot。market-once、ExecutionAuthorization 和 B2 prepare/recovery 均绑定 card identity 与 Signal mode。
 - 删除事务先终结未绑定 batch 的活跃 inbox，再物理删除卡片；已创建 batch/child 与历史快照保留。“每日开工完全重置”保留现存卡片/联赛配置，清理运行历史与 card snapshot，并保持真实投注 off。
-- Operations 使用 `ruleCards:{total,enabled,reviewRequired,ownedLeagues}`。app/frontend/schema contract 统一为 `dynamic-betting-cards-v1`；该历史动态卡片阶段的 canonical Crown Preview/Submit/Reconciliation capability 当时为 `0/0/0`，当前值以顶部 Task 10 的 `1/1/0` 为准。
+- Operations 使用 `ruleCards:{total,enabled,reviewRequired,ownedLeagues}`。app/frontend/schema contract 统一为 `dynamic-betting-cards-v1`；该历史动态卡片阶段的 canonical Crown Preview/Submit/Reconciliation capability 当时为 `0/0/0`，当前值以顶部 Task 3 的 `8/1/0` 为准。
 - 代码阶段最终验证为 backend 1066/1066、syntax 215、frontend 115/115、production build/Compose green；最终独立审查 Critical/Important/Minor 均为 0。该离线阶段当时未执行正式库迁移或 8787 重启；后续正式运行状态以上方“动态卡片正式迁移与 8787 重启”为准。
 
 ## 历史：2026-07-12 监控报警 / 固定投注配置分离（已被顶部动态卡片取代）
@@ -123,14 +183,14 @@
 - 同一 `event + mode + period + marketType + line + actualSide` 最多投注一次；新盘口线可以再投注。多规则重叠时优先级最高者取得执行资格。
 - 账号按 betOrder 依次填满并允许 partial；rejected 不转投；unknown 不重投、冻结金额和账号锁。不设置每日限额，也不设置首次真实订单后自动停止。
 - 账号 UI 删除金额精度和投注步进，只保留整数 CNY 单笔上限；provider preview 的 min/max/step 仍由执行器自动校验。账号增加暂停/启用按钮：暂停立即阻止新分配，但已排队任务继续完成。
-- 全局真实投注意图持久化；重启进入 `armed_waiting`，只有 watcher/账号/余额/capability/authorization/lease 全部通过才恢复。该历史设计形成时 canonical Crown preview/submit capability 为 0，实施完成前不得把无证据组合改为可真实执行；当前 capability 以上方 Task 10 的 exact row `1/1/0` 为准。
+- 全局真实投注意图持久化；重启进入 `armed_waiting`，只有 watcher/账号/余额/capability/authorization/lease 全部通过才恢复。该历史设计形成时 canonical Crown preview/submit capability 为 0；当前 capability 以上方 Task 3 的 side-aware `8/1/0` 为准。
 
 ## 2026-07-11 Dashboard 默认本机免密
 
 - 用户确认发布给任何下载者后都应打开即用、无需 Dashboard 密码；默认访问范围仍仅为运行程序的当前电脑，不开放局域网或公网。
 - 未配置 Dashboard 密码且未配置远程 Host/Origin 时，loopback bootstrap 获得进程随机 CSRF token，写请求仍要求同源 Origin 和正确 token；远程客户端、伪造 Host、跨站 Origin 和错误 token 继续拒绝。
 - 如果显式配置 Dashboard 密码或远程 Host/Origin，免密捷径关闭，现有密码 Session/CSRF 机制优先。
-- 手动“检测账号”可使用该账号已保存且通过验证的 public HTTPS exact origin；这一放宽只作用于 fresh login + `get_game_list` + `get_member_data`，生产 preview/submit Provider 仍要求环境 allowlist/capability。
+- 手动“检测账号”和生产 preview/submit Provider 都只使用该账号已保存且通过验证的 public HTTPS exact origin；生产执行仍要求 capability 与全部运行门禁。
 - 页面在免密模式显示“Dashboard 本机免密”。真实投注 worker 保持关闭，Crown 展示余额仍不写入执行余额。
 - 旧账号可保存 `0` 单笔限额/投注步进并继续编辑其他资料；金额精度变化时无意义的尾随零会规范化。零限额或零步进账号仍由 execution account validator 拒绝，不能参与投注。
 - 新建投注账号的金额精度默认 `0 位`，即整数金额；现有账号精度不自动迁移。
@@ -142,7 +202,7 @@
 - 投注规则保存和监控开关失败的根因不是字段值，而是本机未配置 Dashboard 登录密码；后端按设计拒绝无 session/CSRF 的写请求。前端现会打开登录弹窗并显示明确中文提示，不再把 `authentication-required` 误报为规则字段错误，也不会重复发送监控开关请求。
 - 新增投注账号“检测账号”只读动作：每次使用该账号做 fresh Crown 登录，验证 `get_game_list` 可访问，再读取 `get_member_data` 的账号摘要。检测过程不调用 `FT_order_view` 或 `FT_bet`，账号处于 busy/locked 时拒绝执行。
 - Crown 返回的 `maxcredit` 单独保存为 `reported_balance`，页面标为“Crown 返回余额/额度（仅展示）”；B1 执行账本的 `balance_minor` 仍保持独立，未确认时显示“执行余额：未确认”，防止展示值绕过资金门禁。
-- 登录检测只允许账号配置的 public HTTPS exact origin，且必须列入 `CROWN_BETTING_ALLOWED_ORIGINS`；API 不返回密码、cookie、session、ticket 或原始响应。
+- 登录检测只允许账号配置的 public HTTPS exact origin；不存在额外静态 membership whitelist。API 不返回密码、cookie、session、ticket 或原始响应。
 - 当时自动验证为 backend 756/756、syntax 163、frontend 51/51、production build 通过；其后用户确认改为默认本机免密，当前状态以上一节和最新验证为准。真实投注保持关闭。
 
 ## 2026-07-11 Crown 中文字段乱码修复
@@ -160,7 +220,7 @@
 - 生产模块不再暴露可伪造的 test authority。离线 ledger fixture 只能作用于 `provider=fixture`，不能证明 Crown batch；离线 preview fixture 只允许 RFC 保留的 `example.test` 域并固定 `realExecutionEligible:false`。
 - Telegram 多群部分成功会持久化已成功目标，HTTP 失败、throw 或 Abort 后只重试失败目标；每条通知发送前单独领取新 lease，避免批尾 lease 到期重复。
 - 最终验证：Task 12 focused 108/108、backend 749/749、syntax 162、frontend 48/48、production build 与 Compose config 通过；三路最终独立复核均为 0 Critical/Important。
-- 当时真实验收未执行：canonical Crown preview/submit 能力为 0，production submit/reconciliation/manual resolution 保持 fail-closed，没有调用 `FT_bet`、真实 Crown preview 或真实 Telegram；当前 capability 以上方 Task 10 的 exact row `1/1/0` 为准。
+- 当时真实验收未执行：canonical Crown preview/submit 能力为 0，production submit/reconciliation/manual resolution 保持 fail-closed，没有调用 `FT_bet`、真实 Crown preview 或真实 Telegram；当前 capability 以上方 Task 3 的 side-aware `8/1/0` 为准。
 - 历史 login-diagnostics cleanup、受影响密码轮换和 session/cookie 失效仍需用户明确授权。没有 Git commit。C 设计草案已写入 `docs/superpowers/specs/2026-07-11-crown-c-strategy-mobile-console-design.md`，推荐“多实例 odds_delta + 统一响应式移动运维控制台”，待用户确认后编写实施计划。
 
 ## 历史：2026-07-11 B 阶段方案 A 当时状态
@@ -177,7 +237,7 @@
 - Dashboard 前端收到任一 API 401 时会同步清除内存 CSRF、发出 `crown:dashboard-auth-expired` 内存事件并立即显示未登录；服务端 8 小时过期 session 会返回 401、从内存 purge，旧 cookie 不会因测试时钟回退而复活。
 - 本轮复审按 TDD 先得到前端 2 个预期失败，再以最小实现转绿；最终 Dashboard security 10/10、frontend 48/48、production build 成功，文档 6 个旧风险短语/5 个当前安全事实断言通过。build 仅保留既有的单 chunk 超过 500 kB 警告，不影响产物生成。
 - Task 11–12 已完成 sanitized fixture/offline-only 开发和安全复核。实际旧诊断清理、受影响密码轮换和旧 session/cookie 失效完成前不得执行受控真实 preview。2026-07-09 的旧 adapter 不属于 B1/B2 多账号 Executor；任何真实小额 `FT_bet` 仍需验收当次新授权。
-- Task 11 betting session 安全复审已关闭首轮三项 Important及终审登录层问题：strict owner 保存时缺失/错配 `accountId` 都拒绝；betting 方法只向上抛稳定脱敏错误；allowlist entry 与账号 URL 都必须是同一 public HTTPS exact origin，拒绝 credentials/path/query/hash、HTTP、localhost/private hostname、IP literal 和非 allowlist 地址；所有 Crown API POST 使用 manual redirect，3xx 在采用 cookie 前 fail-closed；betting session/detail 提供可选 fence hook，在开始、每次网络后及任何 save/invalidate 前复核，lease 错误原样传播且 stale owner 不改旧 session。Monitor `ensureSession` 保持兼容，全部验证只使用 fake/temp 数据，未访问 live/runtime。
+- Task 11 betting session 安全复审已关闭首轮三项 Important及终审登录层问题：strict owner 保存时缺失/错配 `accountId` 都拒绝；betting 方法只向上抛稳定脱敏错误；账号 URL 必须是 public HTTPS exact origin，拒绝 credentials/path/query/hash、HTTP、localhost/private hostname 和 IP literal；所有 Crown API POST 使用 manual redirect，3xx 在采用 cookie 前 fail-closed；betting session/detail 提供可选 fence hook，在开始、每次网络后及任何 save/invalidate 前复核，lease 错误原样传播且 stale owner 不改旧 session。Monitor `ensureSession` 保持兼容，全部验证只使用 fake/temp 数据，未访问 live/runtime。
 - 当前没有 Git commit；整个仓库仍无首次提交。B 阶段自动开发/测试使用临时数据库和模拟 Provider，没有发送真实投注请求。
 
 
@@ -572,7 +632,7 @@
 - 所有 C 阶段规则（包括迁移后的 legacy template）都按 canonical columns 判断，不再通过 ID 前缀推断语义；真实资格统一要求 monitor/real 开启、未归档且迁移审核完成。Canonical direction 固定 reverse，执行赔率边界取 `target_odds_min/max`，rule version 原样进入 batch snapshot，并在 B2 prepare/dispatch 前持续复核。
 - `rejected` 永不转投；`unknown` 永不自动重投并持续占用锁。暂停只阻止新分配，已有队列排空后转 `paused`。
 - Persistent intent 重启后总是回到 `armed_waiting/preflight-required`，不从旧 PID 或旧 running 状态推断可运行。
-- 该历史 C stage 当时的 verified matrix 为 `crown-protocol-capabilities-v2:23628f891d1edb9a`，Preview/Submit/Reconciliation `0/0/0`；当前 matrix 与 capability 以顶部 Task 10 的 `1/1/0` 为准。
+- 该历史 C stage 当时的 verified matrix 为 `crown-protocol-capabilities-v2:23628f891d1edb9a`，Preview/Submit/Reconciliation `0/0/0`；当前 matrix 与 capability 以顶部 Task 3 的 `8/1/0` 为准。
 - 2026-07-12 最终 gates：backend `874/874`；syntax `180`；frontend `66/66`；build/Compose 通过；最终独立审查 0 Critical/Important/Minor、代码 Ready。Browser 只用临时 DB/fake checker，1036/390 无溢出、console 0 error/warning、请求仅 localhost。
 - 未迁移或写入 live DB，未调用 Crown preview/submit/reconciliation，未 Git commit/stage。
 
@@ -593,7 +653,7 @@
 - `/operations` 改为浅色清爽操作台，按“赔率监控 → 策略规则 → 投注账号 → 全局真实投注”展示四段 readiness 与稳定阻断原因。监控和真实投注都只显示当前可执行的一个按钮；0 风险不再渲染红色主面板；每日重置移至底部维护工具。
 - `/betting-accounts` 明确“启用账号只加入订单分配，不会开启全局真实投注”，卡片只显示“启用账号”或“暂停账号”。检测账号保持独立，检测成功不自动启用。
 - 投注账号页不再调用包含全部赔率历史的 `/api/app/bootstrap`，改为并行读取轻量 `/api/app/betting-accounts` 与 `/api/app/betting-history`。在当前约 444MB runtime 历史下，浏览器从超过 10 秒超时并误报空列表恢复为约 1.5 秒显示两个账号；加载中显示明确读取状态。
-- 该历史验收结果为 backend 883/883、syntax 182、frontend 68/68、production build 通过；Chrome/Edge 实机验收桌面与手机宽度无页面横向溢出，工作台四段链路、0 风险中性状态、账号说明和两个暂停账号均显示正确。当时真实投注保持关闭，Crown canonical capability 为 `0/0/0`；当前值以顶部 Task 10 的 `1/1/0` 为准。
+- 该历史验收结果为 backend 883/883、syntax 182、frontend 68/68、production build 通过；Chrome/Edge 实机验收桌面与手机宽度无页面横向溢出，工作台四段链路、0 风险中性状态、账号说明和两个暂停账号均显示正确。当时真实投注保持关闭，Crown canonical capability 为 `0/0/0`；当前值以顶部 Task 3 的 `8/1/0` 为准。
 
 ## 2026-07-12 Dashboard 超时与账号启用错误修复
 - `csrf-invalid` 的根因是 Dashboard Session 依赖大型 `/api/app/bootstrap` 取得 CSRF；赔率历史增长后该请求可能超过前端 10 秒超时，导致写操作没有新 token。新增轻量 `/api/app/security-context`，并且 mutation 收到一次 `csrf-invalid` 时只刷新安全上下文并安全重试一次。
@@ -613,7 +673,7 @@
 # 历史：2026-07-13 页面体验与真实投注完备计划（已被 Task 10 与新计划取代）
 
 - 当时开发计划入口为 `docs/superpowers/plans/2026-07-13-crown-ui-performance-and-live-betting-readiness.md`。计划同时覆盖页面切换性能、Checkbox 对齐，以及真实投注剩余的 canonical preview/submit/reconciliation 证据、生产 Provider/对账、动态卡资格/授权和最终受控小额验收。
-- B1/B2 账本、账号锁、ExecutionAuthorization、fenced Worker、unknown 不重投、reconciliation/outcome outbox、C runtime、安全开工与动态卡片当时均视为已完成前置，不重复实施。该历史计划形成时的真实投注 capability 为 `0/0/0`、runtime off；当前值以顶部 Task 10 的 `1/1/0` 为准。
+- B1/B2 账本、账号锁、ExecutionAuthorization、fenced Worker、unknown 不重投、reconciliation/outcome outbox、C runtime、安全开工与动态卡片当时均视为已完成前置，不重复实施。该历史计划形成时的真实投注 capability 为 `0/0/0`、runtime off；当前值以顶部 Task 3 的 `8/1/0` 为准。
 - 真实投注 Task 7、8、12 是三个独立硬停点；每次必须由用户在执行当次重新确认。无授权时系统保持 fail-closed，旧 real CLI 永久不恢复。
 
 # 历史：2026-07-13 Canonical 协议证据准备（已被 Task 10 evidence 取代）
@@ -621,7 +681,7 @@
 - Task 6 已离线完成：`protocolVersion` 只信任当次成功 production login response，strict betting session 磁盘缓存不能持久化或恢复其 verified provenance；Preview 会要求 fresh version refresh。
 - Canonical preview 证据使用 exact non-sensitive field set，transport `uid` 仅计数后排除；extra、任意重复 XML tag、未知敏感字段均使证据 invalid。Response field set 漂移同样 fail-closed。
 - request/response 通过原 Request sequence 精确配对；event/line/side/stake 使用私有 32-byte 以上 key 的 HMAC linkage，公开产物不含原值、key、raw body、ticket、origin 或绝对路径。
-- 当时 focused `86/86`、相关 `96/96`、backend `1092/1092`、security `5/5`、syntax `217` 已通过；最终独立复审 0/0/0。该历史阶段的 canonical matrix Preview/Submit/Reconciliation 为 `0/0/0`；当前值以顶部 Task 10 的 `1/1/0` 为准。当时未访问真实网络、正式 DB/服务、账号或 Git，并停在 Task 7 当次授权。
+- 当时 focused `86/86`、相关 `96/96`、backend `1092/1092`、security `5/5`、syntax `217` 已通过；最终独立复审 0/0/0。该历史阶段的 canonical matrix Preview/Submit/Reconciliation 为 `0/0/0`；当前值以顶部 Task 3 的 `8/1/0` 为准。当时未访问真实网络、正式 DB/服务、账号或 Git。
 
 # 2026-07-13 Windows Portable 与 GitHub 源码发布（发布方式已更新）
 
@@ -632,3 +692,7 @@
 - 正式 backend 验证必须使用发行物锁定的 Node `22.23.1` 再跑一遍。被当前业务 `await` 的发送/对账 timeout 不能 `unref`；Windows 受控路径按文件系统 identity 判定同一对象，允许合法 8.3 短路径别名，但仍拒绝 symlink/junction。该约束用于消除开发机 Node 25 与 GitHub Windows runner 的行为差异。
 - Watcher 运行时配置热重载按文件内容 SHA-256 判定变化，不依赖 Windows `mtime`；同一时间戳内的覆盖写入也必须被发现，解析失败继续保留 last-known-good 并在后续轮询重试。
 - 源码公开前已按 allowlist 清理：不包含截图、平博程序、运行数据库、凭据、浏览器资料或旧投注 CLI。最终可下载 Release 仍要求实际发行物审计和 Fresh Windows 10/11 x64 验收证据，不能把 GitHub 源码 ZIP 或 Actions artifact 当作用户可运行包。
+## 2026-07-15 非投注收尾修复
+
+- 每日完全重置会同时清除 `crown_browser_acceptance_cases` 和 `crown_browser_acceptance_campaigns`，避免旧验收 campaign 阻塞下一轮验收；账号、规则、凭据和登录资料仍保留。
+- 清理后恢复 Watcher 时，只有同一 lease key 的有效 lease PID 与刚启动的托管子进程 PID 完全一致，才报告健康；外部进程抢占不会被误认成恢复成功。

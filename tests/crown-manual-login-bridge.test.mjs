@@ -124,6 +124,42 @@ function setup({ verifyResult, verifyGameList, launchBrowser, now = () => 1_000,
   return { bridge, page, context, launched, verified, committed }
 }
 
+function setupWithFinalizer({ now = () => 1_000, ttlMs = 60_000, gotoFailure = false } = {}) {
+  const events = []
+  const page = new FakePage()
+  const context = new FakeContext(page)
+  let finalizeCalls = 0
+  if (gotoFailure) {
+    page.goto = async (url, options) => {
+      page.gotoCalls.push({ url, options })
+      throw new Error('test-goto-failure')
+    }
+  }
+  const value = setup({
+    now,
+    ttlMs,
+    launchBrowser: async () => ({
+      context,
+      page,
+      async finalize() {
+        finalizeCalls += 1
+        events.push('finalize')
+        await context.close()
+        return true
+      },
+    }),
+    verifyGameList: async (session) => {
+      events.push('verify')
+      return {
+        classification: { hasServerResponse: true, loginExpired: false, parseError: false },
+        requestScope: { endpointKind: 'get_game_list' },
+        session: { ...session, savedAt: 1_100 },
+      }
+    },
+  })
+  return { ...value, page, context, events, finalizeCalls: () => finalizeCalls }
+}
+
 function account(overrides = {}) {
   return {
     accountId: 'monitor-A',
@@ -200,6 +236,69 @@ test('accepts UID only from exact-origin transform evidence, verifies read-only 
   assert.equal(value.context.storageStateCalls, 0)
   assert.equal(value.context.closeCalls, 1)
   assert.doesNotMatch(JSON.stringify(result), /owner-uid|exact-cookie|password|storageState/i)
+})
+
+test('successful confirmation verifies before one idempotent browser finalizer', async () => {
+  const value = setupWithFinalizer()
+  const challenge = await open(value)
+  await emitSuccessfulLogin(value)
+
+  const result = await value.bridge.confirmManualLogin({
+    accountId: 'monitor-A', challengeId: challenge.challengeId,
+  })
+
+  assert.equal(result.status, 'verified')
+  assert.deepEqual(value.events, ['verify', 'finalize'])
+  assert.equal(value.finalizeCalls(), 1)
+  assert.equal(value.context.closeCalls, 1)
+  await assert.rejects(() => value.bridge.cancelManualLogin({
+    accountId: 'monitor-A', challengeId: challenge.challengeId,
+  }), /manual-login-challenge-state-invalid/)
+  assert.equal(value.finalizeCalls(), 1)
+})
+
+test('cancel, goto failure, and expiry each use the same finalizer exactly once', async () => {
+  const cancelled = setupWithFinalizer()
+  const cancelChallenge = await open(cancelled)
+  await cancelled.bridge.cancelManualLogin({
+    accountId: 'monitor-A', challengeId: cancelChallenge.challengeId,
+  })
+  assert.equal(cancelled.finalizeCalls(), 1, 'cancel')
+  cancelled.bridge.getManualLoginStatus({ accountId: 'monitor-A', challengeId: cancelChallenge.challengeId })
+  assert.equal(cancelled.finalizeCalls(), 1, 'cancel remains idempotent')
+
+  const gotoFailed = setupWithFinalizer({ gotoFailure: true })
+  await assert.rejects(() => open(gotoFailed), /manual-login-browser-open-failed/)
+  assert.equal(gotoFailed.finalizeCalls(), 1, 'goto failure')
+
+  let timestamp = 1_000
+  const expired = setupWithFinalizer({ now: () => timestamp, ttlMs: 100 })
+  const expiredChallenge = await open(expired)
+  timestamp = 1_100
+  await assert.rejects(() => expired.bridge.confirmManualLogin({
+    accountId: 'monitor-A', challengeId: expiredChallenge.challengeId,
+  }), /manual-login-challenge-expired/)
+  assert.equal(expired.finalizeCalls(), 1, 'expiry')
+  expired.bridge.getManualLoginStatus({ accountId: 'monitor-A', challengeId: expiredChallenge.challengeId })
+  assert.equal(expired.finalizeCalls(), 1, 'expiry remains idempotent')
+})
+
+test('unexpected context close or disconnect enters one finalized failed terminal state', async () => {
+  for (const event of ['close', 'disconnected']) {
+    const value = setupWithFinalizer()
+    const challenge = await open(value)
+    value.context.emit(event)
+    await new Promise((resolve) => setImmediate(resolve))
+
+    const status = value.bridge.getManualLoginStatus({
+      accountId: 'monitor-A', challengeId: challenge.challengeId,
+    })
+    assert.equal(status.status, 'failed', event)
+    assert.equal(status.errorCode, 'manual-login-context-closed', event)
+    assert.equal(value.finalizeCalls(), 1, event)
+    value.bridge.getManualLoginStatus({ accountId: 'monitor-A', challengeId: challenge.challengeId })
+    assert.equal(value.finalizeCalls(), 1, `${event} remains idempotent`)
+  }
 })
 
 test('can derive UID from an exact-origin transform_nl response and ignores foreign evidence', async () => {
@@ -450,6 +549,36 @@ test('terminal challenges are scrubbed, expire quickly, and remain capacity boun
   const active = await open(value, account({ accountId: 'monitor-fresh' }))
   assert.equal(active.status, 'awaiting-user')
   assert.equal(value.bridge.challenges.size, 1)
+})
+
+test('browser guard failures become scrubbed bounded terminal challenges', async () => {
+  let nonce = 0
+  const contexts = []
+  const value = setup({
+    maxTombstones: 2,
+    randomBytes: () => Buffer.alloc(24, ++nonce),
+    launchBrowser: async () => {
+      const context = new FakeContext(null)
+      contexts.push(context)
+      return { context, page: null }
+    },
+  })
+
+  for (let index = 0; index < 3; index += 1) {
+    await assert.rejects(() => open(value, account({ accountId: `invalid-${index}` })),
+      /manual-login-browser-context-invalid/)
+  }
+
+  assert.equal(contexts.every((context) => context.closeCalls === 1), true)
+  assert.equal(value.bridge.challenges.size, 2)
+  for (const challenge of value.bridge.challenges.values()) {
+    assert.equal(challenge.status, 'failed')
+    assert.equal(challenge.errorCode, 'manual-login-browser-context-invalid')
+    assert.equal(challenge.terminalAt, 1_000)
+    assert.equal(challenge.uid, '')
+    assert.equal(challenge.account.username, undefined)
+    assert.equal(challenge.evidenceTasks.size, 0)
+  }
 })
 
 test('an opening challenge that expires cannot resume after a replacement challenge becomes active', async () => {

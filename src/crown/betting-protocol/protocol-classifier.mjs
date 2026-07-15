@@ -35,7 +35,25 @@ const ORDER_FIELD_NAMES = new Set([
 ])
 const ORDER_ENDPOINT_TOKENS = new Set(['bet', 'betslip', 'wager', 'order', 'ticket', 'coupon'])
 const SUBMIT_ENDPOINT_TOKENS = new Set(['submit', 'confirm', 'checkout'])
+const UNINSPECTABLE_MULTIPART_FIELD = '__crown_uninspectable_multipart__'
+export const UNINSPECTABLE_JSON_FRAGMENT_FIELD = '__crown_uninspectable_json_fragment__'
 const PREVIEW_ENDPOINT_TOKENS = new Set(['preview', 'order_view', 'bet_view', 'betslip'])
+const STATIC_ASSET_RESOURCE_TYPES = new Map([
+  ['css', new Set(['stylesheet'])],
+  ['js', new Set(['script'])],
+  ['mjs', new Set(['script'])],
+  ['png', new Set(['image'])],
+  ['jpg', new Set(['image'])],
+  ['jpeg', new Set(['image'])],
+  ['gif', new Set(['image'])],
+  ['webp', new Set(['image'])],
+  ['svg', new Set(['image'])],
+  ['ico', new Set(['image'])],
+  ['woff', new Set(['font'])],
+  ['woff2', new Set(['font'])],
+  ['ttf', new Set(['font'])],
+  ['otf', new Set(['font'])],
+])
 const ROUTE_CRITICAL_FIELD_NAMES = new Set([
   ...ROUTE_OPERATION_FIELDS, ...MONEY_FIELD_NAMES, ...ORDER_FIELD_NAMES,
 ])
@@ -163,52 +181,148 @@ function routeFieldEntries(source, origin, output = [], inheritedName = '') {
   return output
 }
 
-function capturedContentType(headers) {
-  for (const [field, value] of Object.entries(headers || {})) {
-    if (String(field).toLowerCase() === 'content-type') return String(value || '')
+function invalidMultipart() {
+  return Object.freeze({ detected: true, valid: false, entries: Object.freeze([]) })
+}
+
+function multipartBoundary(headers, bodyLooksMultipart) {
+  const values = Object.entries(headers || {})
+    .filter(([field]) => String(field).toLowerCase() === 'content-type')
+    .map(([, value]) => String(value || ''))
+  if (values.length !== 1) return values.length || bodyLooksMultipart ? invalidMultipart() : null
+  const segments = values[0].split(';')
+  if (segments.shift()?.trim().toLowerCase() !== 'multipart/form-data') {
+    return bodyLooksMultipart ? invalidMultipart() : null
   }
-  return ''
+  const boundaries = []
+  for (const segment of segments) {
+    const parameter = segment.match(/^\s*([A-Za-z0-9!#$&^_.+-]+)\s*=\s*(.*?)\s*$/)
+    if (!parameter) return invalidMultipart()
+    if (parameter[1].toLowerCase() !== 'boundary') continue
+    let value = parameter[2]
+    if (value.startsWith('"') || value.endsWith('"')) {
+      if (value.length < 2 || !value.startsWith('"') || !value.endsWith('"')) return invalidMultipart()
+      value = value.slice(1, -1)
+    }
+    boundaries.push(value)
+  }
+  if (boundaries.length !== 1 || !/^[0-9A-Za-z'()+_,./:=?-]{1,70}$/.test(boundaries[0])) {
+    return invalidMultipart()
+  }
+  return boundaries[0]
+}
+
+function multipartDelimiter(text, delimiter, from = 0) {
+  for (let index = text.indexOf(delimiter, from); index >= 0; index = text.indexOf(delimiter, index + 1)) {
+    if (index !== 0 && text[index - 1] !== '\n') continue
+    const after = index + delimiter.length
+    if (text.startsWith('--', after)) return { index, after, closing: true, newlineLength: 0 }
+    if (text.startsWith('\r\n', after)) return { index, after, closing: false, newlineLength: 2 }
+    if (text.startsWith('\n', after)) return { index, after, closing: false, newlineLength: 1 }
+  }
+  return null
+}
+
+function multipartParameterValue(rawValue) {
+  const value = String(rawValue || '').trim()
+  if (!value || /[\u0000-\u001f\u007f]/.test(value)) return null
+  if (['"', "'"].includes(value[0]) || ['"', "'"].includes(value.at(-1))) {
+    if (value.length < 2 || value[0] !== value.at(-1)) return null
+    const inner = value.slice(1, -1)
+    if (inner.includes(value[0]) || inner.includes('\\')) return null
+    return inner
+  }
+  return /^[^\s;"\\]+$/.test(value) ? value : null
+}
+
+function multipartPart(part) {
+  const separator = part.match(/\r?\n\r?\n/)
+  if (!separator) return null
+  const rawHeaderBlock = part.slice(0, separator.index)
+  if (/\r(?!\n)|[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(rawHeaderBlock)) return null
+  const headerBlock = rawHeaderBlock.replace(/\r?\n[ \t]+/g, ' ')
+  const headers = headerBlock.split(/\r?\n/)
+  const dispositions = []
+  for (const header of headers) {
+    const colon = header.indexOf(':')
+    if (colon < 1 || !/^[A-Za-z0-9-]+$/.test(header.slice(0, colon).trim())) return null
+    if (header.slice(0, colon).trim().toLowerCase() === 'content-disposition') {
+      dispositions.push(header.slice(colon + 1).trim())
+    }
+  }
+  if (dispositions.length !== 1) return null
+  const parameters = dispositions[0].split(';')
+  if (parameters.shift()?.trim().toLowerCase() !== 'form-data') return null
+  const names = []
+  for (const rawParameter of parameters) {
+    const parameter = rawParameter.match(/^\s*([A-Za-z0-9_*.-]+)\s*=\s*(.+?)\s*$/)
+    if (!parameter) return null
+    const key = parameter[1].toLowerCase()
+    if (/^name\*\d+\*?$/.test(key)) return null
+    if (key !== 'name' && key !== 'name*') continue
+    const parameterValue = multipartParameterValue(parameter[2])
+    if (parameterValue == null) return null
+    if (key === 'name*') {
+      const encoded = parameterValue.match(/^utf-8'[^']*'(.*)$/i)?.[1]
+      if (encoded == null) return null
+      try {
+        names.push(decodeURIComponent(encoded))
+      } catch {
+        return null
+      }
+    } else {
+      names.push(parameterValue)
+    }
+  }
+  if (names.length !== 1) return null
+  const name = String(names[0]).normalize('NFC')
+  if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(name)) return null
+  return { name, value: part.slice(separator.index + separator[0].length) }
+}
+
+export function parseStrictMultipartFormData(rawText, headers) {
+  const text = String(rawText || '')
+  const bodyLooksMultipart = /content-disposition\s*:\s*form-data\b/i.test(text)
+  const boundary = multipartBoundary(headers, bodyLooksMultipart)
+  if (boundary == null) return null
+  if (typeof boundary !== 'string') return boundary
+  const delimiter = `--${boundary}`
+  let current = multipartDelimiter(text, delimiter)
+  if (!current || current.index !== 0 || current.closing) return invalidMultipart()
+  const entries = []
+  while (current && !current.closing) {
+    const partStart = current.after + current.newlineLength
+    const next = multipartDelimiter(text, delimiter, partStart)
+    if (!next) return invalidMultipart()
+    let partEnd = next.index
+    if (text.slice(Math.max(partStart, partEnd - 2), partEnd) === '\r\n') partEnd -= 2
+    else if (text[partEnd - 1] === '\n') partEnd -= 1
+    else return invalidMultipart()
+    const entry = multipartPart(text.slice(partStart, partEnd))
+    if (!entry) return invalidMultipart()
+    entries.push(entry)
+    current = next
+  }
+  if (!current?.closing || entries.length === 0) return invalidMultipart()
+  const epilogue = text.slice(current.after + 2)
+  if (!/^\s*$/.test(epilogue)) return invalidMultipart()
+  return Object.freeze({ detected: true, valid: true, entries: Object.freeze(entries) })
 }
 
 function multipartRouteEntries(rawText, headers) {
-  const text = String(rawText || '')
-  const contentType = capturedContentType(headers).trim()
-  const declaredMultipart = /^multipart\/form-data(?:\s*;|$)/i.test(contentType)
-  if (!declaredMultipart && !/content-disposition\s*:\s*form-data/i.test(text)) return []
-  const declaredBoundary = contentType.match(/(?:^|;)\s*boundary\s*=\s*(?:"([^"\r\n]+)"|([^;\s\r\n]+))/i)
-  const inferredBoundary = text.match(/^--([^\r\n]+)(?:\r?\n|$)/)
-  const boundary = declaredBoundary?.[1] || declaredBoundary?.[2] || inferredBoundary?.[1]
-  if (!boundary) return []
-
-  const entries = []
-  for (let part of text.split(`--${boundary}`).slice(1)) {
-    if (part.startsWith('--')) break
-    part = part.replace(/^\r?\n/, '')
-    const separator = part.match(/\r?\n\r?\n/)
-    if (!separator) continue
-    const headerBlock = part.slice(0, separator.index).replace(/\r?\n[ \t]+/g, ' ')
-    const body = part.slice(separator.index + separator[0].length).replace(/\r?\n$/, '')
-    const disposition = headerBlock.match(/(?:^|\r?\n)content-disposition\s*:\s*form-data([^\r\n]*)/i)?.[1]
-    if (!disposition) continue
-    const extended = disposition.match(/;\s*name\*\s*=\s*(?:"([^"\r\n]*)"|([^;\s\r\n]+))/i)
-    const regular = disposition.match(/;\s*name\s*=\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^;\s\r\n]+))/i)
-    let name = extended ? (extended[1] ?? extended[2]) : (regular?.[1] ?? regular?.[2] ?? regular?.[3])
-    if (name == null) continue
-    if (extended) {
-      const encoded = name.match(/^[^']*'[^']*'(.*)$/)?.[1] ?? name
-      try {
-        name = decodeURIComponent(encoded)
-      } catch {
-        continue
-      }
-    }
-    entries.push({
+  const uninspectable = () => ({
+    name: UNINSPECTABLE_MULTIPART_FIELD,
+    value: '',
+    origin: 'multipart-body',
+  })
+  const parsed = parseStrictMultipartFormData(rawText, headers)
+  if (!parsed) return []
+  if (!parsed.valid) return [uninspectable()]
+  return parsed.entries.map(({ name, value }) => ({
       name: String(name).normalize('NFC').toLowerCase(),
-      value: String(body).normalize('NFC').trim(),
+      value: String(value).normalize('NFC').trim(),
       origin: 'multipart-body',
-    })
-  }
-  return entries
+  }))
 }
 
 function readQuotedStringToken(text, start) {
@@ -247,31 +361,46 @@ function isEscapedCharacter(text, index) {
   return slashes % 2 === 1
 }
 
-function quotedJsonFragmentEntries(text) {
+export function parseLooseJsonFragmentEntries(rawText) {
+  const text = String(rawText || '')
   const entries = []
+  const invalid = () => [{
+    name: UNINSPECTABLE_JSON_FRAGMENT_FIELD,
+    value: '',
+    origin: 'json-fragment',
+  }]
   for (let index = 0; index < text.length;) {
-    if (!['"', "'"].includes(text[index]) || isEscapedCharacter(text, index)) {
-      index += 1
-      continue
+    let key
+    if (['"', "'"].includes(text[index]) && !isEscapedCharacter(text, index)) {
+      key = readQuotedStringToken(text, index)
+    } else if (/[A-Za-z_]/.test(text[index] || '')
+      && (index === 0 || !/[A-Za-z0-9_]/.test(text[index - 1]))) {
+      const token = text.slice(index).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0]
+      key = token ? { value: token, end: index + token.length } : null
     }
-    const key = readQuotedStringToken(text, index)
-    if (!key) {
-      index += 1
-      continue
-    }
+    if (!key) { index += 1; continue }
+    const normalizedKey = String(key.value).normalize('NFC').toLowerCase()
     let cursor = key.end
     while (/\s/.test(text[cursor] || '')) cursor += 1
     if (text[cursor] !== ':') {
+      const beforeSeparator = text.slice(cursor).split(/[,\r\n]/, 1)[0]
+      if (ROUTE_CRITICAL_FIELD_NAMES.has(normalizedKey) && beforeSeparator.includes(':')) return invalid()
       index = key.end
       continue
     }
     cursor += 1
     while (/\s/.test(text[cursor] || '')) cursor += 1
+    if (cursor >= text.length || /[,\r\n]/.test(text[cursor])) {
+      if (ROUTE_CRITICAL_FIELD_NAMES.has(normalizedKey)) return invalid()
+      index = Math.max(cursor + 1, key.end)
+      continue
+    }
     let value = ''
     let end = cursor
     if (['"', "'"].includes(text[cursor]) && !isEscapedCharacter(text, cursor)) {
       const token = readQuotedStringToken(text, cursor)
       if (!token) {
+        if (ROUTE_CRITICAL_FIELD_NAMES.has(normalizedKey)) return invalid()
         index = key.end
         continue
       }
@@ -282,7 +411,7 @@ function quotedJsonFragmentEntries(text) {
       value = text.slice(cursor, end).trim()
     }
     entries.push({
-      name: String(key.value).normalize('NFC').toLowerCase(),
+      name: normalizedKey,
       value: String(value).normalize('NFC').trim(),
       origin: 'json-fragment',
     })
@@ -300,26 +429,7 @@ function looseJsonFragmentEntries(rawText) {
   } catch {
     // Continue with a field-boundary scan for a prefixed or tailed fragment.
   }
-  const quotedEntries = quotedJsonFragmentEntries(text)
-  if (quotedEntries.length) return quotedEntries
-  const firstPair = text.search(/(?:"[A-Za-z_][A-Za-z0-9_]*"|'[A-Za-z_][A-Za-z0-9_]*'|[A-Za-z_][A-Za-z0-9_]*)\s*:/)
-  if (firstPair < 0) return []
-  const fragment = text.slice(firstPair)
-  const entries = []
-  const pair = /(?:^|,)\s*(?:"([A-Za-z_][A-Za-z0-9_]*)"|'([A-Za-z_][A-Za-z0-9_]*)'|([A-Za-z_][A-Za-z0-9_]*))\s*:\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^,\r\n]+))/gy
-  let cursor = 0
-  while (cursor < fragment.length) {
-    pair.lastIndex = cursor
-    const match = pair.exec(fragment)
-    if (!match || match.index !== cursor) break
-    entries.push({
-      name: String(match[1] || match[2] || match[3]).normalize('NFC').toLowerCase(),
-      value: String(match[4] ?? match[5] ?? match[6] ?? '').normalize('NFC').trim(),
-      origin: 'json-fragment',
-    })
-    cursor = pair.lastIndex
-  }
-  return entries
+  return parseLooseJsonFragmentEntries(text)
 }
 
 function endpointTokens(rawUrl) {
@@ -329,6 +439,21 @@ function endpointTokens(rawUrl) {
     return new Set(pathname.split(/[\/._-]+/).filter(Boolean))
   } catch {
     return new Set()
+  }
+}
+
+function verifiedStaticAssetRequest(record) {
+  const method = String(record.method || '').toUpperCase()
+  if (method !== 'GET' && method !== 'HEAD') return false
+  try {
+    const url = new URL(String(record.url || ''), 'https://capture.invalid')
+    const pathname = decodeURIComponent(url.pathname).normalize('NFC').toLowerCase()
+    const extension = pathname.match(/\.([a-z0-9]+)$/)?.[1] || ''
+    return STATIC_ASSET_RESOURCE_TYPES.get(extension)?.has(
+      String(record.resourceType || '').toLowerCase(),
+    ) === true
+  } catch {
+    return false
   }
 }
 
@@ -358,7 +483,10 @@ function routeSignals(rawUrl, query, body, extraEntries = []) {
   )) || hasSubmitOperationField
   const explicitPreview = operationValues.some((value) => PREVIEW_OPERATION_VALUES.has(value))
   return {
+    uninspectableMultipart: entries.some(({ name }) => name === UNINSPECTABLE_MULTIPART_FIELD),
+    uninspectableJsonFragment: entries.some(({ name }) => name === UNINSPECTABLE_JSON_FRAGMENT_FIELD),
     ambiguous,
+    hasRouteFields: entries.some(({ name }) => ROUTE_CRITICAL_FIELD_NAMES.has(name)),
     exactFtBet: operations.some(({ name, value }) => name === 'p' && value === 'FT_bet'),
     explicitSubmit,
     explicitPreview,
@@ -413,6 +541,7 @@ export function classifyProtocolRecord(record) {
     ...looseJsonFragmentEntries(rawPostText),
   ]
   const signals = routeSignals(url, query, body, rawRouteEntries)
+  const staticAsset = verifiedStaticAssetRequest(record)
   const bodyText = flatten(body).join('\n')
   const queryText = flatten(query).join('\n')
   const blob = `${method}\n${url}\n${queryText}\n${bodyText}`
@@ -425,6 +554,17 @@ export function classifyProtocolRecord(record) {
       routeRisk: method === 'POST' ? 'order-like-post' : 'order-like-route',
     } : {}),
   })
+
+  if (signals.uninspectableMultipart || signals.uninspectableJsonFragment) {
+    return {
+      stage: 'candidate',
+      confidence: 'low',
+      reasons: [signals.uninspectableMultipart
+        ? 'uninspectable multipart body'
+        : 'uninspectable JSON fragment'],
+      routeRisk: method === 'POST' ? 'order-like-post' : 'order-like-route',
+    }
+  }
 
   if (/^websocket-(?:open|send|receive|error|close)$/.test(String(record.type || ''))) {
     return { stage: 'candidate', confidence: 'low', reasons: ['websocket lifecycle'] }
@@ -486,6 +626,10 @@ export function classifyProtocolRecord(record) {
     reasons.push('exact preview operation or endpoint token')
     reasons.push('order-like post parameter')
     return { stage: 'preview', confidence: 'medium', reasons }
+  }
+
+  if (signals.orderLike && staticAsset && !signals.hasRouteFields) {
+    return { stage: 'unknown', confidence: 'low', reasons: [] }
   }
 
   if (signals.orderLike) {
